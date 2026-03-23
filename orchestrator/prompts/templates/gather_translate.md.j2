@@ -1,0 +1,100 @@
+You are a PCB design requirements engineer. Convert the user's circuit description into a precise, structured JSON specification.
+
+### User's Description
+
+{{ user_input }}
+
+{% if feedback %}
+### User Feedback on Previous Attempt
+
+{{ feedback }}
+
+### Previous Requirements (to rework)
+
+{{ previous_json }}
+{% endif %}
+
+### Output JSON Schema
+
+You must produce a JSON object with this exact structure:
+
+```json
+{
+  "project_name": "<lowercase_with_underscores>",
+  "description": "<one-line summary of what the circuit does>",
+  "power": {
+    "voltage": "<e.g. 5V, 3.3V, 12V>",
+    "source": "<e.g. 2-pin header connector, USB, battery>"
+  },
+  "components": [
+    {
+      "ref": "<designator e.g. J1, R1, D1, U1>",
+      "type": "<resistor|capacitor|led|diode|connector|ic|switch|voltage_regulator|...>",
+      "value": "<value with units e.g. 150ohm, 100nF, red, LM7805>",
+      "package": "<e.g. 0805, SOT-23, PinHeader_1x2>",
+      "purpose": "<what this component does in the circuit>",
+      "specs": { "<optional key-value specs like vf, if, power, etc.>" }
+    }
+  ],
+  "connections": [
+    {
+      "net_name": "<descriptive name e.g. VCC, GND, R1_TO_D1>",
+      "net_class": "<power|ground|signal>",
+      "pins": ["<ref.pin e.g. J1.1, R1.2, D1.anode>"]
+    }
+  ],
+  "packages": "<default package preference e.g. 0805 SMD>",
+  "calculations": {
+    "<ref>": {
+      "formula": "<e.g. (5V - 2.0V) / 20mA>",
+      "value": "<result with units>",
+      "power": "<power dissipation>",
+      "package_ok": true
+    }
+  },
+  "board": {
+    "width_mm": "<board width in mm, e.g. 50>",
+    "height_mm": "<board height in mm, e.g. 30>",
+    "corner_radius_mm": "<optional, default 0>",
+    "layers": "<1, 2, or 4, default 2>",
+    "outline_type": "<rectangle or dxf>"
+  },
+  "placement_hints": [
+    {
+      "ref": "<component ref e.g. J1>",
+      "x_mm": "<optional x position>",
+      "y_mm": "<optional y position>",
+      "rotation_deg": "<0, 90, 180, or 270>",
+      "edge": "<top, bottom, left, or right — which board edge>",
+      "near": "<optional designator to place near>"
+    }
+  ],
+  "attachments": [
+    {
+      "filename": "<filename of attached file>",
+      "type": "<board_outline|sketch|photo|datasheet|other>",
+      "purpose": "<what this file provides>",
+      "used_by_steps": [3]
+    }
+  ],
+}
+```
+
+### Engineering Calculation Rules
+
+{{ engineering_rules }}
+
+### Critical Rules
+
+1. **Every component must have a unique ref** following standard designator conventions (R1, R2, D1, J1, U1, etc.)
+2. **Every component pin must appear in exactly one connection** — no floating pins
+3. **Connections define exact point-to-point wiring**. If two components need separate signal paths, they MUST be on separate nets. For example: if R1 drives D1 and R2 drives D2, these are TWO separate nets (R1_TO_D1 and R2_TO_D2), NOT one shared net.
+4. **Calculate component values** using the engineering rules above. Include the calculation in the calculations field.
+5. **Pin naming**: Use numeric pins for passive components (R1.1, R1.2), named pins for polarized components (D1.anode, D1.cathode), and functional names for ICs (U1.VCC, U1.GND).
+6. If any information is missing or ambiguous, make reasonable engineering assumptions and note them in the component's purpose field.
+7. **Board dimensions**: If the user mentions board size, include the `board` object. If not mentioned, estimate a reasonable board size based on component count and packages. Use `outline_type: "rectangle"` unless the user provides a DXF file.
+8. **Placement hints**: If the user specifies where components should go (e.g., "connector on the left edge", "LED near the switch"), capture these as `placement_hints`. Use `edge` for board-edge placement, `near` for proximity to another component, and `x_mm`/`y_mm` for exact coordinates if given.
+9. **Attachments**: If the user mentions files (DXF board outlines, sketches, photos), list them in `attachments` with their type and purpose. Set `used_by_steps` to indicate which pipeline steps need the file (step 3 = layout, step 4 = routing).
+### Output
+
+Output ONLY the JSON. No explanation, no markdown fences, no additional text.

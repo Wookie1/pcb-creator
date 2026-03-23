@@ -1,0 +1,96 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "PCB Placement",
+  "description": "Component placement on a PCB board",
+  "type": "object",
+  "required": ["version", "project_name", "source_netlist", "source_bom", "board", "placements"],
+  "properties": {
+    "version": {
+      "type": "string",
+      "const": "1.0"
+    },
+    "project_name": {
+      "type": "string"
+    },
+    "source_netlist": {
+      "type": "string"
+    },
+    "source_bom": {
+      "type": "string"
+    },
+    "board": {
+      "type": "object",
+      "required": ["width_mm", "height_mm"],
+      "properties": {
+        "width_mm": {
+          "type": "number",
+          "minimum": 5
+        },
+        "height_mm": {
+          "type": "number",
+          "minimum": 5
+        },
+        "outline_type": {
+          "type": "string",
+          "enum": ["rectangle", "dxf"]
+        },
+        "origin": {
+          "type": "array",
+          "items": {"type": "number"},
+          "minItems": 2,
+          "maxItems": 2
+        }
+      }
+    },
+    "placements": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/definitions/placement_item"
+      }
+    }
+  },
+  "definitions": {
+    "placement_item": {
+      "type": "object",
+      "required": ["designator", "component_type", "package", "footprint_width_mm", "footprint_height_mm", "x_mm", "y_mm", "rotation_deg", "layer"],
+      "properties": {
+        "designator": {
+          "type": "string"
+        },
+        "component_type": {
+          "type": "string"
+        },
+        "package": {
+          "type": "string"
+        },
+        "footprint_width_mm": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "footprint_height_mm": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "x_mm": {
+          "type": "number"
+        },
+        "y_mm": {
+          "type": "number"
+        },
+        "rotation_deg": {
+          "type": "integer",
+          "enum": [0, 90, 180, 270]
+        },
+        "layer": {
+          "type": "string",
+          "enum": ["top", "bottom"]
+        },
+        "placement_source": {
+          "type": "string",
+          "enum": ["user", "algorithm", "llm", "optimizer"]
+        }
+      }
+    }
+  }
+}

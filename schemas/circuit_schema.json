@@ -1,0 +1,178 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "PCB-Creator Circuit Netlist",
+  "description": "Simplified circuit representation for AI-driven PCB design. Contains components, ports (pins), and nets (connections).",
+  "type": "object",
+  "required": ["version", "project_name", "elements"],
+  "additionalProperties": false,
+  "properties": {
+    "version": {
+      "const": "1.0",
+      "description": "Schema version. Must be '1.0'."
+    },
+    "project_name": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_]*$",
+      "description": "Lowercase project identifier using underscores. Example: 'led_blink'"
+    },
+    "description": {
+      "type": "string",
+      "description": "Human-readable project description."
+    },
+    "elements": {
+      "type": "array",
+      "description": "Flat array of typed elements: components, ports, and nets.",
+      "items": {
+        "oneOf": [
+          { "$ref": "#/definitions/component" },
+          { "$ref": "#/definitions/port" },
+          { "$ref": "#/definitions/net" }
+        ]
+      },
+      "minItems": 1
+    }
+  },
+  "definitions": {
+    "component": {
+      "type": "object",
+      "description": "A physical electronic component (resistor, LED, IC, etc.).",
+      "required": ["element_type", "component_id", "designator", "component_type", "value", "package"],
+      "additionalProperties": false,
+      "properties": {
+        "element_type": {
+          "const": "component"
+        },
+        "component_id": {
+          "type": "string",
+          "pattern": "^comp_[a-z][a-z0-9_]*$",
+          "description": "Unique ID with 'comp_' prefix. Example: 'comp_r1'"
+        },
+        "designator": {
+          "type": "string",
+          "pattern": "^[A-Z]{1,3}[0-9]+$",
+          "description": "Standard reference designator. Example: 'R1', 'D2', 'U1'"
+        },
+        "component_type": {
+          "type": "string",
+          "enum": [
+            "resistor",
+            "capacitor",
+            "inductor",
+            "led",
+            "diode",
+            "transistor_npn",
+            "transistor_pnp",
+            "transistor_nmos",
+            "transistor_pmos",
+            "ic",
+            "connector",
+            "switch",
+            "voltage_regulator",
+            "crystal",
+            "fuse"
+          ],
+          "description": "Component type from the allowed list."
+        },
+        "value": {
+          "type": "string",
+          "description": "Component value with units embedded. Examples: '220ohm', '100nF', '10uH', 'red', 'LM7805'"
+        },
+        "package": {
+          "type": "string",
+          "description": "Component footprint/package. Examples: '0805', 'SOT-23', 'DIP-8', 'PinHeader_1x2'"
+        },
+        "description": {
+          "type": "string",
+          "description": "Human-readable description of this component's role in the circuit."
+        },
+        "properties": {
+          "type": "object",
+          "description": "Optional key-value pairs for additional specifications.",
+          "additionalProperties": {
+            "oneOf": [
+              { "type": "string" },
+              { "type": "number" },
+              { "type": "boolean" }
+            ]
+          }
+        }
+      }
+    },
+    "port": {
+      "type": "object",
+      "description": "A pin on a component. Every component must have at least one port.",
+      "required": ["element_type", "port_id", "component_id", "pin_number", "name", "electrical_type"],
+      "additionalProperties": false,
+      "properties": {
+        "element_type": {
+          "const": "port"
+        },
+        "port_id": {
+          "type": "string",
+          "pattern": "^port_[a-z][a-z0-9_]*$",
+          "description": "Unique ID with 'port_' prefix. Example: 'port_r1_1'"
+        },
+        "component_id": {
+          "type": "string",
+          "pattern": "^comp_[a-z][a-z0-9_]*$",
+          "description": "References the parent component's component_id."
+        },
+        "pin_number": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Physical pin number on the component, starting at 1."
+        },
+        "name": {
+          "type": "string",
+          "description": "Human-readable pin name. Examples: '1', '2', 'anode', 'VCC', 'GND'"
+        },
+        "electrical_type": {
+          "type": "string",
+          "enum": [
+            "power_in",
+            "power_out",
+            "signal",
+            "ground",
+            "passive",
+            "no_connect"
+          ],
+          "description": "Electrical function of this pin."
+        }
+      }
+    },
+    "net": {
+      "type": "object",
+      "description": "A named electrical connection between two or more ports.",
+      "required": ["element_type", "net_id", "name", "connected_port_ids", "net_class"],
+      "additionalProperties": false,
+      "properties": {
+        "element_type": {
+          "const": "net"
+        },
+        "net_id": {
+          "type": "string",
+          "pattern": "^net_[a-z][a-z0-9_]*$",
+          "description": "Unique ID with 'net_' prefix. Example: 'net_vcc'"
+        },
+        "name": {
+          "type": "string",
+          "description": "Human-readable net name. Examples: 'VCC', 'GND', 'R1_TO_LED'"
+        },
+        "connected_port_ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^port_[a-z][a-z0-9_]*$"
+          },
+          "minItems": 2,
+          "description": "Array of port_id values connected by this net. Minimum 2."
+        },
+        "net_class": {
+          "type": "string",
+          "enum": ["signal", "power", "ground"],
+          "description": "Classification of this net."
+        }
+      }
+    }
+  }
+}

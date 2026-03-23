@@ -1,0 +1,84 @@
+{
+  "project_name": "arduino_uno",
+  "description": "Arduino Uno-style development board: ATmega328P microcontroller with 16MHz crystal, LM7805 voltage regulator, power LED, user LED on PB5, reset button with pull-up, ICSP header, and digital/analog pin headers. Powered by barrel jack (7-12V input).",
+  "power": {
+    "voltage": "5V",
+    "source": "Barrel jack via LM7805 regulator, 7-12V input"
+  },
+  "components": [
+    { "ref": "J1", "type": "connector", "value": "barrel_jack", "package": "PJ-002A", "purpose": "DC power input (7-12V)" },
+    { "ref": "U1", "type": "voltage_regulator", "value": "LM7805", "package": "TO-220", "purpose": "5V linear regulator", "specs": { "input_min": "7V", "input_max": "35V", "output": "5V", "max_current": "1A" } },
+    { "ref": "C1", "type": "capacitor", "value": "100nF", "package": "0805", "purpose": "Input decoupling for U1", "specs": { "voltage_rating": "25V", "type": "ceramic" } },
+    { "ref": "C2", "type": "capacitor", "value": "100nF", "package": "0805", "purpose": "Output decoupling for U1", "specs": { "voltage_rating": "16V", "type": "ceramic" } },
+    { "ref": "C3", "type": "capacitor", "value": "10uF", "package": "1206", "purpose": "Bulk capacitor on 5V rail", "specs": { "voltage_rating": "16V", "type": "ceramic" } },
+    { "ref": "U2", "type": "ic", "value": "ATmega328P", "package": "DIP-28", "purpose": "Main microcontroller", "specs": { "pin_count": 28, "vcc_min": "1.8V", "vcc_max": "5.5V", "pinout": "1:PC6/RESET 2:PD0 3:PD1 4:PD2 5:PD3 6:PD4 7:VCC 8:GND 9:PB6/XTAL1 10:PB7/XTAL2 11:PD5 12:PD6 13:PD7 14:PB0 15:PB1 16:PB2 17:PB3/MOSI 18:PB4/MISO 19:PB5/SCK 20:AVCC 21:AREF 22:GND 23:PC0 24:PC1 25:PC2 26:PC3 27:PC4 28:PC5" } },
+    { "ref": "Y1", "type": "crystal", "value": "16MHz", "package": "HC49", "purpose": "Main oscillator for U2" },
+    { "ref": "C4", "type": "capacitor", "value": "22pF", "package": "0805", "purpose": "Crystal load capacitor 1", "specs": { "voltage_rating": "50V", "type": "ceramic" } },
+    { "ref": "C5", "type": "capacitor", "value": "22pF", "package": "0805", "purpose": "Crystal load capacitor 2", "specs": { "voltage_rating": "50V", "type": "ceramic" } },
+    { "ref": "C6", "type": "capacitor", "value": "100nF", "package": "0805", "purpose": "Decoupling for U2 VCC (pin 7)", "specs": { "voltage_rating": "16V", "type": "ceramic" } },
+    { "ref": "C7", "type": "capacitor", "value": "100nF", "package": "0805", "purpose": "Decoupling for U2 AVCC (pin 20)", "specs": { "voltage_rating": "16V", "type": "ceramic" } },
+    { "ref": "R1", "type": "resistor", "value": "10kohm", "package": "0805", "purpose": "Pull-up resistor for RESET line" },
+    { "ref": "R2", "type": "resistor", "value": "1kohm", "package": "0805", "purpose": "Current-limiting resistor for power LED D1" },
+    { "ref": "R3", "type": "resistor", "value": "1kohm", "package": "0805", "purpose": "Current-limiting resistor for user LED D2" },
+    { "ref": "D1", "type": "led", "value": "green", "package": "0805", "purpose": "Power indicator LED", "specs": { "vf": "3.2V", "if": "5mA", "color": "green" } },
+    { "ref": "D2", "type": "led", "value": "yellow", "package": "0805", "purpose": "User LED on PB5 (Arduino pin 13)", "specs": { "vf": "2.0V", "if": "5mA", "color": "yellow" } },
+    { "ref": "SW1", "type": "switch", "value": "pushbutton", "package": "6mm_tactile", "purpose": "Reset button" },
+    { "ref": "J2", "type": "connector", "value": "2x3_header", "package": "PinHeader_2x3", "purpose": "ICSP programming header" },
+    { "ref": "J3", "type": "connector", "value": "1x8_header", "package": "PinHeader_1x8", "purpose": "Digital pins D0-D7" },
+    { "ref": "J4", "type": "connector", "value": "1x8_header", "package": "PinHeader_1x8", "purpose": "Digital pins D8-D13 + GND + AREF" },
+    { "ref": "J5", "type": "connector", "value": "1x6_header", "package": "PinHeader_1x6", "purpose": "Analog pins A0-A5" }
+  ],
+  "connections": [
+    { "net_name": "VIN", "net_class": "power", "pins": ["J1.1", "U1.IN", "C1.1"] },
+    { "net_name": "VCC", "net_class": "power", "pins": ["U1.OUT", "C2.1", "C3.1", "U2.VCC", "U2.AVCC", "C6.1", "C7.1", "R1.1", "R2.1", "J2.2"] },
+    { "net_name": "GND", "net_class": "ground", "pins": ["J1.2", "U1.GND", "C1.2", "C2.2", "C3.2", "U2.GND", "U2.GND2", "C6.2", "C7.2", "D1.cathode", "D2.cathode", "SW1.2", "J2.6", "J4.7", "C4.2", "C5.2"] },
+    { "net_name": "RESET", "net_class": "signal", "pins": ["U2.PC6", "R1.2", "SW1.1", "J2.5"] },
+    { "net_name": "XTAL1", "net_class": "signal", "pins": ["U2.PB6", "Y1.1", "C4.1"] },
+    { "net_name": "XTAL2", "net_class": "signal", "pins": ["U2.PB7", "Y1.2", "C5.1"] },
+    { "net_name": "PWR_LED", "net_class": "signal", "pins": ["R2.2", "D1.anode"] },
+    { "net_name": "SCK_D13", "net_class": "signal", "pins": ["U2.PB5", "R3.1", "J2.3", "J4.6"] },
+    { "net_name": "R3_TO_D2", "net_class": "signal", "pins": ["R3.2", "D2.anode"] },
+    { "net_name": "MOSI_D11", "net_class": "signal", "pins": ["U2.PB3", "J2.4", "J4.4"] },
+    { "net_name": "MISO_D12", "net_class": "signal", "pins": ["U2.PB4", "J2.1", "J4.5"] },
+    { "net_name": "D0_RX", "net_class": "signal", "pins": ["U2.PD0", "J3.1"] },
+    { "net_name": "D1_TX", "net_class": "signal", "pins": ["U2.PD1", "J3.2"] },
+    { "net_name": "D2", "net_class": "signal", "pins": ["U2.PD2", "J3.3"] },
+    { "net_name": "D3", "net_class": "signal", "pins": ["U2.PD3", "J3.4"] },
+    { "net_name": "D4", "net_class": "signal", "pins": ["U2.PD4", "J3.5"] },
+    { "net_name": "D5", "net_class": "signal", "pins": ["U2.PD5", "J3.6"] },
+    { "net_name": "D6", "net_class": "signal", "pins": ["U2.PD6", "J3.7"] },
+    { "net_name": "D7", "net_class": "signal", "pins": ["U2.PD7", "J3.8"] },
+    { "net_name": "D8", "net_class": "signal", "pins": ["U2.PB0", "J4.1"] },
+    { "net_name": "D9", "net_class": "signal", "pins": ["U2.PB1", "J4.2"] },
+    { "net_name": "D10", "net_class": "signal", "pins": ["U2.PB2", "J4.3"] },
+    { "net_name": "AREF", "net_class": "signal", "pins": ["U2.AREF", "J4.8"] },
+    { "net_name": "A0", "net_class": "signal", "pins": ["U2.PC0", "J5.1"] },
+    { "net_name": "A1", "net_class": "signal", "pins": ["U2.PC1", "J5.2"] },
+    { "net_name": "A2", "net_class": "signal", "pins": ["U2.PC2", "J5.3"] },
+    { "net_name": "A3", "net_class": "signal", "pins": ["U2.PC3", "J5.4"] },
+    { "net_name": "A4", "net_class": "signal", "pins": ["U2.PC4", "J5.5"] },
+    { "net_name": "A5", "net_class": "signal", "pins": ["U2.PC5", "J5.6"] }
+  ],
+  "packages": "0805 SMD for passives, DIP-28 for MCU, TO-220 for regulator",
+  "board": {
+    "width_mm": 68.6,
+    "height_mm": 53.4,
+    "layers": 2,
+    "outline_type": "dxf"
+  },
+  "attachments": [
+    {
+      "filename": "arduino_uno_outline.dxf",
+      "type": "board_outline",
+      "purpose": "Arduino Uno board outline with USB notch and mounting holes",
+      "used_by_steps": [3]
+    }
+  ],
+  "placement_hints": [
+    { "ref": "J1", "edge": "left", "near": "U1" },
+    { "ref": "J3", "edge": "bottom" },
+    { "ref": "J4", "edge": "bottom" },
+    { "ref": "J5", "edge": "top" },
+    { "ref": "U2", "x_mm": 34, "y_mm": 27 }
+  ]
+}

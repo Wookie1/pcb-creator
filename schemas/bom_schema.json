@@ -1,0 +1,99 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "PCB-Creator Bill of Materials",
+  "description": "Bill of Materials with detailed component specifications for procurement.",
+  "type": "object",
+  "required": ["version", "project_name", "source_netlist", "bom"],
+  "additionalProperties": false,
+  "properties": {
+    "version": {
+      "const": "1.0",
+      "description": "Schema version. Must be '1.0'."
+    },
+    "project_name": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_]*$",
+      "description": "Lowercase project identifier using underscores."
+    },
+    "source_netlist": {
+      "type": "string",
+      "description": "Filename of the source netlist used to generate this BOM."
+    },
+    "bom": {
+      "type": "array",
+      "description": "Array of BOM line items, one per component.",
+      "items": {
+        "$ref": "#/definitions/bom_item"
+      },
+      "minItems": 1
+    }
+  },
+  "definitions": {
+    "bom_item": {
+      "type": "object",
+      "description": "A single BOM line item corresponding to one netlist component.",
+      "required": ["designator", "component_type", "value", "package", "quantity", "specs", "description"],
+      "additionalProperties": false,
+      "properties": {
+        "designator": {
+          "type": "string",
+          "pattern": "^[A-Z]{1,3}[0-9]+$",
+          "description": "Reference designator matching the netlist. Example: 'R1', 'D2', 'U1'"
+        },
+        "component_type": {
+          "type": "string",
+          "enum": [
+            "resistor",
+            "capacitor",
+            "inductor",
+            "led",
+            "diode",
+            "transistor_npn",
+            "transistor_pnp",
+            "transistor_nmos",
+            "transistor_pmos",
+            "ic",
+            "connector",
+            "switch",
+            "voltage_regulator",
+            "crystal",
+            "fuse"
+          ],
+          "description": "Component type matching the netlist."
+        },
+        "value": {
+          "type": "string",
+          "description": "Component value matching the netlist. Examples: '220ohm', '100nF', 'red', 'LM7805'"
+        },
+        "package": {
+          "type": "string",
+          "description": "Component package matching the netlist. Examples: '0805', 'SOT-23', 'DIP-28'"
+        },
+        "quantity": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Number of this component needed. Always 1 per designator."
+        },
+        "specs": {
+          "type": "object",
+          "description": "Type-specific procurement specifications.",
+          "additionalProperties": {
+            "oneOf": [
+              { "type": "string" },
+              { "type": "number" },
+              { "type": "boolean" }
+            ]
+          }
+        },
+        "description": {
+          "type": "string",
+          "description": "Human-readable purchase description. Example: '220Ω ±1% 0805 thick film resistor, 125mW'"
+        },
+        "notes": {
+          "type": "string",
+          "description": "Optional circuit context or selection rationale."
+        }
+      }
+    }
+  }
+}

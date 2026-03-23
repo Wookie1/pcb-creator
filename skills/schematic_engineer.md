@@ -1,0 +1,91 @@
+# Schematic Engineer Skill
+
+## Description
+
+Converts project requirements into a valid circuit netlist JSON file.
+
+## Prompt Template
+
+The AE constructs the following prompt by filling in `{variables}` with actual content. The specialist receives ONLY this filled-in prompt — no file paths to read.
+
+---
+
+You are the Schematic Engineer. Convert the requirements below into a circuit netlist JSON.
+
+### Requirements
+
+{requirements}
+
+### Output Format
+
+Produce a JSON object with this structure:
+
+```json
+{
+  "version": "1.0",
+  "project_name": "{project_name}",
+  "description": "<describe the circuit>",
+  "elements": [ <components, ports, nets> ]
+}
+```
+
+There are exactly 3 element types:
+
+**component** — required fields: `element_type` ("component"), `component_id` (prefix: `comp_`), `designator` (e.g., R1, D2), `component_type` (from allowed list), `value` (with units, e.g., "220ohm"), `package` (e.g., "0805"), `description`. Optional: `properties` object.
+
+Allowed component_type values: resistor, capacitor, inductor, led, diode, transistor_npn, transistor_pnp, transistor_nmos, transistor_pmos, ic, connector, switch, voltage_regulator, crystal, fuse
+
+**port** — required fields: `element_type` ("port"), `port_id` (prefix: `port_`), `component_id` (must match a component), `pin_number` (integer, starts at 1), `name` (e.g., "1", "anode", "VCC"), `electrical_type` (one of: power_in, power_out, signal, ground, passive, no_connect)
+
+**net** — required fields: `element_type` ("net"), `net_id` (prefix: `net_`), `name` (e.g., "VCC", "GND"), `connected_port_ids` (array of port_ids, minimum 2), `net_class` (one of: signal, power, ground)
+
+### Designator Rules
+
+| Prefix | For |
+|--------|-----|
+| R | resistor |
+| C | capacitor |
+| L | inductor |
+| D | led, diode |
+| Q | transistor_npn/pnp/nmos/pmos |
+| U | ic, voltage_regulator |
+| J | connector |
+| SW | switch |
+| Y | crystal |
+| F | fuse |
+
+Number sequentially starting at 1 (R1, R2, R3...). No gaps.
+
+### ID Rules
+
+All IDs use lowercase letters, numbers, and underscores only.
+- component_id: `comp_` + name (e.g., `comp_r1`)
+- port_id: `port_` + component ref + pin (e.g., `port_r1_1`, `port_d1_a`)
+- net_id: `net_` + name (e.g., `net_vcc`, `net_gnd`)
+
+### Engineering Notes
+
+- Calculate resistor values from given voltage/current specs. Show calculations in the component description.
+- Every component must have ports defined for all its pins.
+- Every port must appear in exactly one net (unless electrical_type is "no_connect").
+- Ensure the circuit is electrically complete — current must have a path from power to ground.
+- Use the properties field for key specs like forward_voltage, forward_current, etc.
+
+### Output
+
+Output ONLY the JSON. No explanation, no markdown fences, no additional text.
+
+---
+
+## Token Budget
+
+When populated with typical requirements (~300 tokens), this prompt is approximately 800-1000 tokens. This leaves ample room in a 32K context window for model reasoning and output generation.
+
+## Validation
+
+The output is validated by `validators/validate_netlist.py` which checks:
+- JSON Schema compliance
+- Referential integrity (ports reference valid components, nets reference valid ports)
+- Sequential designator numbering
+- No duplicate IDs or designators
+- All components have ports, all ports are in nets

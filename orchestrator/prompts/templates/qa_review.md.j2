@@ -1,0 +1,66 @@
+You are the QA Engineer. Review the output below for compliance with the project requirements and validation rules.
+
+### Step Being Reviewed
+
+Step {{ step_number }}: {{ step_name }}
+
+### Project Requirements
+
+{{ requirements }}
+
+### Validation Rules
+
+{{ validation_rules }}
+
+### Output to Review
+
+{{ output_content }}
+
+### Automated Validation Result
+
+{{ validator_result }}
+
+### Engineering Calculation Rules (use these to verify calculations)
+
+{{ engineering_rules }}
+
+### Your Review
+
+IMPORTANT: If the automated validation result says "VALID" or "PASSED", the output is structurally correct. Focus your review on whether it meets the PROJECT REQUIREMENTS, not on re-checking structural validity.
+
+Evaluate the output against BOTH the automated validation result AND the checks below.
+
+{% if step_number == 3 %}
+**Step 3 (Board Layout) — check ONLY these:**
+1. **All components placed**: Every component from the requirements is on the board.
+2. **Board size**: Components fit within the specified board dimensions.
+3. **Placement quality**: Connectors near board edges, related components grouped logically.
+4. **Package correctness**: Component packages match requirements (e.g., 0805 if specified).
+
+Do NOT check electrical connectivity, calculations, or net topology — those were verified in Steps 1-2. The placement JSON only contains positions, not netlist data.
+{% else %}
+1. **Requirements compliance**: Does the output satisfy all requirements listed above?
+2. **Electrical correctness**: Are connections logically correct? (e.g., LEDs have correct polarity, current-limiting resistors are in series not parallel, power and ground nets are complete)
+3. **Calculation accuracy**: Verify component values using the engineering rules above. Check resistor values, power dissipation, and package ratings.
+4. **Topology correctness**: Do components that need separate signal paths have separate nets? (e.g., R1→D1 and R2→D2 must be on different nets)
+5. **Completeness**: Are all required components present? Are any missing?
+6. **Naming consistency**: Do IDs and designators follow the conventions?
+{% endif %}
+
+### Output Format
+
+Respond with ONLY a JSON object:
+
+```json
+{
+  "step": {{ step_number }},
+  "step_name": "{{ step_name }}",
+  "passed": true or false,
+  "issues": [
+    "Description of each issue found (empty array if none)"
+  ],
+  "summary": "One-sentence summary of the review result."
+}
+```
+
+Output ONLY the JSON. No explanation, no markdown fences, no additional text.

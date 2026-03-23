@@ -1,0 +1,17 @@
+[project]
+name = "pcb-creator"
+version = "0.1.0"
+description = "AI-driven PCB design: natural language to manufacturer-ready files"
+requires-python = ">=3.11"
+dependencies = [
+    "litellm>=1.0",
+    "jinja2>=3.1",
+    "jsonschema>=4.0",
+    "gerber-writer>=0.4",
+]
+
+[project.optional-dependencies]
+dxf = ["ezdxf>=1.0"]
+
+[project.scripts]
+pcb-creator = "orchestrator.cli:main"

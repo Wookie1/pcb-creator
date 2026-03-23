@@ -1,0 +1,25 @@
+{
+  "project_name": "attiny_pot_led",
+  "description": "ATtiny85 reads a potentiometer on ADC input and controls an LED brightness via PWM output. Powered by 5V via a 2-pin header. 100nF decoupling cap on VCC.",
+  "power": {
+    "voltage": "5V",
+    "source": "2-pin header connector"
+  },
+  "components": [
+    { "ref": "J1", "type": "connector", "value": "2-pin", "package": "PinHeader_1x2", "purpose": "5V DC power input" },
+    { "ref": "U1", "type": "ic", "value": "ATtiny85", "package": "DIP-8", "purpose": "Microcontroller: reads pot on PB3/ADC3, outputs PWM on PB0", "specs": { "pin_count": 8, "vcc_min": "2.7V", "vcc_max": "5.5V" } },
+    { "ref": "C1", "type": "capacitor", "value": "100nF", "package": "0805", "purpose": "Decoupling capacitor for U1 VCC", "specs": { "voltage_rating": "16V", "type": "ceramic" } },
+    { "ref": "R1", "type": "resistor", "value": "10kohm", "package": "0805", "purpose": "Potentiometer (voltage divider)", "specs": {} },
+    { "ref": "R2", "type": "resistor", "value": "150ohm", "package": "0805", "purpose": "Current-limiting resistor for D1", "specs": { "power": "60mW" } },
+    { "ref": "D1", "type": "led", "value": "red", "package": "0805", "purpose": "PWM-controlled indicator LED", "specs": { "vf": "2.0V", "if": "20mA", "color": "red" } }
+  ],
+  "connections": [
+    { "net_name": "VCC", "net_class": "power", "pins": ["J1.1", "U1.VCC", "C1.1", "R1.1"] },
+    { "net_name": "GND", "net_class": "ground", "pins": ["J1.2", "U1.GND", "C1.2"] },
+    { "net_name": "POT_WIPER", "net_class": "signal", "pins": ["R1.2", "U1.PB3"] },
+    { "net_name": "PWM_OUT", "net_class": "signal", "pins": ["U1.PB0", "R2.1"] },
+    { "net_name": "R2_TO_D1", "net_class": "signal", "pins": ["R2.2", "D1.anode"] },
+    { "net_name": "LED_GND", "net_class": "ground", "pins": ["D1.cathode", "J1.2"] }
+  ],
+  "packages": "0805 SMD for passives, DIP-8 for IC"
+}

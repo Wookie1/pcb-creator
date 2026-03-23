@@ -1,0 +1,34 @@
+{
+  "project_name": "switch_led",
+  "description": "A green LED controlled by a pushbutton switch, with a pull-down resistor on the switch, powered by 3.3V via a 2-pin header",
+  "power": {
+    "voltage": "3.3V",
+    "source": "2-pin header connector"
+  },
+  "components": [
+    { "ref": "J1", "type": "connector", "value": "2-pin", "package": "PinHeader_1x2", "purpose": "3.3V DC power input" },
+    { "ref": "SW1", "type": "switch", "value": "pushbutton", "package": "6mm_tactile", "purpose": "Momentary pushbutton to control LED" },
+    { "ref": "R1", "type": "resistor", "value": "10kohm", "package": "0805", "purpose": "Pull-down resistor for switch" },
+    { "ref": "R2", "type": "resistor", "value": "5ohm", "package": "0805", "purpose": "Current-limiting resistor for D1", "specs": { "power": "2mW" } },
+    { "ref": "D1", "type": "led", "value": "green", "package": "0805", "purpose": "Status indicator LED", "specs": { "vf": "3.2V", "if": "20mA", "color": "green" } }
+  ],
+  "connections": [
+    { "net_name": "VCC", "net_class": "power", "pins": ["J1.1", "SW1.1"] },
+    { "net_name": "SW_OUT", "net_class": "signal", "pins": ["SW1.2", "R1.1", "R2.1"] },
+    { "net_name": "R2_TO_D1", "net_class": "signal", "pins": ["R2.2", "D1.anode"] },
+    { "net_name": "GND", "net_class": "ground", "pins": ["R1.2", "D1.cathode", "J1.2"] }
+  ],
+  "packages": "0805 SMD",
+  "calculations": {
+    "R2": { "formula": "(3.3V - 3.2V) / 20mA", "value": "5ohm", "power": "2mW", "package_ok": true }
+  },
+  "board": {
+    "width_mm": 25,
+    "height_mm": 20,
+    "layers": 2,
+    "outline_type": "rectangle"
+  },
+  "placement_hints": [
+    { "ref": "J1", "edge": "left" }
+  ]
+}

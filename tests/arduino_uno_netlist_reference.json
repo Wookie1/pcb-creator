@@ -1,0 +1,1260 @@
+{
+  "version": "1.0",
+  "project_name": "arduino_uno",
+  "description": "Arduino Uno-style development board: ATmega328P microcontroller with 16MHz crystal, LM7805 voltage regulator, power LED, user LED on PB5, reset button with pull-up, ICSP header, and digital/analog pin headers. Powered by barrel jack (7-12V input).",
+  "elements": [
+    {
+      "element_type": "component",
+      "component_id": "comp_j1",
+      "designator": "J1",
+      "component_type": "connector",
+      "value": "barrel_jack",
+      "package": "PJ-002A",
+      "description": "DC power input (7-12V)"
+    },
+    {
+      "element_type": "component",
+      "component_id": "comp_u1",
+      "designator": "U1",
+      "component_type": "voltage_regulator",
+      "value": "LM7805",
+      "package": "TO-220",
+      "description": "5V linear regulator",
+      "properties": {
+        "input_min": "7V",
+        "input_max": "35V",
+        "output": "5V",
+        "max_current": "1A"
+      }
+    },
+    {
+      "element_type": "component",
+      "component_id": "comp_c1",
+      "designator": "C1",
+      "component_type": "capacitor",
+      "value": "100nF",
+      "package": "0805",
+      "description": "Input decoupling for U1",
+      "properties": {
+        "voltage_rating": "25V",
+        "type": "ceramic"
+      }
+    },
+    {
+      "element_type": "component",
+      "component_id": "comp_c2",
+      "designator": "C2",
+      "component_type": "capacitor",
+      "value": "100nF",
+      "package": "0805",
+      "description": "Output decoupling for U1",
+      "properties": {
+        "voltage_rating": "16V",
+        "type": "ceramic"
+      }
+    },
+    {
+      "element_type": "component",
+      "component_id": "comp_c3",
+      "designator": "C3",
+      "component_type": "capacitor",
+      "value": "10uF",
+      "package": "1206",
+      "description": "Bulk capacitor on 5V rail",
+      "properties": {
+        "voltage_rating": "16V",
+        "type": "ceramic"
+      }
+    },
+    {
+      "element_type": "component",
+      "component_id": "comp_u2",
+      "designator": "U2",
+      "component_type": "ic",
+      "value": "ATmega328P",
+      "package": "DIP-28",
+      "description": "Main microcontroller",
+      "properties": {
+        "pin_count": 28,
+        "vcc_min": "1.8V",
+        "vcc_max": "5.5V"
+      }
+    },
+    {
+      "element_type": "component",
+      "component_id": "comp_y1",
+      "designator": "Y1",
+      "component_type": "crystal",
+      "value": "16MHz",
+      "package": "HC49",
+      "description": "Main oscillator for U2"
+    },
+    {
+      "element_type": "component",
+      "component_id": "comp_c4",
+      "designator": "C4",
+      "component_type": "capacitor",
+      "value": "22pF",
+      "package": "0805",
+      "description": "Crystal load capacitor 1",
+      "properties": {
+        "voltage_rating": "50V",
+        "type": "ceramic"
+      }
+    },
+    {
+      "element_type": "component",
+      "component_id": "comp_c5",
+      "designator": "C5",
+      "component_type": "capacitor",
+      "value": "22pF",
+      "package": "0805",
+      "description": "Crystal load capacitor 2",
+      "properties": {
+        "voltage_rating": "50V",
+        "type": "ceramic"
+      }
+    },
+    {
+      "element_type": "component",
+      "component_id": "comp_c6",
+      "designator": "C6",
+      "component_type": "capacitor",
+      "value": "100nF",
+      "package": "0805",
+      "description": "Decoupling for U2 VCC (pin 7)",
+      "properties": {
+        "voltage_rating": "16V",
+        "type": "ceramic"
+      }
+    },
+    {
+      "element_type": "component",
+      "component_id": "comp_c7",
+      "designator": "C7",
+      "component_type": "capacitor",
+      "value": "100nF",
+      "package": "0805",
+      "description": "Decoupling for U2 AVCC (pin 20)",
+      "properties": {
+        "voltage_rating": "16V",
+        "type": "ceramic"
+      }
+    },
+    {
+      "element_type": "component",
+      "component_id": "comp_r1",
+      "designator": "R1",
+      "component_type": "resistor",
+      "value": "10kohm",
+      "package": "0805",
+      "description": "Pull-up resistor for RESET line"
+    },
+    {
+      "element_type": "component",
+      "component_id": "comp_r2",
+      "designator": "R2",
+      "component_type": "resistor",
+      "value": "1kohm",
+      "package": "0805",
+      "description": "Current-limiting resistor for power LED D1"
+    },
+    {
+      "element_type": "component",
+      "component_id": "comp_r3",
+      "designator": "R3",
+      "component_type": "resistor",
+      "value": "1kohm",
+      "package": "0805",
+      "description": "Current-limiting resistor for user LED D2"
+    },
+    {
+      "element_type": "component",
+      "component_id": "comp_d1",
+      "designator": "D1",
+      "component_type": "led",
+      "value": "green",
+      "package": "0805",
+      "description": "Power indicator LED",
+      "properties": {
+        "vf": "3.2V",
+        "if": "5mA",
+        "color": "green"
+      }
+    },
+    {
+      "element_type": "component",
+      "component_id": "comp_d2",
+      "designator": "D2",
+      "component_type": "led",
+      "value": "yellow",
+      "package": "0805",
+      "description": "User LED on PB5 (Arduino pin 13)",
+      "properties": {
+        "vf": "2.0V",
+        "if": "5mA",
+        "color": "yellow"
+      }
+    },
+    {
+      "element_type": "component",
+      "component_id": "comp_sw1",
+      "designator": "SW1",
+      "component_type": "switch",
+      "value": "pushbutton",
+      "package": "6mm_tactile",
+      "description": "Reset button"
+    },
+    {
+      "element_type": "component",
+      "component_id": "comp_j2",
+      "designator": "J2",
+      "component_type": "connector",
+      "value": "2x3_header",
+      "package": "PinHeader_2x3",
+      "description": "ICSP programming header"
+    },
+    {
+      "element_type": "component",
+      "component_id": "comp_j3",
+      "designator": "J3",
+      "component_type": "connector",
+      "value": "1x8_header",
+      "package": "PinHeader_1x8",
+      "description": "Digital pins D0-D7"
+    },
+    {
+      "element_type": "component",
+      "component_id": "comp_j4",
+      "designator": "J4",
+      "component_type": "connector",
+      "value": "1x8_header",
+      "package": "PinHeader_1x8",
+      "description": "Digital pins D8-D13 + GND + AREF"
+    },
+    {
+      "element_type": "component",
+      "component_id": "comp_j5",
+      "designator": "J5",
+      "component_type": "connector",
+      "value": "1x6_header",
+      "package": "PinHeader_1x6",
+      "description": "Analog pins A0-A5"
+    },
+    {
+      "element_type": "port",
+      "port_id": "port_j1_1",
+      "component_id": "comp_j1",
+      "pin_number": 1,
+      "name": "center_positive",
+      "electrical_type": "power_in"
+    },
+    {
+      "element_type": "port",
+      "port_id": "port_j1_2",
+      "component_id": "comp_j1",
+      "pin_number": 2,
+      "name": "ground",
+      "electrical_type": "ground"
+    },
+    {
+      "element_type": "port",
+      "port_id": "port_u1_1",
+      "component_id": "comp_u1",
+      "pin_number": 1,
+      "name": "IN",
+      "electrical_type": "power_in"
+    },
+    {
+      "element_type": "port",
+      "port_id": "port_u1_2",
+      "component_id": "comp_u1",
+      "pin_number": 2,
+      "name": "GND",
+      "electrical_type": "ground"
+    },
+    {
+      "element_type": "port",
+      "port_id": "port_u1_3",
+      "component_id": "comp_u1",
+      "pin_number": 3,
+      "name": "OUT",
+      "electrical_type": "power_out"
+    },
+    {
+      "element_type": "port",
+      "port_id": "port_c1_1",
+      "component_id": "comp_c1",
+      "pin_number": 1,
+      "name": "1",
+      "electrical_type": "passive"
+    },
+    {
+      "element_type": "port",
+      "port_id": "port_c1_2",
+      "component_id": "comp_c1",
+      "pin_number": 2,
+      "name": "2",
+      "electrical_type": "passive"
+    },
+    {
+      "element_type": "port",
+      "port_id": "port_c2_1",
+      "component_id": "comp_c2",
+      "pin_number": 1,
+      "name": "1",
+      "electrical_type": "passive"
+    },
+    {
+      "element_type": "port",
+      "port_id": "port_c2_2",
+      "component_id": "comp_c2",
+      "pin_number": 2,
+      "name": "2",
+      "electrical_type": "passive"
+    },
+    {
+      "element_type": "port",
+      "port_id": "port_c3_1",
+      "component_id": "comp_c3",
+      "pin_number": 1,
+      "name": "1",
+      "electrical_type": "passive"
+    },
+    {
+      "element_type": "port",
+      "port_id": "port_c3_2",
+      "component_id": "comp_c3",
+      "pin_number": 2,
+      "name": "2",
+      "electrical_type": "passive"
+    },
+    {
+      "element_type": "port",
+      "port_id": "port_u2_1",
+      "component_id": "comp_u2",
+      "pin_number": 1,
+      "name": "PC6",
+      "electrical_type": "signal"
+    },
+    {
+      "element_type": "port",
+      "port_id": "port_u2_2",
+      "component_id": "comp_u2",
+      "pin_number": 2,
+      "name": "PD0",
+      "electrical_type": "signal"
+    },
+    {
+      "element_type": "port",
+      "port_id": "port_u2_3",
+      "component_id": "comp_u2",
+      "pin_number": 3,
+      "name": "PD1",
+      "electrical_type": "signal"
+    },
+    {
+      "element_type": "port",
+      "port_id": "port_u2_4",
+      "component_id": "comp_u2",
+      "pin_number": 4,
+      "name": "PD2",
+      "electrical_type": "signal"
+    },
+    {
+      "element_type": "port",
+      "port_id": "port_u2_5",
+      "component_id": "comp_u2",
+      "pin_number": 5,
+      "name": "PD3",
+      "electrical_type": "signal"
+    },
+    {
+      "element_type": "port",
+      "port_id": "port_u2_6",
+      "component_id": "comp_u2",
+      "pin_number": 6,
+      "name": "PD4",
+      "electrical_type": "signal"
+    },
+    {
+      "element_type": "port",
+      "port_id": "port_u2_7",
+      "component_id": "comp_u2",
+      "pin_number": 7,
+      "name": "VCC",
+      "electrical_type": "power_in"
+    },
+    {
+      "element_type": "port",
+      "port_id": "port_u2_8",
+      "component_id": "comp_u2",
+      "pin_number": 8,
+      "name": "GND",
+      "electrical_type": "ground"
+    },
+    {
+      "element_type": "port",
+      "port_id": "port_u2_9",
+      "component_id": "comp_u2",
+      "pin_number": 9,
+      "name": "PB6",
+      "electrical_type": "signal"
+    },
+    {
+      "element_type": "port",
+      "port_id": "port_u2_10",
+      "component_id": "comp_u2",
+      "pin_number": 10,
+      "name": "PB7",
+      "electrical_type": "signal"
+    },
+    {
+      "element_type": "port",
+      "port_id": "port_u2_11",
+      "component_id": "comp_u2",
+      "pin_number": 11,
+      "name": "PD5",
+      "electrical_type": "signal"
+    },
+    {
+      "element_type": "port",
+      "port_id": "port_u2_12",
+      "component_id": "comp_u2",
+      "pin_number": 12,
+      "name": "PD6",
+      "electrical_type": "signal"
+    },
+    {
+      "element_type": "port",
+      "port_id": "port_u2_13",
+      "component_id": "comp_u2",
+      "pin_number": 13,
+      "name": "PD7",
+      "electrical_type": "signal"
+    },
+    {
+      "element_type": "port",
+      "port_id": "port_u2_14",
+      "component_id": "comp_u2",
+      "pin_number": 14,
+      "name": "PB0",
+      "electrical_type": "signal"
+    },
+    {
+      "element_type": "port",
+      "port_id": "port_u2_15",
+      "component_id": "comp_u2",
+      "pin_number": 15,
+      "name": "PB1",
+      "electrical_type": "signal"
+    },
+    {
+      "element_type": "port",
+      "port_id": "port_u2_16",
+      "component_id": "comp_u2",
+      "pin_number": 16,
+      "name": "PB2",
+      "electrical_type": "signal"
+    },
+    {
+      "element_type": "port",
+      "port_id": "port_u2_17",
+      "component_id": "comp_u2",
+      "pin_number": 17,
+      "name": "PB3",
+      "electrical_type": "signal"
+    },
+    {
+      "element_type": "port",
+      "port_id": "port_u2_18",
+      "component_id": "comp_u2",
+      "pin_number": 18,
+      "name": "PB4",
+      "electrical_type": "signal"
+    },
+    {
+      "element_type": "port",
+      "port_id": "port_u2_19",
+      "component_id": "comp_u2",
+      "pin_number": 19,
+      "name": "PB5",
+      "electrical_type": "signal"
+    },
+    {
+      "element_type": "port",
+      "port_id": "port_u2_20",
+      "component_id": "comp_u2",
+      "pin_number": 20,
+      "name": "AVCC",
+      "electrical_type": "power_in"
+    },
+    {
+      "element_type": "port",
+      "port_id": "port_u2_21",
+      "component_id": "comp_u2",
+      "pin_number": 21,
+      "name": "AREF",
+      "electrical_type": "signal"
+    },
+    {
+      "element_type": "port",
+      "port_id": "port_u2_22",
+      "component_id": "comp_u2",
+      "pin_number": 22,
+      "name": "GND",
+      "electrical_type": "ground"
+    },
+    {
+      "element_type": "port",
+      "port_id": "port_u2_23",
+      "component_id": "comp_u2",
+      "pin_number": 23,
+      "name": "PC0",
+      "electrical_type": "signal"
+    },
+    {
+      "element_type": "port",
+      "port_id": "port_u2_24",
+      "component_id": "comp_u2",
+      "pin_number": 24,
+      "name": "PC1",
+      "electrical_type": "signal"
+    },
+    {
+      "element_type": "port",
+      "port_id": "port_u2_25",
+      "component_id": "comp_u2",
+      "pin_number": 25,
+      "name": "PC2",
+      "electrical_type": "signal"
+    },
+    {
+      "element_type": "port",
+      "port_id": "port_u2_26",
+      "component_id": "comp_u2",
+      "pin_number": 26,
+      "name": "PC3",
+      "electrical_type": "signal"
+    },
+    {
+      "element_type": "port",
+      "port_id": "port_u2_27",
+      "component_id": "comp_u2",
+      "pin_number": 27,
+      "name": "PC4",
+      "electrical_type": "no_connect"
+    },
+    {
+      "element_type": "port",
+      "port_id": "port_u2_28",
+      "component_id": "comp_u2",
+      "pin_number": 28,
+      "name": "PC5",
+      "electrical_type": "no_connect"
+    },
+    {
+      "element_type": "port",
+      "port_id": "port_y1_1",
+      "component_id": "comp_y1",
+      "pin_number": 1,
+      "name": "1",
+      "electrical_type": "passive"
+    },
+    {
+      "element_type": "port",
+      "port_id": "port_y1_2",
+      "component_id": "comp_y1",
+      "pin_number": 2,
+      "name": "2",
+      "electrical_type": "passive"
+    },
+    {
+      "element_type": "port",
+      "port_id": "port_c4_1",
+      "component_id": "comp_c4",
+      "pin_number": 1,
+      "name": "1",
+      "electrical_type": "passive"
+    },
+    {
+      "element_type": "port",
+      "port_id": "port_c4_2",
+      "component_id": "comp_c4",
+      "pin_number": 2,
+      "name": "2",
+      "electrical_type": "passive"
+    },
+    {
+      "element_type": "port",
+      "port_id": "port_c5_1",
+      "component_id": "comp_c5",
+      "pin_number": 1,
+      "name": "1",
+      "electrical_type": "passive"
+    },
+    {
+      "element_type": "port",
+      "port_id": "port_c5_2",
+      "component_id": "comp_c5",
+      "pin_number": 2,
+      "name": "2",
+      "electrical_type": "passive"
+    },
+    {
+      "element_type": "port",
+      "port_id": "port_c6_1",
+      "component_id": "comp_c6",
+      "pin_number": 1,
+      "name": "1",
+      "electrical_type": "passive"
+    },
+    {
+      "element_type": "port",
+      "port_id": "port_c6_2",
+      "component_id": "comp_c6",
+      "pin_number": 2,
+      "name": "2",
+      "electrical_type": "passive"
+    },
+    {
+      "element_type": "port",
+      "port_id": "port_c7_1",
+      "component_id": "comp_c7",
+      "pin_number": 1,
+      "name": "1",
+      "electrical_type": "passive"
+    },
+    {
+      "element_type": "port",
+      "port_id": "port_c7_2",
+      "component_id": "comp_c7",
+      "pin_number": 2,
+      "name": "2",
+      "electrical_type": "passive"
+    },
+    {
+      "element_type": "port",
+      "port_id": "port_r1_1",
+      "component_id": "comp_r1",
+      "pin_number": 1,
+      "name": "1",
+      "electrical_type": "passive"
+    },
+    {
+      "element_type": "port",
+      "port_id": "port_r1_2",
+      "component_id": "comp_r1",
+      "pin_number": 2,
+      "name": "2",
+      "electrical_type": "passive"
+    },
+    {
+      "element_type": "port",
+      "port_id": "port_r2_1",
+      "component_id": "comp_r2",
+      "pin_number": 1,
+      "name": "1",
+      "electrical_type": "passive"
+    },
+    {
+      "element_type": "port",
+      "port_id": "port_r2_2",
+      "component_id": "comp_r2",
+      "pin_number": 2,
+      "name": "2",
+      "electrical_type": "passive"
+    },
+    {
+      "element_type": "port",
+      "port_id": "port_r3_1",
+      "component_id": "comp_r3",
+      "pin_number": 1,
+      "name": "1",
+      "electrical_type": "passive"
+    },
+    {
+      "element_type": "port",
+      "port_id": "port_r3_2",
+      "component_id": "comp_r3",
+      "pin_number": 2,
+      "name": "2",
+      "electrical_type": "passive"
+    },
+    {
+      "element_type": "port",
+      "port_id": "port_d1_1",
+      "component_id": "comp_d1",
+      "pin_number": 1,
+      "name": "anode",
+      "electrical_type": "passive"
+    },
+    {
+      "element_type": "port",
+      "port_id": "port_d1_2",
+      "component_id": "comp_d1",
+      "pin_number": 2,
+      "name": "cathode",
+      "electrical_type": "passive"
+    },
+    {
+      "element_type": "port",
+      "port_id": "port_d2_1",
+      "component_id": "comp_d2",
+      "pin_number": 1,
+      "name": "anode",
+      "electrical_type": "passive"
+    },
+    {
+      "element_type": "port",
+      "port_id": "port_d2_2",
+      "component_id": "comp_d2",
+      "pin_number": 2,
+      "name": "cathode",
+      "electrical_type": "passive"
+    },
+    {
+      "element_type": "port",
+      "port_id": "port_sw1_1",
+      "component_id": "comp_sw1",
+      "pin_number": 1,
+      "name": "1",
+      "electrical_type": "passive"
+    },
+    {
+      "element_type": "port",
+      "port_id": "port_sw1_2",
+      "component_id": "comp_sw1",
+      "pin_number": 2,
+      "name": "2",
+      "electrical_type": "passive"
+    },
+    {
+      "element_type": "port",
+      "port_id": "port_j2_1",
+      "component_id": "comp_j2",
+      "pin_number": 1,
+      "name": "MISO",
+      "electrical_type": "signal"
+    },
+    {
+      "element_type": "port",
+      "port_id": "port_j2_2",
+      "component_id": "comp_j2",
+      "pin_number": 2,
+      "name": "VCC",
+      "electrical_type": "power_in"
+    },
+    {
+      "element_type": "port",
+      "port_id": "port_j2_3",
+      "component_id": "comp_j2",
+      "pin_number": 3,
+      "name": "SCK",
+      "electrical_type": "signal"
+    },
+    {
+      "element_type": "port",
+      "port_id": "port_j2_4",
+      "component_id": "comp_j2",
+      "pin_number": 4,
+      "name": "MOSI",
+      "electrical_type": "signal"
+    },
+    {
+      "element_type": "port",
+      "port_id": "port_j2_5",
+      "component_id": "comp_j2",
+      "pin_number": 5,
+      "name": "RESET",
+      "electrical_type": "signal"
+    },
+    {
+      "element_type": "port",
+      "port_id": "port_j2_6",
+      "component_id": "comp_j2",
+      "pin_number": 6,
+      "name": "GND",
+      "electrical_type": "ground"
+    },
+    {
+      "element_type": "port",
+      "port_id": "port_j3_1",
+      "component_id": "comp_j3",
+      "pin_number": 1,
+      "name": "D0",
+      "electrical_type": "signal"
+    },
+    {
+      "element_type": "port",
+      "port_id": "port_j3_2",
+      "component_id": "comp_j3",
+      "pin_number": 2,
+      "name": "D1",
+      "electrical_type": "signal"
+    },
+    {
+      "element_type": "port",
+      "port_id": "port_j3_3",
+      "component_id": "comp_j3",
+      "pin_number": 3,
+      "name": "D2",
+      "electrical_type": "signal"
+    },
+    {
+      "element_type": "port",
+      "port_id": "port_j3_4",
+      "component_id": "comp_j3",
+      "pin_number": 4,
+      "name": "D3",
+      "electrical_type": "signal"
+    },
+    {
+      "element_type": "port",
+      "port_id": "port_j3_5",
+      "component_id": "comp_j3",
+      "pin_number": 5,
+      "name": "D4",
+      "electrical_type": "signal"
+    },
+    {
+      "element_type": "port",
+      "port_id": "port_j3_6",
+      "component_id": "comp_j3",
+      "pin_number": 6,
+      "name": "D5",
+      "electrical_type": "signal"
+    },
+    {
+      "element_type": "port",
+      "port_id": "port_j3_7",
+      "component_id": "comp_j3",
+      "pin_number": 7,
+      "name": "D6",
+      "electrical_type": "signal"
+    },
+    {
+      "element_type": "port",
+      "port_id": "port_j3_8",
+      "component_id": "comp_j3",
+      "pin_number": 8,
+      "name": "GND",
+      "electrical_type": "ground"
+    },
+    {
+      "element_type": "port",
+      "port_id": "port_j4_1",
+      "component_id": "comp_j4",
+      "pin_number": 1,
+      "name": "D7",
+      "electrical_type": "signal"
+    },
+    {
+      "element_type": "port",
+      "port_id": "port_j4_2",
+      "component_id": "comp_j4",
+      "pin_number": 2,
+      "name": "D8",
+      "electrical_type": "signal"
+    },
+    {
+      "element_type": "port",
+      "port_id": "port_j4_3",
+      "component_id": "comp_j4",
+      "pin_number": 3,
+      "name": "D9",
+      "electrical_type": "signal"
+    },
+    {
+      "element_type": "port",
+      "port_id": "port_j4_4",
+      "component_id": "comp_j4",
+      "pin_number": 4,
+      "name": "D10",
+      "electrical_type": "signal"
+    },
+    {
+      "element_type": "port",
+      "port_id": "port_j4_5",
+      "component_id": "comp_j4",
+      "pin_number": 5,
+      "name": "D11",
+      "electrical_type": "signal"
+    },
+    {
+      "element_type": "port",
+      "port_id": "port_j4_6",
+      "component_id": "comp_j4",
+      "pin_number": 6,
+      "name": "D12",
+      "electrical_type": "signal"
+    },
+    {
+      "element_type": "port",
+      "port_id": "port_j4_7",
+      "component_id": "comp_j4",
+      "pin_number": 7,
+      "name": "VCC",
+      "electrical_type": "power_in"
+    },
+    {
+      "element_type": "port",
+      "port_id": "port_j4_8",
+      "component_id": "comp_j4",
+      "pin_number": 8,
+      "name": "GND",
+      "electrical_type": "ground"
+    },
+    {
+      "element_type": "port",
+      "port_id": "port_j5_1",
+      "component_id": "comp_j5",
+      "pin_number": 1,
+      "name": "AREF",
+      "electrical_type": "signal"
+    },
+    {
+      "element_type": "port",
+      "port_id": "port_j5_2",
+      "component_id": "comp_j5",
+      "pin_number": 2,
+      "name": "A0",
+      "electrical_type": "signal"
+    },
+    {
+      "element_type": "port",
+      "port_id": "port_j5_3",
+      "component_id": "comp_j5",
+      "pin_number": 3,
+      "name": "A1",
+      "electrical_type": "signal"
+    },
+    {
+      "element_type": "port",
+      "port_id": "port_j5_4",
+      "component_id": "comp_j5",
+      "pin_number": 4,
+      "name": "A2",
+      "electrical_type": "signal"
+    },
+    {
+      "element_type": "port",
+      "port_id": "port_j5_5",
+      "component_id": "comp_j5",
+      "pin_number": 5,
+      "name": "A3",
+      "electrical_type": "signal"
+    },
+    {
+      "element_type": "port",
+      "port_id": "port_j5_6",
+      "component_id": "comp_j5",
+      "pin_number": 6,
+      "name": "GND",
+      "electrical_type": "ground"
+    },
+    {
+      "element_type": "net",
+      "net_id": "net_vin",
+      "name": "VIN",
+      "connected_port_ids": [
+        "port_j1_1",
+        "port_u1_1",
+        "port_c1_1"
+      ],
+      "net_class": "power"
+    },
+    {
+      "element_type": "net",
+      "net_id": "net_vcc",
+      "name": "VCC",
+      "connected_port_ids": [
+        "port_u1_3",
+        "port_c2_1",
+        "port_c3_1",
+        "port_u2_7",
+        "port_u2_20",
+        "port_c6_1",
+        "port_c7_1",
+        "port_r1_1",
+        "port_r2_1",
+        "port_j2_2",
+        "port_j4_7"
+      ],
+      "net_class": "power"
+    },
+    {
+      "element_type": "net",
+      "net_id": "net_gnd",
+      "name": "GND",
+      "connected_port_ids": [
+        "port_j1_2",
+        "port_u1_2",
+        "port_c1_2",
+        "port_c2_2",
+        "port_c3_2",
+        "port_u2_8",
+        "port_u2_22",
+        "port_c6_2",
+        "port_c7_2",
+        "port_d1_2",
+        "port_d2_2",
+        "port_sw1_2",
+        "port_j2_6",
+        "port_j3_8",
+        "port_j4_8",
+        "port_j5_6",
+        "port_c4_2",
+        "port_c5_2"
+      ],
+      "net_class": "ground"
+    },
+    {
+      "element_type": "net",
+      "net_id": "net_reset",
+      "name": "RESET",
+      "connected_port_ids": [
+        "port_u2_1",
+        "port_r1_2",
+        "port_sw1_1",
+        "port_j2_5"
+      ],
+      "net_class": "signal"
+    },
+    {
+      "element_type": "net",
+      "net_id": "net_xtal1",
+      "name": "XTAL1",
+      "connected_port_ids": [
+        "port_u2_9",
+        "port_y1_1",
+        "port_c4_1"
+      ],
+      "net_class": "signal"
+    },
+    {
+      "element_type": "net",
+      "net_id": "net_xtal2",
+      "name": "XTAL2",
+      "connected_port_ids": [
+        "port_u2_10",
+        "port_y1_2",
+        "port_c5_1"
+      ],
+      "net_class": "signal"
+    },
+    {
+      "element_type": "net",
+      "net_id": "net_pwr_led",
+      "name": "PWR_LED",
+      "connected_port_ids": [
+        "port_r2_2",
+        "port_d1_1"
+      ],
+      "net_class": "signal"
+    },
+    {
+      "element_type": "net",
+      "net_id": "net_pb5_sck",
+      "name": "PB5_SCK",
+      "connected_port_ids": [
+        "port_u2_19",
+        "port_r3_1",
+        "port_j2_3"
+      ],
+      "net_class": "signal"
+    },
+    {
+      "element_type": "net",
+      "net_id": "net_r3_to_d2",
+      "name": "R3_TO_D2",
+      "connected_port_ids": [
+        "port_r3_2",
+        "port_d2_1"
+      ],
+      "net_class": "signal"
+    },
+    {
+      "element_type": "net",
+      "net_id": "net_pb3_mosi",
+      "name": "PB3_MOSI",
+      "connected_port_ids": [
+        "port_u2_17",
+        "port_j2_4",
+        "port_j4_5"
+      ],
+      "net_class": "signal"
+    },
+    {
+      "element_type": "net",
+      "net_id": "net_pb4_miso",
+      "name": "PB4_MISO",
+      "connected_port_ids": [
+        "port_u2_18",
+        "port_j2_1",
+        "port_j4_6"
+      ],
+      "net_class": "signal"
+    },
+    {
+      "element_type": "net",
+      "net_id": "net_d0_rx",
+      "name": "D0_RX",
+      "connected_port_ids": [
+        "port_u2_2",
+        "port_j3_1"
+      ],
+      "net_class": "signal"
+    },
+    {
+      "element_type": "net",
+      "net_id": "net_d1_tx",
+      "name": "D1_TX",
+      "connected_port_ids": [
+        "port_u2_3",
+        "port_j3_2"
+      ],
+      "net_class": "signal"
+    },
+    {
+      "element_type": "net",
+      "net_id": "net_d2",
+      "name": "D2",
+      "connected_port_ids": [
+        "port_u2_4",
+        "port_j3_3"
+      ],
+      "net_class": "signal"
+    },
+    {
+      "element_type": "net",
+      "net_id": "net_d3",
+      "name": "D3",
+      "connected_port_ids": [
+        "port_u2_5",
+        "port_j3_4"
+      ],
+      "net_class": "signal"
+    },
+    {
+      "element_type": "net",
+      "net_id": "net_d4",
+      "name": "D4",
+      "connected_port_ids": [
+        "port_u2_6",
+        "port_j3_5"
+      ],
+      "net_class": "signal"
+    },
+    {
+      "element_type": "net",
+      "net_id": "net_d5",
+      "name": "D5",
+      "connected_port_ids": [
+        "port_u2_11",
+        "port_j3_6"
+      ],
+      "net_class": "signal"
+    },
+    {
+      "element_type": "net",
+      "net_id": "net_d6",
+      "name": "D6",
+      "connected_port_ids": [
+        "port_u2_12",
+        "port_j3_7"
+      ],
+      "net_class": "signal"
+    },
+    {
+      "element_type": "net",
+      "net_id": "net_d7",
+      "name": "D7",
+      "connected_port_ids": [
+        "port_u2_13",
+        "port_j4_1"
+      ],
+      "net_class": "signal"
+    },
+    {
+      "element_type": "net",
+      "net_id": "net_d8",
+      "name": "D8",
+      "connected_port_ids": [
+        "port_u2_14",
+        "port_j4_2"
+      ],
+      "net_class": "signal"
+    },
+    {
+      "element_type": "net",
+      "net_id": "net_d9",
+      "name": "D9",
+      "connected_port_ids": [
+        "port_u2_15",
+        "port_j4_3"
+      ],
+      "net_class": "signal"
+    },
+    {
+      "element_type": "net",
+      "net_id": "net_d10",
+      "name": "D10",
+      "connected_port_ids": [
+        "port_u2_16",
+        "port_j4_4"
+      ],
+      "net_class": "signal"
+    },
+    {
+      "element_type": "net",
+      "net_id": "net_aref",
+      "name": "AREF",
+      "connected_port_ids": [
+        "port_u2_21",
+        "port_j5_1"
+      ],
+      "net_class": "signal"
+    },
+    {
+      "element_type": "net",
+      "net_id": "net_a0",
+      "name": "A0",
+      "connected_port_ids": [
+        "port_u2_23",
+        "port_j5_2"
+      ],
+      "net_class": "signal"
+    },
+    {
+      "element_type": "net",
+      "net_id": "net_a1",
+      "name": "A1",
+      "connected_port_ids": [
+        "port_u2_24",
+        "port_j5_3"
+      ],
+      "net_class": "signal"
+    },
+    {
+      "element_type": "net",
+      "net_id": "net_a2",
+      "name": "A2",
+      "connected_port_ids": [
+        "port_u2_25",
+        "port_j5_4"
+      ],
+      "net_class": "signal"
+    },
+    {
+      "element_type": "net",
+      "net_id": "net_a3",
+      "name": "A3",
+      "connected_port_ids": [
+        "port_u2_26",
+        "port_j5_5"
+      ],
+      "net_class": "signal"
+    }
+  ]
+}

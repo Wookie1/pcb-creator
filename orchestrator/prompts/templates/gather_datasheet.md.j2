@@ -1,0 +1,69 @@
+You are an electronics engineer. Look up the key specifications for the following component and return them as JSON.
+
+### Component
+
+- **Type**: {{ component_type }}
+- **Value/Part Number**: {{ value }}
+{% if package %}- **Package**: {{ package }}{% endif %}
+{% if purpose %}- **Purpose**: {{ purpose }}{% endif %}
+
+### Required Specifications
+
+Return a JSON object with the specifications relevant to this component type. Use standard units.
+
+For **LEDs**:
+```json
+{
+  "vf": "<forward voltage e.g. 2.0V>",
+  "if": "<forward current e.g. 20mA>",
+  "color": "<color if identifiable>",
+  "package": "<standard package>"
+}
+```
+
+For **ICs / Voltage Regulators**:
+```json
+{
+  "pin_count": <number>,
+  "vcc_min": "<minimum supply voltage>",
+  "vcc_max": "<maximum supply voltage>",
+  "output_voltage": "<if voltage regulator>",
+  "max_current": "<maximum output current>",
+  "package": "<standard package e.g. SOT-23, DIP-8>",
+  "pinout": "<pin_number:function for ALL pins, e.g. 1:PC6/RESET 2:PD0 3:PD1 ...>"
+}
+```
+
+For **Capacitors**:
+```json
+{
+  "capacitance": "<value with units e.g. 100nF>",
+  "voltage_rating": "<rated voltage e.g. 16V>",
+  "type": "<ceramic|electrolytic|tantalum>",
+  "package": "<standard package>"
+}
+```
+
+For **Transistors**:
+```json
+{
+  "type": "<npn|pnp|nmos|pmos>",
+  "vce_max": "<max collector-emitter voltage>",
+  "ic_max": "<max collector current>",
+  "hfe_min": "<minimum current gain>",
+  "package": "<standard package>"
+}
+```
+
+For other components, return the most relevant electrical specifications as key-value pairs.
+
+### Rules
+
+1. Use realistic datasheet values. If the exact part is unknown, use typical values for the component type.
+2. Always include voltage and current ratings where applicable.
+3. Use standard unit formats: V for volts, mA for milliamps, nF/uF for capacitance, ohm for resistance.
+4. For ICs: the `pinout` field is CRITICAL. List every physical pin with its function name, matching the specific package variant. Use the format `pin_number:function_name` separated by spaces. Include alternate functions separated by `/` (e.g., `1:PC6/RESET`). This must match the actual datasheet for the given package.
+
+### Output
+
+Output ONLY the JSON object. No explanation, no markdown fences, no additional text.

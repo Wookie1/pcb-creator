@@ -1,0 +1,175 @@
+{
+  "version": "1.0",
+  "project_name": "dual_led",
+  "description": "Two red LEDs with individual current-limiting resistors, powered by 5V DC via 2-pin header",
+  "elements": [
+    {
+      "element_type": "component",
+      "component_id": "comp_j1",
+      "designator": "J1",
+      "component_type": "connector",
+      "value": "2-pin header",
+      "package": "PinHeader_1x2",
+      "description": "Power input connector, 5V DC"
+    },
+    {
+      "element_type": "port",
+      "port_id": "port_j1_1",
+      "component_id": "comp_j1",
+      "pin_number": 1,
+      "name": "VCC",
+      "electrical_type": "power_in"
+    },
+    {
+      "element_type": "port",
+      "port_id": "port_j1_2",
+      "component_id": "comp_j1",
+      "pin_number": 2,
+      "name": "GND",
+      "electrical_type": "ground"
+    },
+
+    {
+      "element_type": "component",
+      "component_id": "comp_r1",
+      "designator": "R1",
+      "component_type": "resistor",
+      "value": "150ohm",
+      "package": "0805",
+      "description": "Current-limiting resistor for D1. Calculated: (5V - 2V) / 20mA = 150 ohm"
+    },
+    {
+      "element_type": "port",
+      "port_id": "port_r1_1",
+      "component_id": "comp_r1",
+      "pin_number": 1,
+      "name": "1",
+      "electrical_type": "passive"
+    },
+    {
+      "element_type": "port",
+      "port_id": "port_r1_2",
+      "component_id": "comp_r1",
+      "pin_number": 2,
+      "name": "2",
+      "electrical_type": "passive"
+    },
+
+    {
+      "element_type": "component",
+      "component_id": "comp_r2",
+      "designator": "R2",
+      "component_type": "resistor",
+      "value": "150ohm",
+      "package": "0805",
+      "description": "Current-limiting resistor for D2. Calculated: (5V - 2V) / 20mA = 150 ohm"
+    },
+    {
+      "element_type": "port",
+      "port_id": "port_r2_1",
+      "component_id": "comp_r2",
+      "pin_number": 1,
+      "name": "1",
+      "electrical_type": "passive"
+    },
+    {
+      "element_type": "port",
+      "port_id": "port_r2_2",
+      "component_id": "comp_r2",
+      "pin_number": 2,
+      "name": "2",
+      "electrical_type": "passive"
+    },
+
+    {
+      "element_type": "component",
+      "component_id": "comp_d1",
+      "designator": "D1",
+      "component_type": "led",
+      "value": "red",
+      "package": "0805",
+      "description": "Red LED, Vf=2.0V, If=20mA",
+      "properties": {
+        "forward_voltage": "2.0V",
+        "forward_current": "20mA",
+        "color": "red"
+      }
+    },
+    {
+      "element_type": "port",
+      "port_id": "port_d1_a",
+      "component_id": "comp_d1",
+      "pin_number": 1,
+      "name": "anode",
+      "electrical_type": "passive"
+    },
+    {
+      "element_type": "port",
+      "port_id": "port_d1_k",
+      "component_id": "comp_d1",
+      "pin_number": 2,
+      "name": "cathode",
+      "electrical_type": "passive"
+    },
+
+    {
+      "element_type": "component",
+      "component_id": "comp_d2",
+      "designator": "D2",
+      "component_type": "led",
+      "value": "red",
+      "package": "0805",
+      "description": "Red LED, Vf=2.0V, If=20mA",
+      "properties": {
+        "forward_voltage": "2.0V",
+        "forward_current": "20mA",
+        "color": "red"
+      }
+    },
+    {
+      "element_type": "port",
+      "port_id": "port_d2_a",
+      "component_id": "comp_d2",
+      "pin_number": 1,
+      "name": "anode",
+      "electrical_type": "passive"
+    },
+    {
+      "element_type": "port",
+      "port_id": "port_d2_k",
+      "component_id": "comp_d2",
+      "pin_number": 2,
+      "name": "cathode",
+      "electrical_type": "passive"
+    },
+
+    {
+      "element_type": "net",
+      "net_id": "net_vcc",
+      "name": "VCC",
+      "connected_port_ids": ["port_j1_1", "port_r1_1", "port_r2_1"],
+      "net_class": "power"
+    },
+    {
+      "element_type": "net",
+      "net_id": "net_r1_to_d1",
+      "name": "R1_TO_D1",
+      "connected_port_ids": ["port_r1_2", "port_d1_a"],
+      "net_class": "signal"
+    },
+    {
+      "element_type": "net",
+      "net_id": "net_r2_to_d2",
+      "name": "R2_TO_D2",
+      "connected_port_ids": ["port_r2_2", "port_d2_a"],
+      "net_class": "signal"
+    },
+    {
+      "element_type": "net",
+      "net_id": "net_gnd",
+      "name": "GND",
+      "connected_port_ids": ["port_d1_k", "port_d2_k", "port_j1_2"],
+      "net_class": "ground"
+    }
+  ]
+}

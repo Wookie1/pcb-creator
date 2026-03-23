@@ -1,0 +1,209 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Routed PCB",
+  "description": "PCB placement with routing (traces, vias, and statistics)",
+  "type": "object",
+  "required": ["version", "project_name", "source_netlist", "source_bom", "board", "placements", "routing", "silkscreen"],
+  "properties": {
+    "version": {
+      "type": "string",
+      "const": "1.0"
+    },
+    "project_name": {
+      "type": "string"
+    },
+    "source_netlist": {
+      "type": "string"
+    },
+    "source_bom": {
+      "type": "string"
+    },
+    "board": {
+      "type": "object",
+      "required": ["width_mm", "height_mm"],
+      "properties": {
+        "width_mm": {
+          "type": "number",
+          "minimum": 5
+        },
+        "height_mm": {
+          "type": "number",
+          "minimum": 5
+        },
+        "outline_type": {
+          "type": "string",
+          "enum": ["rectangle", "dxf"]
+        },
+        "origin": {
+          "type": "array",
+          "items": {"type": "number"},
+          "minItems": 2,
+          "maxItems": 2
+        }
+      }
+    },
+    "placements": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/definitions/placement_item"
+      }
+    },
+    "routing": {
+      "type": "object",
+      "required": ["traces", "vias", "statistics"],
+      "properties": {
+        "traces": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/trace_segment"
+          }
+        },
+        "vias": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/via"
+          }
+        },
+        "unrouted_nets": {
+          "type": "array",
+          "items": {"type": "string"}
+        },
+        "statistics": {
+          "$ref": "#/definitions/routing_statistics"
+        },
+        "config": {
+          "type": "object",
+          "properties": {
+            "copper_weight_oz": {"type": "number"},
+            "grid_resolution_mm": {"type": "number"},
+            "trace_clearance_mm": {"type": "number"},
+            "via_drill_mm": {"type": "number"},
+            "via_diameter_mm": {"type": "number"}
+          }
+        },
+        "trace_width_overrides": {
+          "type": "object",
+          "additionalProperties": {"type": "string"}
+        },
+        "copper_fills": {
+          "type": "array",
+          "description": "Copper fill regions flooding unused area with a net",
+          "items": {
+            "$ref": "#/definitions/copper_fill_region"
+          }
+        }
+      }
+    },
+    "silkscreen": {
+      "type": "array",
+      "description": "Silkscreen elements: designator text, pin 1 dots, anode markers",
+      "items": {
+        "$ref": "#/definitions/silkscreen_element"
+      }
+    }
+  },
+  "definitions": {
+    "placement_item": {
+      "type": "object",
+      "required": ["designator", "component_type", "package", "footprint_width_mm", "footprint_height_mm", "x_mm", "y_mm", "rotation_deg", "layer"],
+      "properties": {
+        "designator": {"type": "string"},
+        "component_type": {"type": "string"},
+        "package": {"type": "string"},
+        "footprint_width_mm": {"type": "number", "exclusiveMinimum": 0},
+        "footprint_height_mm": {"type": "number", "exclusiveMinimum": 0},
+        "x_mm": {"type": "number"},
+        "y_mm": {"type": "number"},
+        "rotation_deg": {"type": "integer", "enum": [0, 90, 180, 270]},
+        "layer": {"type": "string", "enum": ["top", "bottom"]},
+        "placement_source": {"type": "string", "enum": ["user", "algorithm", "llm", "optimizer"]}
+      }
+    },
+    "trace_segment": {
+      "type": "object",
+      "required": ["start_x_mm", "start_y_mm", "end_x_mm", "end_y_mm", "width_mm", "layer", "net_id"],
+      "properties": {
+        "start_x_mm": {"type": "number"},
+        "start_y_mm": {"type": "number"},
+        "end_x_mm": {"type": "number"},
+        "end_y_mm": {"type": "number"},
+        "width_mm": {"type": "number", "exclusiveMinimum": 0},
+        "layer": {"type": "string", "enum": ["top", "bottom"]},
+        "net_id": {"type": "string"},
+        "net_name": {"type": "string"}
+      }
+    },
+    "via": {
+      "type": "object",
+      "required": ["x_mm", "y_mm", "drill_mm", "diameter_mm", "net_id"],
+      "properties": {
+        "x_mm": {"type": "number"},
+        "y_mm": {"type": "number"},
+        "drill_mm": {"type": "number", "exclusiveMinimum": 0},
+        "diameter_mm": {"type": "number", "exclusiveMinimum": 0},
+        "from_layer": {"type": "string", "enum": ["top", "bottom"]},
+        "to_layer": {"type": "string", "enum": ["top", "bottom"]},
+        "net_id": {"type": "string"},
+        "net_name": {"type": "string"}
+      }
+    },
+    "routing_statistics": {
+      "type": "object",
+      "required": ["total_nets", "routed_nets", "completion_pct"],
+      "properties": {
+        "total_nets": {"type": "integer", "minimum": 0},
+        "routed_nets": {"type": "integer", "minimum": 0},
+        "unrouted_nets": {"type": "integer", "minimum": 0},
+        "completion_pct": {"type": "number", "minimum": 0, "maximum": 100},
+        "total_trace_length_mm": {"type": "number", "minimum": 0},
+        "via_count": {"type": "integer", "minimum": 0},
+        "layer_usage": {
+          "type": "object",
+          "properties": {
+            "top_trace_length_mm": {"type": "number", "minimum": 0},
+            "bottom_trace_length_mm": {"type": "number", "minimum": 0}
+          }
+        }
+      }
+    },
+    "copper_fill_region": {
+      "type": "object",
+      "required": ["layer", "net_id", "polygons"],
+      "properties": {
+        "layer": {"type": "string", "enum": ["top", "bottom"]},
+        "net_id": {"type": "string"},
+        "net_name": {"type": "string"},
+        "polygons": {
+          "type": "array",
+          "description": "Array of polygon vertex arrays (each polygon is array of [x,y] points)",
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "array",
+              "items": {"type": "number"},
+              "minItems": 2,
+              "maxItems": 2
+            },
+            "minItems": 3
+          }
+        }
+      }
+    },
+    "silkscreen_element": {
+      "type": "object",
+      "required": ["type", "layer"],
+      "properties": {
+        "type": {"type": "string", "enum": ["text", "dot"]},
+        "text": {"type": "string", "description": "Text content (for type=text)"},
+        "x_mm": {"type": "number"},
+        "y_mm": {"type": "number"},
+        "font_height_mm": {"type": "number", "exclusiveMinimum": 0, "description": "Text height (for type=text)"},
+        "diameter_mm": {"type": "number", "exclusiveMinimum": 0, "description": "Dot diameter (for type=dot)"},
+        "layer": {"type": "string", "enum": ["top_silk", "bottom_silk"]},
+        "anchor": {"type": "string", "enum": ["center", "left", "right"]},
+        "purpose": {"type": "string", "enum": ["designator", "pin1", "anode"]}
+      }
+    }
+  }
+}

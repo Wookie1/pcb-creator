@@ -1,0 +1,294 @@
+"""CLI entry point for the orchestrator."""
+
+import argparse
+import json
+import sys
+from pathlib import Path
+
+from dotenv import load_dotenv
+
+# Load .env from the pcb-creator directory (where cli.py lives)
+load_dotenv(Path(__file__).resolve().parent.parent / ".env")
+
+from .config import OrchestratorConfig
+from .runner import run_workflow
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        prog="pcb-creator",
+        description="AI-driven PCB design with deterministic orchestration",
+    )
+    subparsers = parser.add_subparsers(dest="command", required=True)
+
+    # run command — full pipeline from requirements JSON
+    run_parser = subparsers.add_parser("run", help="Run the design pipeline from a requirements JSON file")
+    run_parser.add_argument(
+        "--requirements",
+        type=Path,
+        required=True,
+        help="Path to requirements JSON file",
+    )
+    run_parser.add_argument(
+        "--project",
+        type=str,
+        required=True,
+        help="Project name (lowercase_with_underscores)",
+    )
+    run_parser.add_argument(
+        "--base-dir",
+        type=Path,
+        default=None,
+        help="Base directory (defaults to cwd)",
+    )
+    run_parser.add_argument(
+        "--model",
+        type=str,
+        default=None,
+        help="Override the LLM model for all agents",
+    )
+    run_parser.add_argument(
+        "--attach",
+        type=Path,
+        action="append",
+        default=[],
+        help="Attach a file (DXF, sketch, photo) to copy into the project (repeatable)",
+    )
+    run_parser.add_argument(
+        "--api-base",
+        type=str,
+        default=None,
+        help="LLM API base URL (e.g. http://localhost:8000/v1 for local models)",
+    )
+    run_parser.add_argument(
+        "--api-key",
+        type=str,
+        default=None,
+        help="LLM API key (overrides PCB_API_KEY env var)",
+    )
+    run_parser.add_argument(
+        "--no-thinking",
+        action="store_true",
+        default=False,
+        help="Disable thinking/reasoning mode (fixes JSON parsing with Qwen thinking models)",
+    )
+    run_parser.add_argument(
+        "--export-kicad",
+        type=Path,
+        nargs="?",
+        const=True,  # flag present but no path = auto-generate path
+        default=None,
+        help="Export routed board to KiCad .kicad_pcb (optional: specify output path)",
+    )
+
+    # design command — interactive: gather requirements then run pipeline
+    design_parser = subparsers.add_parser(
+        "design", help="Interactive: describe your circuit, then auto-run the pipeline"
+    )
+    design_parser.add_argument(
+        "--project",
+        type=str,
+        required=True,
+        help="Project name (lowercase_with_underscores)",
+    )
+    design_parser.add_argument(
+        "--base-dir",
+        type=Path,
+        default=None,
+        help="Base directory (defaults to cwd)",
+    )
+    design_parser.add_argument(
+        "--model",
+        type=str,
+        default=None,
+        help="Override the LLM model for all agents",
+    )
+
+    # import-kicad command — import a .kicad_pcb back into the pipeline
+    import_parser = subparsers.add_parser(
+        "import-kicad", help="Import a KiCad .kicad_pcb file back into the pipeline"
+    )
+    import_parser.add_argument(
+        "--project",
+        type=str,
+        required=True,
+        help="Project name (to find original routed/netlist files)",
+    )
+    import_parser.add_argument(
+        "--kicad-file",
+        type=Path,
+        required=True,
+        help="Path to the .kicad_pcb file to import",
+    )
+    import_parser.add_argument(
+        "--base-dir",
+        type=Path,
+        default=None,
+        help="Base directory (defaults to cwd)",
+    )
+
+    # validate command
+    validate_parser = subparsers.add_parser(
+        "validate", help="Validate an existing netlist"
+    )
+    validate_parser.add_argument(
+        "netlist", type=Path, help="Path to netlist JSON file"
+    )
+
+    args = parser.parse_args(argv)
+
+    if args.command == "run":
+        config = _make_config(args)
+        if getattr(args, "export_kicad", None):
+            config.export_kicad = args.export_kicad
+        success = run_workflow(
+            args.requirements,
+            args.project,
+            config,
+            attach_files=getattr(args, "attach", []) or None,
+        )
+        return 0 if success else 1
+
+    elif args.command == "design":
+        return _design_interactive(args)
+
+    elif args.command == "import-kicad":
+        return _import_kicad(args)
+
+    elif args.command == "validate":
+        return _validate(args.netlist)
+
+    return 1
+
+
+def _make_config(args) -> OrchestratorConfig:
+    config = OrchestratorConfig.from_env(
+        base_dir=getattr(args, "base_dir", None) or Path.cwd()
+    )
+    if model := getattr(args, "model", None):
+        config.generate_model = model
+        config.review_model = model
+        config.gather_model = model
+    if api_base := getattr(args, "api_base", None):
+        config.api_base = api_base
+    if api_key := getattr(args, "api_key", None):
+        config.api_key = api_key
+    if getattr(args, "no_thinking", False):
+        config.llm_extra_body["thinking"] = False
+    return config
+
+
+def _design_interactive(args) -> int:
+    """Interactive requirements gathering then pipeline execution."""
+    from .gather.conversation import RequirementsGatherer
+    from .llm.litellm_client import LiteLLMClient
+    from .prompts.builder import PromptBuilder
+
+    config = _make_config(args)
+    llm = LiteLLMClient(config.gather_model, api_base=config.api_base, api_key=config.api_key)
+    prompt_builder = PromptBuilder(config.base_dir)
+
+    gatherer = RequirementsGatherer(llm, prompt_builder)
+    requirements = gatherer.gather_interactive()
+
+    if requirements is None:
+        print("\nRequirements gathering cancelled.")
+        return 1
+
+    # Save requirements to a temp file and run the pipeline
+    projects_dir = config.resolve(config.projects_dir)
+    projects_dir.mkdir(parents=True, exist_ok=True)
+    req_path = projects_dir / f"{args.project}_requirements_input.json"
+    req_path.write_text(json.dumps(requirements, indent=2))
+
+    # Override project_name from the gathered requirements if present
+    project_name = requirements.get("project_name", args.project)
+
+    success = run_workflow(req_path, project_name, config)
+    return 0 if success else 1
+
+
+def _import_kicad(args) -> int:
+    """Import a KiCad .kicad_pcb file back into the pipeline."""
+    from exporters.kicad_importer import import_kicad_pcb
+    from visualizers.placement_viewer import generate_html
+
+    base_dir = args.base_dir or Path.cwd()
+    project_dir = base_dir / "projects" / args.project
+    kicad_file = args.kicad_file
+
+    if not kicad_file.exists():
+        print(f"Error: KiCad file not found: {kicad_file}")
+        return 1
+
+    # Find original routed and netlist files
+    routed_path = project_dir / f"{args.project}_routed.json"
+    netlist_path = project_dir / f"{args.project}_netlist.json"
+
+    if not routed_path.exists():
+        print(f"Error: Original routed file not found: {routed_path}")
+        return 1
+    if not netlist_path.exists():
+        print(f"Error: Netlist file not found: {netlist_path}")
+        return 1
+
+    print(f"Importing KiCad file: {kicad_file}")
+    original_routed = json.loads(routed_path.read_text())
+    netlist = json.loads(netlist_path.read_text())
+
+    # Import
+    imported = import_kicad_pcb(kicad_file, original_routed, netlist)
+
+    # Save imported routed JSON
+    imported_path = project_dir / f"{args.project}_routed_imported.json"
+    imported_path.write_text(json.dumps(imported, indent=2))
+    print(f"  Imported routed JSON: {imported_path}")
+
+    # Print statistics
+    stats = imported["routing"]["statistics"]
+    print(f"  Nets: {stats['routed_nets']}/{stats['total_nets']} ({stats['completion_pct']}%)")
+    print(f"  Traces: {len(imported['routing']['traces'])}")
+    print(f"  Vias: {stats['via_count']}")
+    unrouted = imported["routing"]["unrouted_nets"]
+    if unrouted:
+        print(f"  Unrouted: {', '.join(unrouted)}")
+    else:
+        print("  All nets routed!")
+
+    # Generate updated visualization
+    bom_path = project_dir / f"{args.project}_bom.json"
+    bom = json.loads(bom_path.read_text()) if bom_path.exists() else None
+    placement = {k: v for k, v in imported.items()
+                 if k in ("version", "project_name", "board", "placements")}
+    html = generate_html(placement, netlist, bom, routed=imported)
+    html_path = project_dir / f"{args.project}_imported_view.html"
+    html_path.write_text(html)
+    print(f"  Visualization: {html_path}")
+
+    return 0
+
+
+def _validate(netlist_path: Path) -> int:
+    """Run the validator on an existing netlist."""
+    import subprocess
+
+    config = OrchestratorConfig.from_env()
+    validator = config.resolve(config.validator_path)
+
+    result = subprocess.run(
+        [sys.executable, str(validator), str(netlist_path)],
+        capture_output=True,
+        text=True,
+    )
+
+    try:
+        output = json.loads(result.stdout)
+        print(json.dumps(output, indent=2))
+        return 0 if output.get("valid") else 1
+    except json.JSONDecodeError:
+        print(f"Validator error: {result.stderr or result.stdout}")
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

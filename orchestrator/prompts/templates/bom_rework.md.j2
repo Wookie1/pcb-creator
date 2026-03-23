@@ -1,0 +1,33 @@
+You are the Component Engineer. Your previous BOM output had issues. Fix them and produce a corrected BOM.
+
+### Source Netlist
+
+{{ netlist_content }}
+
+### Requirements Context
+
+{{ requirements }}
+
+### Previous BOM Output (with issues)
+
+{{ previous_output }}
+
+### Issues Found
+
+{% for issue in issues %}
+- {{ issue }}
+{% endfor %}
+
+### Instructions
+
+Fix ALL the issues listed above. The corrected BOM must:
+1. Start with `{"version":"1.0","project_name":"...","source_netlist":"...","bom":[...]}` — include ALL top-level fields.
+2. Match every netlist component exactly (designator, component_type, value, package).
+3. Include appropriate specs for each component type.
+4. Have a purchase-ready description for each entry.
+5. Not add or remove components — match the netlist exactly.
+
+### Output
+
+Output ONLY the corrected JSON object. No thinking, no explanation, no markdown fences, no additional text. Start with `{` and end with `}`.
+Use compact formatting (no unnecessary whitespace) to keep the output short.

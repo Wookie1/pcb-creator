@@ -1,0 +1,66 @@
+You are the Component Engineer. Generate a Bill of Materials (BOM) from the circuit netlist below.
+
+### Source Netlist
+
+{{ netlist_content }}
+
+### Requirements Context
+
+{{ requirements }}
+
+### Your Task
+
+For each component in the netlist, produce a BOM entry with detailed procurement specifications. You must:
+
+1. **Match exactly**: designator, component_type, value, and package must match the netlist exactly (case-insensitive for value).
+2. **Add specs**: Fill in type-specific specifications using engineering knowledge:
+   - **Resistors**: tolerance (default 1% for precision, 5% for general), power_rating (from package size), material (thick film, thin film, metal film)
+   - **Capacitors**: voltage_rating (appropriate for the circuit voltage with derating), dielectric (X7R for >1nF, C0G/NP0 for ≤1nF or precision), temperature_coefficient
+   - **LEDs**: forward_voltage, forward_current, wavelength or color
+   - **ICs**: operating_voltage_range, operating_temperature
+   - **Voltage regulators**: output_voltage, max_current, dropout_voltage
+   - **Connectors**: pin_count, pitch, mating_type
+   - **Inductors**: current_rating, dc_resistance, tolerance
+   - **Diodes**: reverse_voltage, forward_current
+   - **Transistors**: relevant voltage/current ratings
+3. **Write description**: A single-line purchase description including value, tolerance, package, and key specs.
+4. **Add notes**: Brief circuit context from the netlist's component description field.
+
+### Output Format
+
+```json
+{
+  "version": "1.0",
+  "project_name": "{{ project_name }}",
+  "source_netlist": "{{ netlist_filename }}",
+  "bom": [
+    {
+      "designator": "R1",
+      "component_type": "resistor",
+      "value": "220ohm",
+      "package": "0805",
+      "quantity": 1,
+      "specs": {
+        "tolerance": "1%",
+        "power_rating": "125mW",
+        "material": "thick film"
+      },
+      "description": "220Ω ±1% 0805 thick film resistor, 125mW",
+      "notes": "Current-limiting resistor for D1"
+    }
+  ]
+}
+```
+
+### Rules
+
+1. Include every component from the netlist — no omissions.
+2. Do not add components that are not in the netlist.
+3. quantity is always 1 (one BOM entry per designator).
+4. Use standard unit formats: mW, V, mA, nF, uF, ohm.
+5. Choose appropriate spec grades based on the circuit context (e.g., higher tolerance for audio, lower for digital logic).
+
+### Output
+
+Output ONLY the JSON. No explanation, no markdown fences, no additional text.
+Use compact formatting (no unnecessary whitespace) to keep the output short.

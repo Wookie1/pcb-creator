@@ -1,0 +1,26 @@
+{
+  "project_name": "dual_led",
+  "description": "Two red LEDs with individual current-limiting resistors, powered by 5V DC via a 2-pin header connector",
+  "power": {
+    "voltage": "5V",
+    "source": "2-pin header connector"
+  },
+  "components": [
+    { "ref": "J1", "type": "connector", "value": "2-pin", "package": "PinHeader_1x2", "purpose": "5V DC power input" },
+    { "ref": "R1", "type": "resistor", "value": "150ohm", "package": "0805", "purpose": "Current-limiting resistor for D1", "specs": { "power": "60mW" } },
+    { "ref": "R2", "type": "resistor", "value": "150ohm", "package": "0805", "purpose": "Current-limiting resistor for D2", "specs": { "power": "60mW" } },
+    { "ref": "D1", "type": "led", "value": "red", "package": "0805", "purpose": "LED 1", "specs": { "vf": "2.0V", "if": "20mA" } },
+    { "ref": "D2", "type": "led", "value": "red", "package": "0805", "purpose": "LED 2", "specs": { "vf": "2.0V", "if": "20mA" } }
+  ],
+  "connections": [
+    { "net_name": "VCC", "net_class": "power", "pins": ["J1.1", "R1.1", "R2.1"] },
+    { "net_name": "R1_TO_D1", "net_class": "signal", "pins": ["R1.2", "D1.anode"] },
+    { "net_name": "R2_TO_D2", "net_class": "signal", "pins": ["R2.2", "D2.anode"] },
+    { "net_name": "GND", "net_class": "ground", "pins": ["D1.cathode", "D2.cathode", "J1.2"] }
+  ],
+  "packages": "0805 SMD",
+  "calculations": {
+    "R1": { "formula": "(5V - 2.0V) / 20mA", "value": "150ohm", "power": "60mW", "package_ok": true },
+    "R2": { "formula": "(5V - 2.0V) / 20mA", "value": "150ohm", "power": "60mW", "package_ok": true }
+  }
+}
