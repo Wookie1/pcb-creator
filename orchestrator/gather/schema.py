@@ -198,8 +198,105 @@ REQUIREMENTS_SCHEMA = {
 }
 
 
+def coerce_requirements_types(data: dict) -> dict:
+    """Fix common LLM type errors: string numbers → actual numbers.
+
+    LLMs frequently output "2" instead of 2 in JSON. This function walks
+    the requirements dict and coerces string values to the types the schema
+    expects, so validation passes without rework loops.
+    """
+    # --- Strip None values from all sub-objects ---
+    # LLMs frequently output null for optional fields, which fails
+    # JSON Schema validation (schema expects the type or key absence).
+    for section_key in ("board", "manufacturing", "power"):
+        section = data.get(section_key)
+        if isinstance(section, dict):
+            none_keys = [k for k, v in section.items() if v is None]
+            for k in none_keys:
+                del section[k]
+
+    # Also strip None from component specs
+    for comp in data.get("components", []):
+        if isinstance(comp, dict):
+            none_keys = [k for k, v in comp.items() if v is None]
+            for k in none_keys:
+                del comp[k]
+            specs = comp.get("specs")
+            if isinstance(specs, dict):
+                none_keys = [k for k, v in specs.items() if v is None]
+                for k in none_keys:
+                    del specs[k]
+
+    # --- board fields ---
+    board = data.get("board")
+    if isinstance(board, dict):
+        for key in ("width_mm", "height_mm", "corner_radius_mm", "copper_weight_oz"):
+            if key in board and isinstance(board[key], str):
+                try:
+                    board[key] = float(board[key])
+                except (ValueError, TypeError):
+                    pass
+        if "layers" in board and isinstance(board["layers"], str):
+            try:
+                board["layers"] = int(board["layers"])
+            except (ValueError, TypeError):
+                pass
+
+    # --- manufacturing fields ---
+    mfg = data.get("manufacturing")
+    if isinstance(mfg, dict):
+        for key in ("trace_width_min_mm", "clearance_min_mm",
+                     "via_drill_min_mm", "via_diameter_min_mm"):
+            if key in mfg and isinstance(mfg[key], str):
+                try:
+                    mfg[key] = float(mfg[key])
+                except (ValueError, TypeError):
+                    pass
+
+    # --- placement_hints fields ---
+    for hint in data.get("placement_hints", []):
+        if not isinstance(hint, dict):
+            continue
+        # Strip None values — LLMs often output null for optional fields
+        # which fails JSON Schema validation (expects type or absence)
+        none_keys = [k for k, v in hint.items() if v is None]
+        for k in none_keys:
+            del hint[k]
+        for key in ("x_mm", "y_mm"):
+            if key in hint and isinstance(hint[key], str):
+                try:
+                    hint[key] = float(hint[key])
+                except (ValueError, TypeError):
+                    pass
+        if "rotation_deg" in hint and isinstance(hint["rotation_deg"], str):
+            try:
+                hint["rotation_deg"] = int(hint["rotation_deg"])
+            except (ValueError, TypeError):
+                pass
+
+    # --- attachment used_by_steps ---
+    for att in data.get("attachments", []):
+        if not isinstance(att, dict):
+            continue
+        # Strip None values here too
+        none_keys = [k for k, v in att.items() if v is None]
+        for k in none_keys:
+            del att[k]
+        steps = att.get("used_by_steps")
+        if isinstance(steps, list):
+            att["used_by_steps"] = [
+                int(s) if isinstance(s, str) else s for s in steps
+            ]
+
+    return data
+
+
 def validate_requirements(data: dict) -> list[str]:
-    """Validate requirements JSON against schema. Returns list of error messages."""
+    """Validate requirements JSON against schema. Returns list of error messages.
+
+    Automatically coerces common LLM type errors (string→number) before validation.
+    """
+    data = coerce_requirements_types(data)
     validator = jsonschema.Draft7Validator(REQUIREMENTS_SCHEMA)
     errors = []
     for error in sorted(validator.iter_errors(data), key=lambda e: list(e.path)):

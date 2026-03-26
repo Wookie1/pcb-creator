@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "pcb-creator-gui",
+      "runtimeExecutable": ".venv/bin/python",
+      "runtimeArgs": ["-m", "orchestrator", "gui", "--port", "7860"],
+      "port": 7860
+    }
+  ]
+}

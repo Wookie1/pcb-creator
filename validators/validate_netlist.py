@@ -255,6 +255,60 @@ def validate_referential_integrity(netlist: dict) -> tuple[list[str], list[str]]
     return errors, warnings
 
 
+def _coerce_netlist_types(netlist: dict) -> None:
+    """Fix common LLM output errors in netlist JSON before schema validation.
+
+    Modifies the netlist dict in-place:
+    - Flatten nested objects in component properties (schema requires string|number|boolean)
+    - Convert string numbers to proper types in port pin_number
+    - Strip None values from optional fields
+    """
+    for elem in netlist.get("elements", []):
+        etype = elem.get("element_type")
+
+        if etype == "component":
+            props = elem.get("properties")
+            if isinstance(props, dict):
+                # Flatten nested dicts (e.g. "pins": {"1": "PB5_RESET", ...})
+                # into dot-notation strings: "pin_1": "PB5_RESET"
+                flat = {}
+                for k, v in list(props.items()):
+                    if isinstance(v, dict):
+                        for sk, sv in v.items():
+                            flat[f"{k}_{sk}"] = str(sv) if not isinstance(sv, (str, int, float, bool)) else sv
+                    elif v is None:
+                        pass  # skip nulls
+                    elif isinstance(v, list):
+                        flat[k] = ", ".join(str(i) for i in v)
+                    else:
+                        flat[k] = v
+                elem["properties"] = flat
+
+            # Strip None from top-level optional fields
+            for k in list(elem.keys()):
+                if elem[k] is None and k not in ("element_type", "component_id", "designator", "component_type", "value", "package"):
+                    del elem[k]
+
+        elif etype == "port":
+            # pin_number should be integer
+            pn = elem.get("pin_number")
+            if isinstance(pn, str):
+                try:
+                    elem["pin_number"] = int(pn)
+                except (ValueError, TypeError):
+                    pass
+            # Strip None values
+            for k in list(elem.keys()):
+                if elem[k] is None:
+                    del elem[k]
+
+        elif etype == "net":
+            # Strip None values
+            for k in list(elem.keys()):
+                if elem[k] is None:
+                    del elem[k]
+
+
 def validate_netlist(
     netlist_path: str,
     schema_path: str | None = None,
@@ -309,6 +363,9 @@ def validate_netlist(
                 requirements = json.load(f)
         except (json.JSONDecodeError, FileNotFoundError):
             pass  # Silently skip — power-aware checks just won't run
+
+    # Coerce common LLM output errors before validation
+    _coerce_netlist_types(netlist)
 
     # Run validations
     all_errors = []

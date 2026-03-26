@@ -16,11 +16,15 @@ class LiteLLMClient(LLMClient):
         api_base: str | None = None,
         api_key: str | None = None,
         extra_body: dict | None = None,
+        timeout: float | None = None,
     ):
         self.model = model
         self.api_base = api_base
         self.api_key = api_key
         self.extra_body = extra_body or {}
+        # Default 10min for cloud, but local models generating large JSON
+        # (e.g. 21-component Arduino netlist ~30KB) can need 20-30min
+        self.timeout = timeout or 1800  # 30 minutes
 
     def generate(
         self,
@@ -51,6 +55,7 @@ class LiteLLMClient(LLMClient):
                 messages=messages,
                 max_tokens=max_tokens,
                 temperature=temperature,
+                timeout=self.timeout,
                 **kwargs,
             )
             chunk = response.choices[0].message.content or ""

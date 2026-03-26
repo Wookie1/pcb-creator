@@ -626,9 +626,13 @@ Produces manufacturer-ready files in `projects/{name}/output/`. All files are st
 
 ### Planned Features
 
-- **Manufacturer quoting (Step 7)**: Auto-submit BOM, Gerbers, assembly files to manufacturer APIs (JLCPCB, PCBWay, OSH Park) for fabrication + assembly quotes. Present comparison to user.
+- **Gradio GUI**: ✅ Implemented. `pcb-creator gui` launches Gradio web UI with chat input, file upload (drag & drop), step progress panel, embedded board viewer, AI model settings (provider presets), and Export/Import KiCad buttons. Uses `run_workflow_with_gradio()` generator for progressive UI updates.
+- **Agent-mode flag**: ✅ Implemented. `--agent-mode` flag on `pcb-creator run` skips browser approval gate. Vision-based autonomous approval (render to PNG, LLM review) is a future step.
+- **Silkscreen overlap fix**: Board name/revision label collides with component designators on dense boards. Need to: (1) truncate long project names for silkscreen, (2) check board name candidate positions against designator bounding boxes, not just pads/vias. Affects `optimizers/router.py` silkscreen generation.
+- **MCP server for agent integration**: Expose the pipeline as an MCP (Model Context Protocol) server so any AI agent can design PCBs. Tools: `design_pcb(description, settings)` → streams step events, `get_project_status(project)`, `export_kicad(project)`, `get_drc_report(project)`, `list_projects()`. The existing `run_workflow_with_gradio()` generator yields structured JSON events that map directly to streaming tool results. `--agent-mode` already skips the blocking approval gate. Preferred over a Claude Code skill because MCP is agent-agnostic — works with Claude Code, Agent SDK, and any MCP client.
+- **GUI conversational refinement**: After the LLM translates a circuit description, show a summary to the user and allow feedback/corrections before starting the pipeline. Uses the existing `RequirementsGatherer._summarize()` flow but via a chat-style interface instead of terminal `input()`. Enables back-and-forth clarification of ambiguous requirements (e.g., "which ATtiny variant?", "what LED forward voltage?") before committing to the full pipeline run.
+- **Manufacturer quoting (Step 7)**: Auto-submit BOM, Gerbers, assembly files to manufacturer APIs (JLCPCB, PCBWay, OSH Park) for fabrication + assembly quotes. Present comparison to user. Steps 5-6 produce submission-ready files in manufacturer-expected formats.
 - **3D populated board model**: Add component 3D models to the STEP file from EDA libraries (KiCad 3D library, SnapEDA, Ultra Librarian) or generated parametrically from datasheet dimensions. STEP assembly places models at placement coordinates with rotation.
-- **Interactive layout editor**: Chat text box in the HTML visualizer for natural language placement/routing changes.
 - **Pre-route GND as fill before signal routing**: Build GND fill first so the router can use fill connectivity for GND pads, freeing grid space for signal routing.
 
 ## User-Defined Component Positions

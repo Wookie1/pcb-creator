@@ -939,6 +939,7 @@ def generate_html(
     title: str = "",
     api_url: str = "",
     drc_report: dict | None = None,
+    embed_mode: bool = False,
 ) -> str:
     """Generate a self-contained HTML page with the board visualization."""
     board = placement.get("board", {})
@@ -1054,7 +1055,7 @@ def generate_html(
     '''}
     {_routing_stats_html(routed, netlist)}
     {_drc_panel_html(drc_report)}
-    {_actions_html(routed, netlist, api_url)}
+    {'' if embed_mode else _actions_html(routed, netlist, api_url)}
     {_kicad_export_html(routed, netlist)}
     <div class="legend-title">Components</div>
     <table>
@@ -1094,13 +1095,29 @@ def generate_html(
 
   window.addEventListener('mouseup', () => {{ dragging = false; }});
 
-  // Fit to view on load
+  // Fit to view on load (robust retry for iframe embedding)
   const svg = document.getElementById('board-svg');
-  const svgW = svg.viewBox.baseVal.width;
-  const svgH = svg.viewBox.baseVal.height;
-  const panelRect = panel.getBoundingClientRect();
-  scale = Math.min(panelRect.width / svgW, panelRect.height / svgH) * 0.9;
-  updateTransform();
+  function fitToView() {{
+    const svgW = svg.viewBox.baseVal.width;
+    const svgH = svg.viewBox.baseVal.height;
+    const panelRect = panel.getBoundingClientRect();
+    if (panelRect.width < 50 || panelRect.height < 50) {{
+      setTimeout(fitToView, 100);
+      return;
+    }}
+    scale = Math.min(panelRect.width / svgW, panelRect.height / svgH) * 0.92;
+    panX = (panelRect.width - svgW * scale) / 2;
+    panY = (panelRect.height - svgH * scale) / 2;
+    updateTransform();
+  }}
+  // Multiple attempts — iframe may not have final dimensions immediately
+  fitToView();
+  setTimeout(fitToView, 200);
+  setTimeout(fitToView, 600);
+  window.addEventListener('resize', fitToView);
+  if (typeof ResizeObserver !== 'undefined') {{
+    new ResizeObserver(() => fitToView()).observe(panel);
+  }}
 
   // Custom tooltip
   const typeColors = {json.dumps(TYPE_COLORS)};

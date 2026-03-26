@@ -5,13 +5,14 @@ import json
 import sys
 from pathlib import Path
 
-from dotenv import load_dotenv
-
-# Load .env from the pcb-creator directory (where cli.py lives)
-load_dotenv(Path(__file__).resolve().parent.parent / ".env")
+try:
+    from dotenv import load_dotenv
+    load_dotenv(Path(__file__).resolve().parent.parent / ".env")
+except ImportError:
+    # python-dotenv not installed — config.py has its own stdlib .env loader
+    pass
 
 from .config import OrchestratorConfig
-from .runner import run_workflow
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -80,6 +81,24 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help="Export routed board to KiCad .kicad_pcb (optional: specify output path)",
     )
+    run_parser.add_argument(
+        "--agent-mode",
+        action="store_true",
+        default=False,
+        help="Skip browser approval gate (for autonomous/agent workflows)",
+    )
+
+    # gui command — Gradio web UI
+    gui_parser = subparsers.add_parser("gui", help="Launch the Gradio web GUI")
+    gui_parser.add_argument(
+        "--port", type=int, default=7860, help="Port for Gradio server (default: 7860)"
+    )
+    gui_parser.add_argument(
+        "--share", action="store_true", default=False, help="Create a public Gradio URL"
+    )
+    gui_parser.add_argument(
+        "--base-dir", type=Path, default=None, help="Base directory (defaults to cwd)"
+    )
 
     # design command — interactive: gather requirements then run pipeline
     design_parser = subparsers.add_parser(
@@ -138,9 +157,13 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     if args.command == "run":
+        from .runner import run_workflow
+
         config = _make_config(args)
         if getattr(args, "export_kicad", None):
             config.export_kicad = args.export_kicad
+        if getattr(args, "agent_mode", False):
+            config.agent_mode = True
         success = run_workflow(
             args.requirements,
             args.project,
@@ -148,6 +171,9 @@ def main(argv: list[str] | None = None) -> int:
             attach_files=getattr(args, "attach", []) or None,
         )
         return 0 if success else 1
+
+    elif args.command == "gui":
+        return _launch_gui(args)
 
     elif args.command == "design":
         return _design_interactive(args)
@@ -178,6 +204,19 @@ def _make_config(args) -> OrchestratorConfig:
     return config
 
 
+def _launch_gui(args) -> int:
+    """Launch the Gradio web GUI."""
+    from .gradio_app import launch_gui
+
+    base_dir = args.base_dir or Path.cwd()
+    launch_gui(
+        base_dir=base_dir,
+        port=args.port,
+        share=args.share,
+    )
+    return 0
+
+
 def _design_interactive(args) -> int:
     """Interactive requirements gathering then pipeline execution."""
     from .gather.conversation import RequirementsGatherer
@@ -204,6 +243,7 @@ def _design_interactive(args) -> int:
     # Override project_name from the gathered requirements if present
     project_name = requirements.get("project_name", args.project)
 
+    from .runner import run_workflow
     success = run_workflow(req_path, project_name, config)
     return 0 if success else 1
 

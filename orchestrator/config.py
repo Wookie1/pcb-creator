@@ -51,6 +51,9 @@ class OrchestratorConfig:
     # Export settings
     export_kicad: Path | bool | None = None  # True = auto path, Path = specific path
 
+    # Agent mode — skip browser approval gate (for autonomous/GUI workflows)
+    agent_mode: bool = False
+
     # Router settings
     router_engine: str = "freerouting"  # "freerouting" or "builtin"
     freerouting_jar_path: Path | None = None
