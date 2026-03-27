@@ -98,7 +98,7 @@ User Input (natural language or JSON)
 └─────────────────────────────────┘
        │
        ▼
-   Step 6: Output Generation (planned)
+   Step 6: Output Generation
 ```
 
 ## Directory Structure
@@ -106,11 +106,12 @@ User Input (natural language or JSON)
 ```
 pcb-creator/
 ├── orchestrator/               # Python orchestration engine
-│   ├── cli.py                  # CLI: run, design, validate, import-kicad
-│   ├── runner.py               # Sequential step executor (Steps 0-5 + approval gate)
-│   ├── config.py               # Model, router engine, paths, limits
+│   ├── cli.py                  # CLI: run, design, gui, validate, import-kicad
+│   ├── runner.py               # Sequential step executor + Gradio generator (Steps 0-6)
+│   ├── gradio_app.py           # Gradio web GUI (chat, viewer, settings, progress)
+│   ├── config.py               # Model, router engine, paths, limits, agent_mode
 │   ├── project.py              # Project directory & file I/O
-│   ├── approval_server.py      # Ephemeral HTTP server for post-routing approval gate
+│   ├── approval_server.py      # Ephemeral HTTP server for CLI approval gate
 │   ├── steps/
 │   │   ├── base.py             # StepBase abstract class, StepResult
 │   │   ├── step_0_requirements.py  # Validate + calculate + copy attachments
@@ -120,7 +121,7 @@ pcb-creator/
 │   ├── gather/
 │   │   ├── conversation.py     # Interactive requirements gathering + enrichment
 │   │   ├── calculator.py       # LED resistor / power calculations
-│   │   └── schema.py           # Requirements JSON schema (board, hints, attachments)
+│   │   └── schema.py           # Requirements JSON schema + LLM type coercion
 │   ├── llm/
 │   │   ├── base.py             # LLMClient abstract base
 │   │   └── litellm_client.py   # litellm provider (with continuation, api_base/key)
@@ -148,7 +149,8 @@ pcb-creator/
 │   ├── drc_report.py           # Consolidated DRC report (electrical + DFM + current + mechanical)
 │   └── engineering_constants.py # Constants, DFM profiles (JLCPCB, OSH Park, PCBWay, generic)
 ├── visualizers/                # Board visualization tools
-│   └── placement_viewer.py     # Interactive viewer (routing, fills, DRC, export/import, approval)
+│   ├── placement_viewer.py     # Interactive viewer (routing, fills, DRC, export/import, approval)
+│   └── netlist_viewer.py       # Schematic-style block diagram (components, pins, nets)
 ├── schemas/
 │   ├── circuit_schema.json     # Netlist JSON Schema (draft-07)
 │   ├── bom_schema.json         # BOM JSON Schema
@@ -183,7 +185,8 @@ pcb-creator/
 │           ├── {name}_cpl.csv         #   pick-and-place (JLCPCB CPL format)
 │           ├── {name}_board.step      #   bare PCB 3D model
 │           └── {name}_gerbers.zip     #   all Gerbers + drill for upload
-├── .env                        # API keys (gitignored)
+├── pcb-creator                 # Launcher script (auto-uses .venv python)
+├── .env                        # API keys: PCB_API_KEY, OPENAI_API_KEY (gitignored)
 ├── STANDARDS.md                # Master standards (injected into prompts)
 ├── FLOW.md                     # Step definitions and workflow rules
 ├── AGENTS.md                   # Agent role descriptions
@@ -506,7 +509,13 @@ Grid-based A* with 8-connected movement (orthogonal + 45° diagonal) on a 0.25mm
 
 ### Post-Routing Approval Gate
 
-After routing completes, the pipeline serves an interactive board viewer in the browser and blocks until the user approves. The viewer is served by an ephemeral HTTP server (`orchestrator/approval_server.py`) that connects the browser UI to the CLI pipeline.
+Two modes depending on how the pipeline is invoked:
+
+**CLI mode** (`pcb-creator run`): After routing completes, the pipeline serves an interactive board viewer via an ephemeral HTTP server (`orchestrator/approval_server.py`) and blocks until the user approves in the browser.
+
+**GUI mode** (`pcb-creator gui`): The Gradio UI itself provides the approval flow — the board viewer updates progressively, and Export/Import/Continue buttons appear in the Gradio interface. No ephemeral server needed.
+
+**Agent mode** (`pcb-creator run --agent-mode`): Approval gate is skipped entirely — the pipeline proceeds directly to output generation.
 
 **Viewer features:**
 - Routed traces (color-coded by net, layered by copper layer)
@@ -624,13 +633,19 @@ Produces manufacturer-ready files in `projects/{name}/output/`. All files are st
 
 **Dependencies:** `gerber-writer>=0.4` (Gerber generation). All other formats use Python stdlib.
 
-### Planned Features
+### Completed Features
 
-- **Gradio GUI**: ✅ Implemented. `pcb-creator gui` launches Gradio web UI with chat input, file upload (drag & drop), step progress panel, embedded board viewer, AI model settings (provider presets), and Export/Import KiCad buttons. Uses `run_workflow_with_gradio()` generator for progressive UI updates.
-- **Agent-mode flag**: ✅ Implemented. `--agent-mode` flag on `pcb-creator run` skips browser approval gate. Vision-based autonomous approval (render to PNG, LLM review) is a future step.
+- **Gradio GUI** (`pcb-creator gui`): Web UI with chat-style circuit description input, drag-and-drop file upload, LLM-powered requirements translation with review/feedback loop, progressive board visualization (netlist → placement → routed → DRC), provider presets (OpenRouter/Local/Custom), Export KiCad and Import KiCad actions, step progress panel, and settings accordion. Viewer embedded via iframe with `sandbox="allow-scripts"` for full JavaScript interactivity (tooltips, pan/zoom).
+- **Conversational requirements refinement**: After the LLM translates a circuit description, the GUI shows a rich markdown summary (with tables, calculations, wiring details) for user review. Users can send feedback/corrections that re-run the translation with context, or approve to start the pipeline. Input controls hide during pipeline execution to maximize progress panel visibility.
+- **Agent-mode flag** (`--agent-mode`): Skips browser approval gate for autonomous/headless workflows. Used internally by the GUI (which handles approval itself).
+- **Netlist block diagram** (`visualizers/netlist_viewer.py`): Schematic-style visualization shown after Step 1 — components as colored boxes with pins, connected by bezier-curved nets that route around boxes.
+- **LLM output robustness** (`gather/schema.py`): Automatic type coercion (string→number) and null stripping before JSON Schema validation. Prevents rework loops caused by LLMs outputting `"2"` instead of `2` or `null` for optional fields.
+
+### Future Enhancements
+
 - **Silkscreen overlap fix**: Board name/revision label collides with component designators on dense boards. Need to: (1) truncate long project names for silkscreen, (2) check board name candidate positions against designator bounding boxes, not just pads/vias. Affects `optimizers/router.py` silkscreen generation.
 - **MCP server for agent integration**: Expose the pipeline as an MCP (Model Context Protocol) server so any AI agent can design PCBs. Tools: `design_pcb(description, settings)` → streams step events, `get_project_status(project)`, `export_kicad(project)`, `get_drc_report(project)`, `list_projects()`. The existing `run_workflow_with_gradio()` generator yields structured JSON events that map directly to streaming tool results. `--agent-mode` already skips the blocking approval gate. Preferred over a Claude Code skill because MCP is agent-agnostic — works with Claude Code, Agent SDK, and any MCP client.
-- **GUI conversational refinement**: After the LLM translates a circuit description, show a summary to the user and allow feedback/corrections before starting the pipeline. Uses the existing `RequirementsGatherer._summarize()` flow but via a chat-style interface instead of terminal `input()`. Enables back-and-forth clarification of ambiguous requirements (e.g., "which ATtiny variant?", "what LED forward voltage?") before committing to the full pipeline run.
+- **Vision-based autonomous approval**: Render board to PNG, send image + DRC report + routing stats to a vision-capable LLM for review. Agent responds APPROVE / EXPORT_KICAD / REQUEST_CHANGES. Escalates to human review after 3 failed attempts. Enables fully autonomous pipeline for AI agents.
 - **Manufacturer quoting (Step 7)**: Auto-submit BOM, Gerbers, assembly files to manufacturer APIs (JLCPCB, PCBWay, OSH Park) for fabrication + assembly quotes. Present comparison to user. Steps 5-6 produce submission-ready files in manufacturer-expected formats.
 - **3D populated board model**: Add component 3D models to the STEP file from EDA libraries (KiCad 3D library, SnapEDA, Ultra Librarian) or generated parametrically from datasheet dimensions. STEP assembly places models at placement coordinates with rotation.
 - **Pre-route GND as fill before signal routing**: Build GND fill first so the router can use fill connectivity for GND pads, freeing grid space for signal routing.
@@ -650,7 +665,9 @@ These are respected throughout the pipeline:
 
 ## Visualization
 
-`visualizers/placement_viewer.py` generates interactive HTML/SVG board views with:
+### Board Viewer (`visualizers/placement_viewer.py`)
+
+Interactive HTML/SVG board views with:
 - Color-coded components by type with pad shapes (rectangles for each pin, derived from pad_geometry)
 - Ratsnest lines (MST per net, color-coded by net class)
 - Routed traces (width-proportional, colored by net, layer-aware opacity, supports diagonal segments)
@@ -658,19 +675,81 @@ These are respected throughout the pipeline:
 - Silkscreen elements (designator labels, pin 1 dots, anode "A" markers)
 - Routing progress bar in header (green/yellow/red by completion %)
 - Hover tooltips with value, specs, and description (from BOM)
-- Pan/zoom, side panel with routing statistics and component table
+- Pan/zoom with auto-fit-to-viewport, side panel with routing statistics and component table
 - Fiducial markers
+- `embed_mode` flag suppresses action buttons when embedded in the Gradio GUI
+- `fitToView()` with `requestAnimationFrame` retry for correct sizing inside iframes
+
+### Netlist Viewer (`visualizers/netlist_viewer.py`)
+
+Schematic-style block diagram showing circuit connectivity after Step 1:
+- Components as labeled boxes colored by type (blue=resistor, red=LED, green=IC, purple=connector)
+- Pins on box edges (left/right split) with pin name labels
+- Bezier-curved net connections that exit away from box edges (no through-box routing)
+- Color-coded by net class (red=power, blue=ground, gray=signal)
+- Multi-pin nets converge at junction dots
+- Hover tooltips with component details, specs, and descriptions
+- Auto-scaling SVG (`preserveAspectRatio="xMidYMid meet"`) fills available viewport
+- Three-column layout: connectors → ICs → passives
+
+### Progressive Visualization
+
+In the Gradio GUI, the board viewer updates progressively through the pipeline:
+1. **After Step 1** → Netlist block diagram (verify connectivity)
+2. **After Step 3** → Placement view with ratsnest (component positions)
+3. **After Step 4** → Routed board with traces, vias, and copper fills
+4. **After Step 5** → Routed board + DRC report panel
 
 See `VISUALIZATION.md` for the data format reference (useful for building custom visualizations).
+
+## Gradio GUI (`pcb-creator gui`)
+
+### Architecture
+
+The GUI is a single Gradio Blocks app (`orchestrator/gradio_app.py`) with two columns:
+- **Left (30%)**: Chat display (rich markdown), circuit description input, file upload, action buttons, step progress panel
+- **Right (70%)**: Board viewer (iframe-embedded HTML with full JavaScript interactivity)
+
+### Workflow Phases
+
+1. **Input phase**: User types circuit description, optionally attaches files (DXF outlines, sketches, photos). Settings accordion allows choosing provider (OpenRouter/Local/Custom), API key, model, max tokens.
+2. **Translation phase**: LLM translates natural language → structured requirements JSON. The `RequirementsGatherer` handles datasheet enrichment, footprint lookup, and engineering calculations automatically.
+3. **Review phase**: Rich markdown summary displayed (tables, wiring, calculations). User can send feedback (re-runs translation with context) or approve.
+4. **Pipeline phase**: Input controls hide. Step progress panel shows Steps 0-6 with status indicators. Board viewer updates progressively (netlist → placement → routed → DRC).
+5. **Complete phase**: Export KiCad / Import KiCad buttons appear. Input controls reappear for next design.
+
+### Technical Details
+
+- **Iframe embedding**: Viewer HTML is wrapped in `<iframe srcdoc="...">` with `sandbox="allow-scripts allow-same-origin"` because Gradio 6 sanitizes inline `<script>` tags. The iframe preserves full tooltip, pan/zoom, and trace hover interactivity.
+- **Generator pattern**: `run_workflow_with_gradio()` yields event dicts at step boundaries. The Gradio handler consumes these to update UI components progressively without blocking.
+- **LLM type coercion**: `coerce_requirements_types()` in `gather/schema.py` fixes common LLM output issues (string "2" → int 2, null → key deletion) before JSON Schema validation, reducing failed rework loops.
+- **Provider presets**: Dropdown auto-fills api_base + model name. OpenRouter uses litellm's `openrouter/` prefix (no explicit api_base needed). Local uses `openai/` prefix with `http://localhost:8000/v1`.
+- **Project slugs**: `_slugify()` strips filler words and caps at 24 chars with whole-word boundary. "A blink circuit with an LED and an ATTiny85" → `blink_led_attiny85`.
+
+### CLI Commands
+
+| Command | Description |
+|---------|-------------|
+| `pcb-creator gui` | Launch Gradio web GUI (port 7860) |
+| `pcb-creator gui --port 8080 --share` | Custom port + public Gradio URL |
+| `pcb-creator run --requirements req.json --project name` | Headless pipeline with browser approval |
+| `pcb-creator run ... --agent-mode` | Headless pipeline, skip approval gate |
+| `pcb-creator design --project name` | Interactive CLI requirements gathering |
+| `pcb-creator import-kicad --project name --kicad-file board.kicad_pcb` | Re-import edited KiCad file |
+| `pcb-creator validate netlist.json` | Validate an existing netlist |
 
 ## LLM Provider Support
 
 ### Cloud (OpenRouter)
-Default: `openrouter/qwen/qwen3.5-27b`. Also tested with `openrouter/x-ai/grok-4.1-fast`.
+Default: `openrouter/x-ai/grok-4.1-fast` — fast, reliable structured output for netlist/BOM/placement generation. Also tested with `openrouter/qwen/qwen3.5-27b` (27B dense model, good for local or cost-sensitive use).
 
 ### Local (oMLX / Ollama)
 Use `--model openai/<model-name> --api-base http://localhost:8000/v1` for local models.
-API key loaded from `.env` file via `python-dotenv`.
+Tested with `Qwen3.5-27B-MLX-7bit` via oMLX. Local models need longer timeouts (30min default) for complex boards (21+ components).
+
+### Configuration
+
+API key loaded from `.env` file (`PCB_API_KEY`). In the GUI, keys can be entered in the Settings accordion (overrides env var for that session).
 
 Environment variables: `PCB_GENERATE_MODEL`, `PCB_REVIEW_MODEL`, `PCB_GATHER_MODEL`, `PCB_API_BASE`, `PCB_API_KEY`.
 
