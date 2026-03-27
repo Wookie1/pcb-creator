@@ -6,6 +6,8 @@ Called by validate_netlist.py after schema and referential integrity pass.
 
 from collections import Counter
 
+from pinout import build_pinout_from_requirements
+
 from engineering_constants import (
     CAPACITOR_MAX_F,
     CAPACITOR_MIN_F,
@@ -492,6 +494,109 @@ def check_power_budget(
 
 
 # ---------------------------------------------------------------------------
+# Check: IC pinout compliance
+# ---------------------------------------------------------------------------
+
+def check_pinout_compliance(
+    components: dict, ports: dict, nets: dict,
+    requirements: dict | None = None,
+) -> tuple[list[str], list[str]]:
+    """Verify that netlist ports match the IC pinout from requirements.
+
+    This runs AFTER auto-correction in validate_netlist, so errors here
+    represent unfixable issues (e.g. pin_number out of range).
+    """
+    errors: list[str] = []
+    warnings: list[str] = []
+
+    if not requirements:
+        return errors, warnings
+
+    pinouts = build_pinout_from_requirements(requirements)
+    if not pinouts:
+        return errors, warnings
+
+    # Build designator -> component_id lookup
+    des_to_comp: dict[str, str] = {}
+    for cid, comp in components.items():
+        des_to_comp[comp.get("designator", "")] = cid
+
+    # Build component_id -> designator for port lookups
+    comp_to_des: dict[str, str] = {}
+    for cid, comp in components.items():
+        comp_to_des[cid] = comp.get("designator", "")
+
+    # Group ports by parent component
+    comp_ports: dict[str, list[dict]] = {}
+    for port in ports.values():
+        cid = port.get("component_id", "")
+        comp_ports.setdefault(cid, []).append(port)
+
+    for designator, pin_map in pinouts.items():
+        comp_id = des_to_comp.get(designator)
+        if comp_id is None:
+            continue  # Component not in netlist (may be unused)
+
+        port_list = comp_ports.get(comp_id, [])
+        used_pins: set[int] = set()
+
+        for port in port_list:
+            pin_num = port.get("pin_number")
+            port_id = port.get("port_id", "?")
+
+            if pin_num not in pin_map:
+                errors.append(
+                    f"DRC pinout: {designator} {port_id} has pin_number {pin_num} "
+                    f"which is not in the {len(pin_map)}-pin pinout"
+                )
+                continue
+
+            used_pins.add(pin_num)
+            expected = pin_map[pin_num]
+
+            # Check name match (case-insensitive, any of primary/alt)
+            port_name = port.get("name", "").upper().strip()
+            expected_upper = [n.upper() for n in expected.all_names]
+            if port_name and port_name not in expected_upper:
+                # Also check if the full "A/B" name matches
+                full_name_upper = "/".join(expected.all_names).upper()
+                if port_name != full_name_upper:
+                    errors.append(
+                        f"DRC pinout: {designator} {port_id} pin {pin_num} "
+                        f"name '{port.get('name', '')}' doesn't match expected "
+                        f"'{'/'.join(expected.all_names)}'"
+                    )
+
+            # Check electrical type
+            current_type = port.get("electrical_type", "")
+            if current_type != expected.inferred_electrical_type:
+                warnings.append(
+                    f"DRC pinout: {designator} {port_id} pin {pin_num} "
+                    f"type '{current_type}' differs from expected "
+                    f"'{expected.inferred_electrical_type}'"
+                )
+
+        # Check for missing pins (warning only — NC pins may be intentionally absent)
+        missing = set(pin_map.keys()) - used_pins
+        if missing:
+            missing_sorted = sorted(missing)
+            # Only warn for non-NC pins
+            nc_missing = [p for p in missing_sorted
+                          if pin_map[p].inferred_electrical_type == "no_connect"]
+            real_missing = [p for p in missing_sorted
+                           if pin_map[p].inferred_electrical_type != "no_connect"]
+            if real_missing:
+                pins_str = ", ".join(
+                    f"{p}:{pin_map[p].primary_name}" for p in real_missing
+                )
+                warnings.append(
+                    f"DRC pinout: {designator} missing ports for pins: {pins_str}"
+                )
+
+    return errors, warnings
+
+
+# ---------------------------------------------------------------------------
 # Public API: run all DRC checks
 # ---------------------------------------------------------------------------
 
@@ -545,6 +650,12 @@ def run_all_drc_checks(
     ]
     for check_fn in checks_with_power:
         errs, warns = check_fn(components, ports, nets, v_supply)
+        all_errors.extend(errs)
+        all_warnings.extend(warns)
+
+    # Pinout compliance checks (require requirements with pinout data)
+    if requirements:
+        errs, warns = check_pinout_compliance(components, ports, nets, requirements)
         all_errors.extend(errs)
         all_warnings.extend(warns)
 

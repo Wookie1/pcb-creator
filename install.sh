@@ -71,19 +71,19 @@ if [ ! -f ".env" ]; then
 # === LLM Provider ===
 # OpenRouter (default — requires API key from https://openrouter.ai)
 # PCB_GENERATE_MODEL=openrouter/qwen/qwen3.5-27b
-# PCB_API_KEY=sk-or-...
+# PCB_LLM_API_KEY=sk-or-...
 
 # Ollama (local, free — install from https://ollama.com)
 # PCB_GENERATE_MODEL=ollama/qwen3.5:27b
-# PCB_API_BASE=http://localhost:11434/v1
+# PCB_LLM_API_BASE=http://localhost:11434/v1
 
 # oMLX (local Mac inference)
 # PCB_GENERATE_MODEL=openai/Qwen3.5-27B-MLX-7bit
-# PCB_API_BASE=http://localhost:8000/v1
+# PCB_LLM_API_BASE=http://localhost:8000/v1
 
 # OpenAI
 # PCB_GENERATE_MODEL=openai/gpt-4o
-# PCB_API_KEY=sk-...
+# PCB_LLM_API_KEY=sk-...
 
 # === Router ===
 # PCB_ROUTER_ENGINE=freerouting    # or "builtin"
@@ -108,13 +108,13 @@ echo "=== Setup Complete ==="
 echo ""
 echo "Quick start:"
 echo "  source .venv/bin/activate"
-echo "  export PCB_API_KEY=your-key-here     # or edit .env"
+echo "  export PCB_LLM_API_KEY=your-key-here     # or edit .env"
 echo "  pcb-creator design --project my_board"
 echo ""
 echo "Or with a requirements file:"
 echo "  pcb-creator run --requirements tests/test_switch_led.json --project test1"
 echo ""
 echo "For local models (Ollama):"
-echo "  export PCB_API_BASE=http://localhost:11434/v1"
+echo "  export PCB_LLM_API_BASE=http://localhost:11434/v1"
 echo "  export PCB_GENERATE_MODEL=ollama/qwen3.5:27b"
 echo ""

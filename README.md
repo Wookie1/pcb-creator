@@ -38,10 +38,10 @@ Configure your LLM provider (edit `.env`):
 
 ```bash
 # OpenRouter (cloud)
-PCB_API_KEY=sk-or-your-key-here
+PCB_LLM_API_KEY=sk-or-your-key-here
 
 # Or Ollama (local, free)
-PCB_API_BASE=http://localhost:11434/v1
+PCB_LLM_API_BASE=http://localhost:11434/v1
 PCB_GENERATE_MODEL=ollama/qwen3.5:27b
 ```
 
@@ -87,8 +87,8 @@ All settings via environment variables or `.env` file:
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `PCB_GENERATE_MODEL` | `openrouter/qwen/qwen3.5-27b` | LLM model for generation |
-| `PCB_API_BASE` | *(none)* | API base URL (for local models) |
-| `PCB_API_KEY` | *(none)* | API key |
+| `PCB_LLM_API_BASE` | *(none)* | API base URL (for local models) |
+| `PCB_LLM_API_KEY` | *(none)* | API key |
 | `PCB_ROUTER_ENGINE` | `freerouting` | `freerouting` or `builtin` |
 | `PCB_FREEROUTING_TIMEOUT` | `300` | Freerouting timeout (seconds) |
 | `PCB_MAX_REWORK` | `5` | Max LLM rework attempts per step |

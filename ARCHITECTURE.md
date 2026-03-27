@@ -105,13 +105,15 @@ User Input (natural language or JSON)
 
 ```
 pcb-creator/
+├── mcp_server.py               # MCP server for AI agent integration (FastMCP, stdio)
 ├── orchestrator/               # Python orchestration engine
-│   ├── cli.py                  # CLI: run, design, gui, validate, import-kicad
-│   ├── runner.py               # Sequential step executor + Gradio generator (Steps 0-6)
+│   ├── cli.py                  # CLI: run, design, gui, validate, import-kicad, mcp
+│   ├── runner.py               # Sequential step executor + streaming generator (Steps 0-6)
 │   ├── gradio_app.py           # Gradio web GUI (chat, viewer, settings, progress)
 │   ├── config.py               # Model, router engine, paths, limits, agent_mode
 │   ├── project.py              # Project directory & file I/O
 │   ├── approval_server.py      # Ephemeral HTTP server for CLI approval gate
+│   ├── vision_review.py        # Vision-based autonomous board review (agent mode)
 │   ├── steps/
 │   │   ├── base.py             # StepBase abstract class, StepResult
 │   │   ├── step_0_requirements.py  # Validate + calculate + copy attachments
@@ -139,7 +141,10 @@ pcb-creator/
 │   ├── kicad_exporter.py      # Export routed JSON → .kicad_pcb (KiCad 9)
 │   ├── kicad_importer.py      # Import .kicad_pcb → routed JSON
 │   ├── dsn_exporter.py        # Export placement → Specctra DSN (for Freerouting)
-│   └── ses_importer.py        # Import Specctra SES → routed JSON (from Freerouting)
+│   ├── ses_importer.py        # Import Specctra SES → routed JSON (from Freerouting)
+│   ├── component_heights.py   # Package height lookup table for parametric 3D models
+│   ├── parametric_models.py   # Generate STEP BREP box shapes for components
+│   └── model_fetcher.py       # Fetch 3D STEP models from LCSC/EasyEDA with caching
 ├── validators/                 # Deterministic validation
 │   ├── validate_netlist.py     # Schema + referential integrity + DRC
 │   ├── validate_placement.py   # Schema + cross-ref + boundary + overlap + rules
@@ -183,10 +188,10 @@ pcb-creator/
 │           ├── {name}.drl             #   Excellon drill file
 │           ├── {name}_bom.csv         #   BOM (JLCPCB format)
 │           ├── {name}_cpl.csv         #   pick-and-place (JLCPCB CPL format)
-│           ├── {name}_board.step      #   bare PCB 3D model
+│           ├── {name}_board.step      #   populated PCB 3D model (board + components)
 │           └── {name}_gerbers.zip     #   all Gerbers + drill for upload
 ├── pcb-creator                 # Launcher script (auto-uses .venv python)
-├── .env                        # API keys: PCB_API_KEY, OPENAI_API_KEY (gitignored)
+├── .env                        # API keys: PCB_LLM_API_KEY, OPENAI_API_KEY (gitignored)
 ├── STANDARDS.md                # Master standards (injected into prompts)
 ├── FLOW.md                     # Step definitions and workflow rules
 ├── AGENTS.md                   # Agent role descriptions
@@ -354,7 +359,7 @@ User describes circuit → LLM translates to JSON
                     (LEDs without Vf, ICs without pin_count)
                               │
                               ▼
-                    LLM looks up datasheet specs  ← should also resolve IC pinouts
+                    LLM looks up datasheet specs + IC pinouts
                               │
                               ▼
                     Python merges specs into requirements
@@ -385,7 +390,7 @@ During gather only (not during validation), the LLM resolves missing component s
 - Capacitors missing `voltage_rating` → look up rating
 - Transistors missing `vce_max`/`vds_max` → look up ratings
 
-**Needed (not yet implemented):** IC pinout resolution — for complex ICs, the gather step should also return the full pin-to-function mapping (e.g., ATmega328P pin 1 = PC6/RESET). This proved critical in testing: without explicit pinouts, the LLM generates incorrect pin assignments.
+**IC pinout resolution:** For complex ICs, the gather step returns the full pin-to-function mapping (e.g., ATmega328P pin 1 = PC6/RESET) in `specs.pinout`. The `validators/pinout.py` module parses these strings into structured `PinInfo` objects with inferred electrical types. During netlist validation, `_fix_pinout_from_requirements()` auto-corrects wrong pin names and electrical types before DRC runs. The `check_pinout_compliance` DRC check then flags any remaining mismatches (out-of-range pins, unresolvable name conflicts). The schematic generation prompt also receives a structured pinout table so the LLM has an unambiguous reference.
 
 ## Project Lifecycle
 
@@ -515,7 +520,7 @@ Two modes depending on how the pipeline is invoked:
 
 **GUI mode** (`pcb-creator gui`): The Gradio UI itself provides the approval flow — the board viewer updates progressively, and Export/Import/Continue buttons appear in the Gradio interface. No ephemeral server needed.
 
-**Agent mode** (`pcb-creator run --agent-mode`): Approval gate is skipped entirely — the pipeline proceeds directly to output generation.
+**Agent mode** (`pcb-creator run --agent-mode`): Uses vision-based autonomous review (`orchestrator/vision_review.py`). The board is rendered to PNG via `cairosvg`, then sent with DRC/routing stats to a vision-capable LLM (configurable via `PCB_VISION_MODEL`, default `anthropic/claude-sonnet-4-20250514`). The LLM responds APPROVE or REQUEST_CHANGES. Pre-checks auto-approve if 100% routed with 0 DRC errors, and auto-escalate if routing is incomplete. After 3 failed review attempts (configurable via `PCB_VISION_MAX_ATTEMPTS`), escalates to human review via the browser approval gate. In GUI mode, escalation shows the approve button for manual approval.
 
 **Viewer features:**
 - Routed traces (color-coded by net, layered by copper layer)
@@ -628,7 +633,7 @@ Produces manufacturer-ready files in `projects/{name}/output/`. All files are st
 - **Excellon drill** (`gerber_exporter.py`): NC drill file with tool table, grouped by drill size. Sources: via holes + through-hole pad holes.
 - **BOM CSV** (`bom_csv_exporter.py`): JLCPCB-compatible columns (Designator, Value, Package, Quantity, Description, Specs, Notes).
 - **Pick-and-place CSV** (`bom_csv_exporter.py`): JLCPCB CPL format (Designator, Val, Package, Mid X, Mid Y, Rotation, Layer). Includes fiducials for machine vision alignment.
-- **STEP AP214** (`step_exporter.py`): Bare PCB 3D model as an extruded polygon solid. Supports arbitrary board outlines. Generated directly in ISO 10303-21 text format (no CAD kernel dependency). Future: add 3D component models from EDA libraries or generated from datasheets.
+- **STEP AP214** (`step_exporter.py`): Populated PCB 3D model — board solid plus 3D component models at their placed positions with rotation. Component models sourced from LCSC/EasyEDA library via `easyeda2kicad` (cached in `~/.pcb-creator/3d-models/`, configurable via `PCB_3D_MODELS_DIR`). Parametric box fallbacks generated from `component_heights.py` package height database for components without library models. Generated directly in ISO 10303-21 text format (no CAD kernel dependency). Bare board export still available via `export_step()`.
 - **Gerber ZIP** (`gerber_exporter.py`): All Gerbers + drill packaged for manufacturer upload.
 
 **Dependencies:** `gerber-writer>=0.4` (Gerber generation). All other formats use Python stdlib.
@@ -637,18 +642,14 @@ Produces manufacturer-ready files in `projects/{name}/output/`. All files are st
 
 - **Gradio GUI** (`pcb-creator gui`): Web UI with chat-style circuit description input, drag-and-drop file upload, LLM-powered requirements translation with review/feedback loop, progressive board visualization (netlist → placement → routed → DRC), provider presets (OpenRouter/Local/Custom), Export KiCad and Import KiCad actions, step progress panel, and settings accordion. Viewer embedded via iframe with `sandbox="allow-scripts"` for full JavaScript interactivity (tooltips, pan/zoom).
 - **Conversational requirements refinement**: After the LLM translates a circuit description, the GUI shows a rich markdown summary (with tables, calculations, wiring details) for user review. Users can send feedback/corrections that re-run the translation with context, or approve to start the pipeline. Input controls hide during pipeline execution to maximize progress panel visibility.
-- **Agent-mode flag** (`--agent-mode`): Skips browser approval gate for autonomous/headless workflows. Used internally by the GUI (which handles approval itself).
+- **Agent-mode flag** (`--agent-mode`): Replaces the browser approval gate with vision-based autonomous review. Escalates to human review after max attempts. Used internally by the GUI.
 - **Netlist block diagram** (`visualizers/netlist_viewer.py`): Schematic-style visualization shown after Step 1 — components as colored boxes with pins, connected by bezier-curved nets that route around boxes.
 - **LLM output robustness** (`gather/schema.py`): Automatic type coercion (string→number) and null stripping before JSON Schema validation. Prevents rework loops caused by LLMs outputting `"2"` instead of `2` or `null` for optional fields.
 
 ### Future Enhancements
 
-- **Silkscreen overlap fix**: Board name/revision label collides with component designators on dense boards. Need to: (1) truncate long project names for silkscreen, (2) check board name candidate positions against designator bounding boxes, not just pads/vias. Affects `optimizers/router.py` silkscreen generation.
-- **MCP server for agent integration**: Expose the pipeline as an MCP (Model Context Protocol) server so any AI agent can design PCBs. Tools: `design_pcb(description, settings)` → streams step events, `get_project_status(project)`, `export_kicad(project)`, `get_drc_report(project)`, `list_projects()`. The existing `run_workflow_with_gradio()` generator yields structured JSON events that map directly to streaming tool results. `--agent-mode` already skips the blocking approval gate. Preferred over a Claude Code skill because MCP is agent-agnostic — works with Claude Code, Agent SDK, and any MCP client.
-- **Vision-based autonomous approval**: Render board to PNG, send image + DRC report + routing stats to a vision-capable LLM for review. Agent responds APPROVE / EXPORT_KICAD / REQUEST_CHANGES. Escalates to human review after 3 failed attempts. Enables fully autonomous pipeline for AI agents.
-- **Manufacturer quoting (Step 7)**: Auto-submit BOM, Gerbers, assembly files to manufacturer APIs (JLCPCB, PCBWay, OSH Park) for fabrication + assembly quotes. Present comparison to user. Steps 5-6 produce submission-ready files in manufacturer-expected formats.
-- **3D populated board model**: Add component 3D models to the STEP file from EDA libraries (KiCad 3D library, SnapEDA, Ultra Librarian) or generated parametrically from datasheet dimensions. STEP assembly places models at placement coordinates with rotation.
-- **Pre-route GND as fill before signal routing**: Build GND fill first so the router can use fill connectivity for GND pads, freeing grid space for signal routing.
+- **Manufacturer quoting (Step 7)**: Auto-submit BOM, Gerbers, assembly files to manufacturer APIs (JLCPCB, PCBWay, OSH Park) for fabrication + assembly quotes. Present comparison to user. Steps 5-6 produce submission-ready files in manufacturer-expected formats. Blocked on: vendor API availability or TOS review for agent accounts + Playwright.
+- **build123d for richer 3D models**: Replace hand-written STEP BREP boxes with build123d parametric shapes (rounded IC bodies, pin legs, LED domes, etc.). Blocked on: build123d/cadquery adding Python 3.14 support (requires OpenCascade `cadquery-ocp` wheels).
 
 ## User-Defined Component Positions
 
@@ -721,7 +722,7 @@ The GUI is a single Gradio Blocks app (`orchestrator/gradio_app.py`) with two co
 ### Technical Details
 
 - **Iframe embedding**: Viewer HTML is wrapped in `<iframe srcdoc="...">` with `sandbox="allow-scripts allow-same-origin"` because Gradio 6 sanitizes inline `<script>` tags. The iframe preserves full tooltip, pan/zoom, and trace hover interactivity.
-- **Generator pattern**: `run_workflow_with_gradio()` yields event dicts at step boundaries. The Gradio handler consumes these to update UI components progressively without blocking.
+- **Generator pattern**: `run_workflow_streaming()` yields event dicts at step boundaries. The Gradio handler consumes these to update UI components progressively without blocking.
 - **LLM type coercion**: `coerce_requirements_types()` in `gather/schema.py` fixes common LLM output issues (string "2" → int 2, null → key deletion) before JSON Schema validation, reducing failed rework loops.
 - **Provider presets**: Dropdown auto-fills api_base + model name. OpenRouter uses litellm's `openrouter/` prefix (no explicit api_base needed). Local uses `openai/` prefix with `http://localhost:8000/v1`.
 - **Project slugs**: `_slugify()` strips filler words and caps at 24 chars with whole-word boundary. "A blink circuit with an LED and an ATTiny85" → `blink_led_attiny85`.
@@ -733,10 +734,30 @@ The GUI is a single Gradio Blocks app (`orchestrator/gradio_app.py`) with two co
 | `pcb-creator gui` | Launch Gradio web GUI (port 7860) |
 | `pcb-creator gui --port 8080 --share` | Custom port + public Gradio URL |
 | `pcb-creator run --requirements req.json --project name` | Headless pipeline with browser approval |
-| `pcb-creator run ... --agent-mode` | Headless pipeline, skip approval gate |
+| `pcb-creator run ... --agent-mode` | Headless pipeline, vision-based approval |
 | `pcb-creator design --project name` | Interactive CLI requirements gathering |
 | `pcb-creator import-kicad --project name --kicad-file board.kicad_pcb` | Re-import edited KiCad file |
 | `pcb-creator validate netlist.json` | Validate an existing netlist |
+| `pcb-creator mcp` | Launch MCP server (stdio transport) for AI agent integration |
+
+### MCP Server
+
+The MCP server (`mcp_server.py`) exposes the pipeline as tools for any MCP-compatible AI agent (Claude Code, Agent SDK, OpenClaw, Agent Zero). Uses FastMCP with stdio transport, runs headless with vision-based approval.
+
+**Projects directory:** `~/.pcb-creator/projects/` (configurable via `PCB_PROJECTS_DIR` env var). Persists across sessions — any agent can resume or inspect previous designs.
+
+**Tools:**
+
+| Tool | Description |
+|------|-------------|
+| `design_pcb(description, project_name?, settings?)` | Run the full pipeline from a circuit description. Returns routing stats, DRC summary, output file paths. |
+| `list_projects()` | List all projects with status and output availability. |
+| `get_project_status(project_name)` | Detailed status: step progress, routing stats, DRC pass/fail. |
+| `get_drc_report(project_name)` | Full DRC report with per-check violations. |
+| `export_kicad(project_name)` | Export completed design to KiCad `.kicad_pcb` format. |
+| `get_board_image(project_name, width?)` | Render routed board as base64 PNG image. |
+
+**Configuration:** Same `PCB_*` environment variables as the CLI. The server forces `agent_mode=True` for vision-based autonomous approval.
 
 ## LLM Provider Support
 
@@ -749,13 +770,13 @@ Tested with `Qwen3.5-27B-MLX-7bit` via oMLX. Local models need longer timeouts (
 
 ### Configuration
 
-API key loaded from `.env` file (`PCB_API_KEY`). In the GUI, keys can be entered in the Settings accordion (overrides env var for that session).
+API key loaded from `.env` file (`PCB_LLM_API_KEY`). In the GUI, keys can be entered in the Settings accordion (overrides env var for that session).
 
-Environment variables: `PCB_GENERATE_MODEL`, `PCB_REVIEW_MODEL`, `PCB_GATHER_MODEL`, `PCB_API_BASE`, `PCB_API_KEY`.
+Environment variables: `PCB_LLM_API_KEY`, `PCB_LLM_API_BASE`, `PCB_GENERATE_MODEL`, `PCB_REVIEW_MODEL`, `PCB_GATHER_MODEL`, `PCB_LLM_MAX_TOKENS`, `PCB_LLM_TIMEOUT`, `PCB_VISION_MODEL`.
 
 ## Key Learnings
 
-1. **IC pinouts must be in requirements.** LLMs don't reliably know pin mappings for specific IC packages. The datasheet lookup step should resolve these during gather, before the user approves requirements.
+1. **IC pinouts must be in requirements.** LLMs don't reliably know pin mappings for specific IC packages. The datasheet lookup step resolves these during gather, before the user approves requirements. The `validators/pinout.py` module then enforces them deterministically — auto-correcting wrong names/types and flagging out-of-range pins via DRC.
 
 2. **Output token limits matter.** A 21-component Arduino Uno netlist is ~30KB / ~8K tokens. Free-tier models with 8K output limits truncate. The continuation mechanism handles this, but choosing a model with adequate output capacity (Qwen3.5-27B at 32K+) avoids the issue entirely.
 

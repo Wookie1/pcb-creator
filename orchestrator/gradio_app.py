@@ -24,7 +24,7 @@ except ImportError:
     )
 
 from .config import OrchestratorConfig
-from .runner import STEP_NAMES, run_workflow_with_gradio
+from .runner import STEP_NAMES, run_workflow_streaming
 
 logger = logging.getLogger("pcb-creator.gui")
 
@@ -499,7 +499,7 @@ def _approve_and_run(
     )
 
     try:
-        gen = run_workflow_with_gradio(
+        gen = run_workflow_streaming(
             req_path, project_name, config,
             attach_files=attach_files or None,
         )
@@ -533,10 +533,37 @@ def _approve_and_run(
                     viewer_update=viewer_html,
                 )
 
+            elif ev == "vision_review_start":
+                yield _out(
+                    status="Vision AI reviewing board...", state=state,
+                    steps_update=_render_steps(step_statuses),
+                )
+
+            elif ev == "vision_review_done":
+                result = event.get("result", "escalated")
+                if result == "approved":
+                    messages.append({"role": "system",
+                                     "content": "\u2705 Vision review: APPROVED"})
+                    yield _out(
+                        status="Vision review passed.", state=state,
+                        chat_display=_render_chat_markdown(messages),
+                        steps_update=_render_steps(step_statuses),
+                    )
+                else:
+                    messages.append({"role": "system",
+                                     "content": "\u26a0\ufe0f Vision review requested changes. Please review the board and approve manually."})
+                    yield _out(
+                        status="Vision review escalated \u2014 manual approval needed.",
+                        state=state,
+                        chat_display=_render_chat_markdown(messages),
+                        approve_update=gr.update(interactive=True, visible=True),
+                        steps_update=_render_steps(step_statuses),
+                    )
+
             elif ev == "approval_needed":
                 viewer_html = _wrap_viewer_iframe(event["html"])
                 yield _out(
-                    status="Board ready.", state=state,
+                    status="Manual approval needed.", state=state,
                     steps_update=_render_steps(step_statuses),
                     viewer_update=viewer_html,
                 )
@@ -843,13 +870,13 @@ def launch_gui(base_dir: Path | None = None, port: int = 7860,
                     value="OpenRouter",
                 )
                 _env_key_hint = (
-                    " (PCB_API_KEY found in .env)"
-                    if os.environ.get("PCB_API_KEY") else ""
+                    " (PCB_LLM_API_KEY found in .env)"
+                    if os.environ.get("PCB_LLM_API_KEY") else ""
                 )
                 api_key_input = gr.Textbox(
                     label=f"API Key{_env_key_hint}",
                     type="password",
-                    placeholder="Leave empty to use PCB_API_KEY from .env",
+                    placeholder="Leave empty to use PCB_LLM_API_KEY from .env",
                 )
             with gr.Row():
                 api_base_input = gr.Textbox(

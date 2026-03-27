@@ -33,6 +33,7 @@ except ImportError:
     sys.exit(1)
 
 from drc_checks import run_all_drc_checks
+from pinout import build_pinout_from_requirements
 
 
 # Maps component_type to expected designator prefix(es)
@@ -309,6 +310,69 @@ def _coerce_netlist_types(netlist: dict) -> None:
                     del elem[k]
 
 
+def _fix_pinout_from_requirements(
+    netlist: dict,
+    requirements: dict,
+) -> list[str]:
+    """Auto-correct IC port names and electrical types using gathered pinout data.
+
+    Modifies the netlist dict in-place. Returns a list of correction warnings.
+    """
+    pinouts = build_pinout_from_requirements(requirements)
+    if not pinouts:
+        return []
+
+    # Build component_id -> designator lookup from netlist
+    comp_designators: dict[str, str] = {}
+    for elem in netlist.get("elements", []):
+        if elem.get("element_type") == "component":
+            comp_designators[elem["component_id"]] = elem.get("designator", "")
+
+    corrections: list[str] = []
+
+    for elem in netlist.get("elements", []):
+        if elem.get("element_type") != "port":
+            continue
+
+        comp_id = elem.get("component_id", "")
+        designator = comp_designators.get(comp_id, "")
+        if designator not in pinouts:
+            continue
+
+        pin_map = pinouts[designator]
+        pin_num = elem.get("pin_number")
+        if pin_num not in pin_map:
+            continue
+
+        expected = pin_map[pin_num]
+        port_id = elem.get("port_id", "?")
+        port_name = elem.get("name", "")
+
+        # Check if port name matches any known name for this pin
+        name_upper = port_name.upper().strip()
+        expected_names_upper = [n.upper() for n in expected.all_names]
+
+        if name_upper not in expected_names_upper:
+            # Build the full function string (e.g. "PC6/RESET")
+            full_name = "/".join(expected.all_names)
+            corrections.append(
+                f"Pinout auto-fix: {designator} {port_id} pin {pin_num} "
+                f"name '{port_name}' -> '{full_name}' (from pinout)"
+            )
+            elem["name"] = full_name
+
+        # Fix electrical type if mismatched
+        current_type = elem.get("electrical_type", "")
+        if current_type != expected.inferred_electrical_type:
+            corrections.append(
+                f"Pinout auto-fix: {designator} {port_id} pin {pin_num} "
+                f"type '{current_type}' -> '{expected.inferred_electrical_type}'"
+            )
+            elem["electrical_type"] = expected.inferred_electrical_type
+
+    return corrections
+
+
 def validate_netlist(
     netlist_path: str,
     schema_path: str | None = None,
@@ -367,9 +431,14 @@ def validate_netlist(
     # Coerce common LLM output errors before validation
     _coerce_netlist_types(netlist)
 
+    # Auto-fix IC pin names/types using gathered pinout data
+    pinout_corrections: list[str] = []
+    if requirements:
+        pinout_corrections = _fix_pinout_from_requirements(netlist, requirements)
+
     # Run validations
     all_errors = []
-    all_warnings = []
+    all_warnings = list(pinout_corrections)
 
     # 1. JSON Schema validation
     schema_errors = validate_schema(netlist, schema)

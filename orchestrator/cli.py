@@ -65,7 +65,7 @@ def main(argv: list[str] | None = None) -> int:
         "--api-key",
         type=str,
         default=None,
-        help="LLM API key (overrides PCB_API_KEY env var)",
+        help="LLM API key (overrides PCB_LLM_API_KEY env var)",
     )
     run_parser.add_argument(
         "--no-thinking",
@@ -154,6 +154,11 @@ def main(argv: list[str] | None = None) -> int:
         "netlist", type=Path, help="Path to netlist JSON file"
     )
 
+    # mcp command — launch MCP server
+    subparsers.add_parser(
+        "mcp", help="Launch MCP server (stdio transport) for AI agent integration"
+    )
+
     args = parser.parse_args(argv)
 
     if args.command == "run":
@@ -183,6 +188,11 @@ def main(argv: list[str] | None = None) -> int:
 
     elif args.command == "validate":
         return _validate(args.netlist)
+
+    elif args.command == "mcp":
+        from mcp_server import main as mcp_main
+        mcp_main()
+        return 0
 
     return 1
 
@@ -224,7 +234,7 @@ def _design_interactive(args) -> int:
     from .prompts.builder import PromptBuilder
 
     config = _make_config(args)
-    llm = LiteLLMClient(config.gather_model, api_base=config.api_base, api_key=config.api_key)
+    llm = LiteLLMClient(config.gather_model, api_base=config.api_base, api_key=config.api_key, timeout=config.llm_timeout)
     prompt_builder = PromptBuilder(config.base_dir)
 
     gatherer = RequirementsGatherer(llm, prompt_builder)

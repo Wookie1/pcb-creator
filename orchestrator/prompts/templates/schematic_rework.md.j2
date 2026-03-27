@@ -16,6 +16,14 @@ The following issues were found in your previous output. Fix ALL of them:
 
 {{ previous_output }}
 
+{% if pinout_table %}
+### IC Pinout Reference
+
+For each IC below, you MUST use EXACTLY these pin numbers, names, and electrical types. Do not invent or guess pin names — use the pinout below as the authoritative reference.
+
+{{ pinout_table }}
+{% endif %}
+
 ### Output Format
 
 Produce a JSON object with this structure:

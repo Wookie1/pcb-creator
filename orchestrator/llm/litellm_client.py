@@ -1,5 +1,7 @@
 """LLM client using litellm for provider-agnostic API calls."""
 
+import base64
+
 import litellm
 
 from .base import LLMClient
@@ -70,3 +72,44 @@ class LiteLLMClient(LLMClient):
             messages.append({"role": "user", "content": "Continue exactly where you left off. Do not repeat any content."})
 
         return accumulated
+
+    def generate_with_vision(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        images: list[bytes],
+        max_tokens: int = 4096,
+        temperature: float = 0.0,
+    ) -> str:
+        """Send prompt with images using litellm's multimodal message format."""
+        messages = []
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
+
+        # Build multimodal content: text + images
+        content: list[dict] = [{"type": "text", "text": user_prompt}]
+        for img_bytes in images:
+            b64_data = base64.b64encode(img_bytes).decode("utf-8")
+            content.append({
+                "type": "image_url",
+                "image_url": {"url": f"data:image/png;base64,{b64_data}"},
+            })
+        messages.append({"role": "user", "content": content})
+
+        kwargs: dict = {}
+        if self.api_base:
+            kwargs["api_base"] = self.api_base
+        if self.api_key:
+            kwargs["api_key"] = self.api_key
+        if self.extra_body:
+            kwargs["extra_body"] = self.extra_body
+
+        response = litellm.completion(
+            model=self.model,
+            messages=messages,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            timeout=self.timeout,
+            **kwargs,
+        )
+        return response.choices[0].message.content or ""

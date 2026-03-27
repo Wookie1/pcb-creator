@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import heapq
 import math
+import dataclasses
 from dataclasses import dataclass, field
 
 from .pad_geometry import PadInfo, build_pad_map
@@ -81,6 +82,9 @@ class RouterConfig:
     channel_pressure_weight: float = 3.0  # A* cost multiplier for channel pressure
     channel_fill_exponent: float = 2.0    # exponent for dynamic fill penalty ramp
     channel_ncr_seed_factor: float = 1.0  # scale for seeding NCR history with channel pressure
+    # Pre-route GND fill parameters
+    pre_fill_enabled: bool = True        # commit GND fill to grid before signal routing
+    pre_fill_fallback: bool = True       # retry without pre-fill if it routes fewer nets
 
 
 @dataclass
@@ -2889,6 +2893,86 @@ def create_copper_fill(
     return results, stitch_vias
 
 
+def _apply_pre_fill(
+    grid: RoutingGrid,
+    fill_net_int: int,
+    fill_net_id: str,
+    pad_map: dict[str, PadInfo],
+    config: RouterConfig,
+) -> None:
+    """Commit GND copper fill to the routing grid BEFORE signal routing.
+
+    On 2-layer boards, only pre-fills the bottom layer (standard ground plane
+    practice). This keeps the top layer clear for signal routing while giving
+    GND pads bottom-layer connectivity via the fill plane. Signals can still
+    use the bottom layer through vias when needed.
+
+    Marks empty cells with fill_net_int so the A* router treats them as
+    occupied. Applies clearance around non-GND features and thermal relief
+    around GND pads.
+    """
+    res = config.grid_resolution_mm
+    clearance_cells = max(2, int(math.ceil(config.fill_clearance_mm / res)) + 1)
+    cols, rows = grid.cols, grid.rows
+
+    # On 2-layer boards, only pre-fill bottom layer (top stays clear for signals).
+    # On 4+ layer boards (future), could fill both inner layers.
+    pre_fill_layers = ["bottom"]
+
+    for layer in pre_fill_layers:
+        layer_data = grid.layers[layer]
+
+        # Build forbidden mask (clearance zones around non-GND features)
+        forbidden = _build_clearance_mask(grid, layer, fill_net_int, clearance_cells)
+
+        # Fill empty cells that aren't in forbidden zones
+        for idx in range(cols * rows):
+            if not forbidden[idx] and layer_data[idx] == EMPTY:
+                layer_data[idx] = fill_net_int
+
+        # Build filled bitmap from grid state (for thermal relief)
+        filled = [layer_data[idx] == fill_net_int for idx in range(cols * rows)]
+
+        # Apply thermal relief — clears annular gap, re-adds cardinal spokes
+        _apply_thermal_relief(filled, forbidden, grid, layer, pad_map, fill_net_id, config)
+
+        # Sync thermal relief changes back to grid:
+        # Where thermal relief cleared fill, reset grid cell to EMPTY
+        for idx in range(cols * rows):
+            if layer_data[idx] == fill_net_int and not filled[idx]:
+                layer_data[idx] = EMPTY
+
+
+def _clear_pre_fill(
+    grid: RoutingGrid,
+    fill_net_int: int,
+    pad_map: dict[str, PadInfo],
+    fill_net_id: str,
+) -> None:
+    """Remove pre-filled GND cells from the routing grid (undo pre-fill).
+
+    Resets cells marked with fill_net_int back to EMPTY, except for cells
+    that correspond to actual GND pad locations.
+    """
+    cols = grid.cols
+
+    # Build set of grid cells that are GND pad locations (keep these)
+    pad_cells: set[tuple[str, int]] = set()
+    for pad in pad_map.values():
+        if pad.net_id != fill_net_id:
+            continue
+        layers = ["top", "bottom"] if pad.layer == "all" else [pad.layer]
+        pc, pr = grid.mm_to_grid(pad.x_mm, pad.y_mm)
+        for layer in layers:
+            pad_cells.add((layer, pr * cols + pc))
+
+    for layer in ["top", "bottom"]:
+        layer_data = grid.layers[layer]
+        for idx in range(len(layer_data)):
+            if layer_data[idx] == fill_net_int and (layer, idx) not in pad_cells:
+                layer_data[idx] = EMPTY
+
+
 # ---------------------------------------------------------------------------
 # Top-level routing
 # ---------------------------------------------------------------------------
@@ -2963,6 +3047,8 @@ def _negotiated_congestion_route(
     # Build a fresh base grid (pads + obstacles only)
     base_grid = RoutingGrid(board_w, board_h, config.grid_resolution_mm)
     _setup_grid(base_grid, placement, pad_map, config.clearance_mm, net_id_map)
+    if config.pre_fill_enabled and fill_net and fill_net.net_id in net_id_map:
+        _apply_pre_fill(base_grid, net_id_map[fill_net.net_id], fill_net.net_id, pad_map, config)
     base_snap = base_grid.snapshot()
 
     n_cells = base_grid.cols * base_grid.rows
@@ -3623,6 +3709,8 @@ def route_board(
     # Trial 4-5: congestion-aware (most-constrained-first and reverse)
     measure_grid = RoutingGrid(board_w, board_h, config.grid_resolution_mm)
     _setup_grid(measure_grid, placement, pad_map, config.clearance_mm, net_id_map)
+    if config.pre_fill_enabled and fill_net and fill_net_int > 0:
+        _apply_pre_fill(measure_grid, fill_net_int, fill_net.net_id, pad_map, config)
     constrained_order = order_nets_by_accessibility(
         ordered_nets, pad_map, measure_grid, net_id_map, netlist,
     )
@@ -3669,6 +3757,8 @@ def route_board(
         for diag in [True, False]:
             grid = RoutingGrid(board_w, board_h, config.grid_resolution_mm)
             _setup_grid(grid, placement, pad_map, config.clearance_mm, net_id_map)
+            if config.pre_fill_enabled and fill_net and fill_net_int > 0:
+                _apply_pre_fill(grid, fill_net_int, fill_net.net_id, pad_map, config)
 
             result, routed_ids, failed = _route_with_ordering(
                 ordering, grid, pad_map, net_id_map, net_trace_widths,
@@ -3698,6 +3788,28 @@ def route_board(
     grid = best_grid
     use_diagonal = best_diagonal
     assert result is not None and grid is not None
+
+    # Pre-fill fallback: if pre-fill is active but failed nets remain,
+    # try one no-pre-fill trial with the best ordering to compare
+    if (config.pre_fill_enabled and config.pre_fill_fallback
+            and fill_net and fill_net_int > 0 and failed_nets):
+        print(f"  Pre-fill routing: {best_count}/{len(ordered_nets)} nets — trying without pre-fill...")
+        nf_grid = RoutingGrid(board_w, board_h, config.grid_resolution_mm)
+        _setup_grid(nf_grid, placement, pad_map, config.clearance_mm, net_id_map)
+        nf_result, nf_routed, nf_failed = _route_with_ordering(
+            best_ordering, nf_grid, pad_map, net_id_map, net_trace_widths,
+            fill_net, config, netlist, diagonal=use_diagonal,
+            channel_pressure=channel_pressure,
+        )
+        if len(nf_routed) > best_count:
+            print(f"  No-prefill routes more: {len(nf_routed)} vs {best_count} — switching off pre-fill")
+            result = nf_result
+            routed_net_ids = nf_routed
+            failed_nets = nf_failed
+            grid = nf_grid
+            config = dataclasses.replace(config, pre_fill_enabled=False)
+        else:
+            print(f"  Pre-fill kept ({best_count} >= {len(nf_routed)})")
 
     # Phase 2: Negotiated congestion routing (PathFinder)
     # If initial trials didn't achieve 100%, run NCR with all nets
@@ -4112,7 +4224,8 @@ def route_board(
     _consolidate_endpoints(result, pad_map, config)
 
     # Phase 7: Add short GND stub traces so KiCad fill can connect to GND pads
-    if fill_net:
+    # (skipped when pre-fill is active — GND pads already have fill connectivity)
+    if fill_net and not config.pre_fill_enabled:
         fill_pads = [p for p in pad_map.values() if p.net_id == fill_net.net_id]
         stub_len = config.grid_resolution_mm  # tiny stub
         for fp in fill_pads:
@@ -4683,12 +4796,42 @@ def _generate_silkscreen(
         filtered_silk.append(item)
     silk = filtered_silk
 
+    # Add surviving designator/anode text bounding boxes to exclusion zones
+    # so that the board name/revision label won't overlap them
+    for item in silk:
+        if item["type"] == "text":
+            fh = item.get("font_height_mm", 1.0)
+            char_w = fh * 0.6
+            spacing = fh * 0.15
+            txt = item["text"]
+            total_w = len(txt) * char_w + max(0, len(txt) - 1) * spacing
+            anchor = item.get("anchor", "center")
+            ix, iy = item["x_mm"], item["y_mm"]
+            if anchor == "center":
+                tx_min = ix - total_w / 2
+            elif anchor == "right":
+                tx_min = ix - total_w
+            else:
+                tx_min = ix
+            margin = 0.3
+            exclusion_zones.append((
+                tx_min - margin,
+                iy - margin,
+                tx_min + total_w + margin,
+                iy + fh + margin,
+            ))
+
     # Board name and revision label
     board = placement.get("board", {})
     board_w = board.get("width_mm", 50)
     board_h = board.get("height_mm", 30)
     project_name = placement.get("project_name", "")
     if project_name:
+        # Truncate long names to fit on silkscreen (max 15 chars)
+        max_silk_chars = 15
+        if len(project_name) > max_silk_chars:
+            project_name = project_name[:max_silk_chars - 1].rstrip() + "…"
+
         # Try candidate positions for the board label (prefer bottom-right)
         candidates = [
             (board_w - 2.0, 2.0, "right"),       # bottom-right

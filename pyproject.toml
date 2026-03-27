@@ -8,10 +8,14 @@ dependencies = [
     "jinja2>=3.1",
     "jsonschema>=4.0",
     "gerber-writer>=0.4",
+    "cairosvg>=2.7",
 ]
 
 [project.optional-dependencies]
 dxf = ["ezdxf>=1.0"]
+mcp = ["fastmcp>=2.0"]
+3d = ["easyeda2kicad>=0.8"]
 
 [project.scripts]
 pcb-creator = "orchestrator.cli:main"
+pcb-creator-mcp = "mcp_server:main"

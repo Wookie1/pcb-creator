@@ -8,6 +8,13 @@ from pathlib import Path
 
 from .base import StepBase, StepResult
 
+# validators/ is a sibling directory — add to path for pinout import
+_validators_dir = str(Path(__file__).resolve().parent.parent.parent / "validators")
+if _validators_dir not in sys.path:
+    sys.path.insert(0, _validators_dir)
+
+from pinout import build_pinout_from_requirements
+
 
 def extract_json(raw: str) -> str:
     """Extract JSON from LLM response, handling markdown fences and continuations."""
@@ -62,6 +69,16 @@ class SchematicStep(StepBase):
         output_filename = f"{project_name}_netlist.json"
         max_rework = self.config.max_rework_attempts
 
+        # Parse IC pinouts from requirements for structured prompt injection
+        pinout_table = ""
+        try:
+            req_json = self.project.read_requirements_json()
+            pinouts = build_pinout_from_requirements(req_json)
+            if pinouts:
+                pinout_table = self._format_pinout_table(pinouts)
+        except Exception:
+            pass  # No pinout data available — not fatal
+
         self.project.update_status(self.step_number, "IN_PROGRESS")
 
         previous_output = None
@@ -76,6 +93,7 @@ class SchematicStep(StepBase):
                     {
                         "requirements": requirements_text,
                         "project_name": project_name,
+                        "pinout_table": pinout_table,
                     },
                 )
             else:
@@ -86,6 +104,7 @@ class SchematicStep(StepBase):
                         "project_name": project_name,
                         "issues": issues,
                         "previous_output": previous_output,
+                        "pinout_table": pinout_table,
                     },
                 )
 
@@ -246,3 +265,18 @@ class SchematicStep(StepBase):
                 "warnings": [],
                 "summary": "Validator execution failed",
             }
+
+    @staticmethod
+    def _format_pinout_table(pinouts: dict) -> str:
+        """Format parsed pinouts as a markdown table for LLM prompt injection."""
+        lines: list[str] = []
+        for ref, pin_map in sorted(pinouts.items()):
+            lines.append(f"**{ref}** ({len(pin_map)} pins):")
+            lines.append("| Pin | Name | Type |")
+            lines.append("|-----|------|------|")
+            for pin_num in sorted(pin_map.keys()):
+                info = pin_map[pin_num]
+                name = "/".join(info.all_names)
+                lines.append(f"| {pin_num} | {name} | {info.inferred_electrical_type} |")
+            lines.append("")
+        return "\n".join(lines)

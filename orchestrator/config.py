@@ -40,9 +40,10 @@ class OrchestratorConfig:
     temperature: float = 0.0
     max_tokens: int = 32768
 
-    # API settings
-    api_base: str | None = None
-    api_key: str | None = None
+    # LLM API settings
+    api_base: str | None = None   # LLM provider base URL (e.g. http://localhost:11434/v1)
+    api_key: str | None = None    # LLM provider API key (OpenRouter, Anthropic, OpenAI, etc.)
+    llm_timeout: int = 1800       # LLM request timeout in seconds (default 30min for large boards)
     llm_extra_body: dict = field(default_factory=dict)  # e.g. {"thinking": False}
 
     # Workflow settings
@@ -51,8 +52,12 @@ class OrchestratorConfig:
     # Export settings
     export_kicad: Path | bool | None = None  # True = auto path, Path = specific path
 
-    # Agent mode — skip browser approval gate (for autonomous/GUI workflows)
+    # Agent mode — use vision-based autonomous review instead of browser approval gate
     agent_mode: bool = False
+
+    # Vision review settings (used when agent_mode=True)
+    vision_model: str = "anthropic/claude-sonnet-4-20250514"
+    vision_max_review_attempts: int = 3
 
     # Router settings
     router_engine: str = "freerouting"  # "freerouting" or "builtin"
@@ -91,8 +96,14 @@ class OrchestratorConfig:
         )
         config.review_model = os.environ.get("PCB_REVIEW_MODEL", config.review_model)
         config.gather_model = os.environ.get("PCB_GATHER_MODEL", config.gather_model)
-        config.api_base = os.environ.get("PCB_API_BASE", config.api_base)
-        config.api_key = os.environ.get("PCB_API_KEY", config.api_key)
+        config.api_base = os.environ.get("PCB_LLM_API_BASE", config.api_base)
+        config.api_key = os.environ.get("PCB_LLM_API_KEY", config.api_key)
+        max_tokens_env = os.environ.get("PCB_LLM_MAX_TOKENS")
+        if max_tokens_env:
+            config.max_tokens = int(max_tokens_env)
+        timeout_env_llm = os.environ.get("PCB_LLM_TIMEOUT")
+        if timeout_env_llm:
+            config.llm_timeout = int(timeout_env_llm)
         config.max_rework_attempts = int(
             os.environ.get("PCB_MAX_REWORK", str(config.max_rework_attempts))
         )
@@ -110,6 +121,16 @@ class OrchestratorConfig:
         config.freerouting_jar_path = Path(jar_env) if jar_env else None
         timeout_env = os.environ.get("PCB_FREEROUTING_TIMEOUT")
         config.freerouting_timeout_s = int(timeout_env) if timeout_env else config.freerouting_timeout_s
+        config.vision_model = os.environ.get("PCB_VISION_MODEL", config.vision_model)
+        vision_attempts_env = os.environ.get("PCB_VISION_MAX_ATTEMPTS")
+        if vision_attempts_env:
+            config.vision_max_review_attempts = int(vision_attempts_env)
+        models_dir_env = os.environ.get("PCB_3D_MODELS_DIR")
+        if models_dir_env:
+            os.environ["PCB_3D_MODELS_DIR"] = models_dir_env  # propagate to model_fetcher
+        projects_dir_env = os.environ.get("PCB_PROJECTS_DIR")
+        if projects_dir_env:
+            config.projects_dir = projects_dir_env
         return config
 
     def resolve(self, relative_path: str) -> Path:

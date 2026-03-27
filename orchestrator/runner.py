@@ -28,7 +28,7 @@ def run_workflow(
     # Initialize shared resources
     projects_dir = config.resolve(config.projects_dir)
     project = ProjectManager(project_name, projects_dir)
-    llm = LiteLLMClient(config.generate_model, api_base=config.api_base, api_key=config.api_key, extra_body=config.llm_extra_body)
+    llm = LiteLLMClient(config.generate_model, api_base=config.api_base, api_key=config.api_key, extra_body=config.llm_extra_body, timeout=config.llm_timeout)
     prompt_builder = PromptBuilder(config.base_dir)
 
     # Step 0: Requirements
@@ -48,7 +48,7 @@ def run_workflow(
 
     # Step 1: Schematic/Netlist
     print(f"[Step 1: Schematic/Netlist]")
-    review_llm = LiteLLMClient(config.review_model, api_base=config.api_base, api_key=config.api_key)
+    review_llm = LiteLLMClient(config.review_model, api_base=config.api_base, api_key=config.api_key, timeout=config.llm_timeout)
     step1 = SchematicStep(project, llm, prompt_builder, config)
     # Use review model for QA if different from generate model
     result = step1.execute()
@@ -291,8 +291,25 @@ def run_workflow(
     bom_data = json.loads(bom_path.read_text()) if bom_path.exists() else None
 
     if config.agent_mode:
-        # Agent mode: skip browser approval gate
-        print(f"[Review & Approval] Skipped (agent mode)")
+        # Agent mode: vision-based autonomous review
+        print(f"[Review & Approval] Vision-based autonomous review")
+        from orchestrator.vision_review import run_vision_review
+
+        review_result = run_vision_review(
+            routed, netlist_data, bom_data, drc_report, config, project,
+        )
+        if review_result == "approved":
+            print(f"  Vision review: APPROVED")
+        elif review_result == "escalated":
+            print(f"  Vision review: Escalated to human review")
+            from orchestrator.approval_server import serve_approval_gate
+
+            approval = serve_approval_gate(
+                project_name, routed, netlist_data, bom_data,
+                project.project_dir, drc_report=drc_report,
+            )
+            if approval == "continue":
+                print(f"  Human review: Approved")
     else:
         # Serve the visualizer with DRC results for user review
         print(f"[Review & Approval]")
@@ -328,7 +345,7 @@ def run_workflow(
     print(f"[Step 6: Output Generation]")
     from exporters.gerber_exporter import export_gerbers, export_drill, create_output_package
     from exporters.bom_csv_exporter import export_bom_csv, export_pick_and_place
-    from exporters.step_exporter import export_step
+    from exporters.step_exporter import export_step, export_step_populated
 
     output_dir = project.project_dir / "output"
     output_dir.mkdir(exist_ok=True)
@@ -351,9 +368,9 @@ def run_workflow(
     cpl_path = export_pick_and_place(routed, output_dir / f"{project_name}_cpl.csv", bom=bom_for_csv)
     print(f"  Pick-and-place: {cpl_path.name}")
 
-    # STEP 3D model (bare board)
-    step_path = export_step(routed, netlist_data, output_dir / f"{project_name}_board.step")
-    print(f"  STEP model: {step_path.name}")
+    # STEP 3D model (populated with component models)
+    step_path = export_step_populated(routed, netlist_data, bom_data, output_dir / f"{project_name}_board.step")
+    print(f"  STEP model: {step_path.name} (populated)")
 
     # Zip package
     zip_path = create_output_package(output_dir, project_name)
@@ -377,7 +394,7 @@ STEP_NAMES = {
 }
 
 
-def run_workflow_with_gradio(
+def run_workflow_streaming(
     requirements_path: Path,
     project_name: str,
     config: OrchestratorConfig,
@@ -411,6 +428,7 @@ def run_workflow_with_gradio(
         api_base=config.api_base,
         api_key=config.api_key,
         extra_body=config.llm_extra_body,
+        timeout=config.llm_timeout,
     )
     prompt_builder = PromptBuilder(config.base_dir)
 
@@ -599,14 +617,24 @@ def run_workflow_with_gradio(
     html = generate_html(routed, netlist_data, bom_data, routed=routed, drc_report=drc_report, embed_mode=True)
     yield {"event": "viewer_update", "html": html}
 
-    # Approval gate — in Gradio mode, yield and wait for UI action
-    yield {"event": "approval_needed", "html": html}
+    # Vision-based autonomous review (agent_mode is always True in Gradio)
+    yield {"event": "vision_review_start"}
+    from orchestrator.vision_review import run_vision_review
+
+    review_result = run_vision_review(
+        routed, netlist_data, bom_data, drc_report, config, project,
+    )
+    yield {"event": "vision_review_done", "result": review_result}
+
+    if review_result != "approved":
+        # Escalate to human — yield approval_needed to pause generator
+        yield {"event": "approval_needed", "html": html}
 
     # --- Step 6: Output Generation ---
     yield {"event": "step_start", "step": 6, "name": STEP_NAMES[6]}
     from exporters.gerber_exporter import export_gerbers, export_drill, create_output_package
     from exporters.bom_csv_exporter import export_bom_csv, export_pick_and_place
-    from exporters.step_exporter import export_step
+    from exporters.step_exporter import export_step, export_step_populated
 
     output_dir = project.project_dir / "output"
     output_dir.mkdir(exist_ok=True)
@@ -616,7 +644,7 @@ def run_workflow_with_gradio(
     bom_for_csv = json.loads(bom_path.read_text()) if bom_path.exists() else bom_data
     export_bom_csv(bom_for_csv, output_dir / f"{project_name}_bom.csv")
     export_pick_and_place(routed, output_dir / f"{project_name}_cpl.csv", bom=bom_for_csv)
-    export_step(routed, netlist_data, output_dir / f"{project_name}_board.step")
+    export_step_populated(routed, netlist_data, bom_data, output_dir / f"{project_name}_board.step")
     create_output_package(output_dir, project_name)
 
     if config.export_kicad:

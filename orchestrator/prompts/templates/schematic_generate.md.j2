@@ -55,6 +55,14 @@ All IDs use lowercase letters, numbers, and underscores only.
 
 {{ engineering_rules }}
 
+{% if pinout_table %}
+### IC Pinout Reference
+
+For each IC below, you MUST use EXACTLY these pin numbers, names, and electrical types. Do not invent or guess pin names — use the pinout below as the authoritative reference.
+
+{{ pinout_table }}
+{% endif %}
+
 ### Structural Rules
 
 - Show calculations in the component description field (e.g., "Current-limiting resistor for D1 [power=60mW]").
