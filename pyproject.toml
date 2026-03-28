@@ -19,3 +19,7 @@ mcp = ["fastmcp>=2.0"]
 [project.scripts]
 pcb-creator = "orchestrator.cli:main"
 pcb-creator-mcp = "mcp_server:main"
+
+[tool.setuptools]
+packages = ["exporters", "optimizers", "orchestrator"]
+py-modules = ["mcp_server"]

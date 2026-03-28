@@ -105,9 +105,15 @@ def design_pcb(
     routing → DRC → output generation. Uses vision-based autonomous review.
 
     Args:
-        description: Natural language circuit description (e.g. "Arduino Uno clone
-            with ATmega328P, 16MHz crystal, USB-B connector, and 6 LEDs") OR
-            a JSON string of structured requirements.
+        description: Circuit description in plain English (recommended) OR a JSON
+            string matching the requirements schema. Plain text is translated to
+            structured requirements automatically via LLM.
+
+            Example (plain text): "A green LED controlled by a pushbutton, powered by 3.3V"
+
+            Example (structured JSON): '{"project_name": "led_button", "description": "...",
+                "components": [{"ref": "R1", "type": "resistor", "value": "330ohm"}, ...],
+                "connections": [{"net_name": "VCC", "pins": ["J1.1", "SW1.1"]}, ...]}'
         project_name: Optional project slug. Auto-generated from description if omitted.
         settings: Optional config overrides: {"model": "...", "router_engine": "...",
             "max_rework_attempts": 5}
@@ -135,11 +141,27 @@ def design_pcb(
         project_name = _slugify(description)
 
     # Write requirements to a temp file
-    # Try parsing as JSON first; if it fails, wrap as natural language
+    # Try parsing as JSON first; if it fails, use LLM to translate natural language
     try:
         requirements = json.loads(description)
     except (json.JSONDecodeError, TypeError):
-        requirements = {"description": description}
+        from orchestrator.gather.conversation import RequirementsGatherer
+        from orchestrator.llm.litellm_client import LiteLLMClient
+        from orchestrator.prompts.builder import PromptBuilder
+        _llm = LiteLLMClient(
+            config.generate_model,
+            api_base=config.api_base,
+            api_key=config.api_key,
+            extra_body=config.llm_extra_body,
+            timeout=config.llm_timeout,
+        )
+        _gatherer = RequirementsGatherer(_llm, PromptBuilder(config.base_dir))
+        requirements = _gatherer.translate(description)
+        if requirements is None:
+            return {
+                "success": False,
+                "errors": ["Failed to translate natural language to requirements JSON"],
+            }
 
     projects_dir = _get_projects_dir()
     project_dir = projects_dir / project_name
@@ -155,21 +177,30 @@ def design_pcb(
     errors = []
     last_event = None
 
-    for event in run_workflow_streaming(req_path, project_name, config):
-        ev = event.get("event", "")
-        if ev == "step_done":
-            steps_completed.append({
-                "step": event.get("step"),
-                "name": event.get("name"),
-                "success": event.get("success", False),
-            })
-        elif ev == "error":
-            errors.append(event.get("message", "Unknown error"))
-        elif ev == "approval_needed":
-            # In MCP mode with agent_mode=True, this means vision review
-            # escalated. We can't do human approval in MCP, so continue.
+    try:
+        for event in run_workflow_streaming(req_path, project_name, config):
+            ev = event.get("event", "")
+            if ev == "step_done":
+                steps_completed.append({
+                    "step": event.get("step"),
+                    "name": event.get("name"),
+                    "success": event.get("success", False),
+                })
+            elif ev == "error":
+                errors.append(event.get("message", "Unknown error"))
+            elif ev == "approval_needed":
+                # In MCP mode with agent_mode=True, this means vision review
+                # escalated. We can't do human approval in MCP, so continue.
+                pass
+            last_event = event
+    except Exception as exc:
+        errors.append(f"Pipeline crashed: {exc}")
+        try:
+            from orchestrator.project import ProjectManager as _PM
+            _proj = _PM(project_name, projects_dir)
+            _proj.update_status(-1, "ERROR")
+        except Exception:
             pass
-        last_event = event
 
     success = last_event and last_event.get("event") == "complete" and last_event.get("success", False)
 

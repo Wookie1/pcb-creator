@@ -5,6 +5,7 @@ from collections.abc import Generator
 from pathlib import Path
 
 from .config import OrchestratorConfig
+from .project import ProjectManager
 
 
 def run_workflow(
