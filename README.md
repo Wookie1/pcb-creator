@@ -119,6 +119,35 @@ Generated in `projects/<name>/output/`:
 | `*_board.step` | STEP | Bare PCB 3D model |
 | `*_gerbers.zip` | ZIP | All Gerbers + drill for upload |
 
+## MCP Server
+
+PCB-Creator includes an MCP server so AI agents (Claude Desktop, Claude Code, etc.) can design PCBs programmatically.
+
+**Tools exposed:** `design_pcb`, `list_projects`, `get_project_status`, `get_drc_report`, `export_kicad`, `get_board_image`
+
+Add to your MCP client config (e.g., `claude_desktop_config.json`):
+
+```json
+{
+  "mcpServers": {
+    "pcb-creator": {
+      "command": "pcb-creator-mcp",
+      "env": {
+        "PCB_LLM_API_KEY": "your-api-key"
+      }
+    }
+  }
+}
+```
+
+Or run directly:
+
+```bash
+python mcp_server.py
+```
+
+The MCP server runs in agent mode with vision-based board approval. Projects are stored in `~/.pcb-creator/projects/` (configurable via `PCB_PROJECTS_DIR`).
+
 ## Architecture
 
 See [ARCHITECTURE.md](ARCHITECTURE.md) for detailed documentation of the pipeline, data formats, algorithms, and design decisions.
