@@ -4,6 +4,14 @@ You are a PCB design requirements engineer. Convert the user's circuit descripti
 
 {{ user_input }}
 
+{% if plan_context %}
+### Design Plan (from planning step)
+
+The user has reviewed and confirmed the following design plan. Use it as your primary guide — follow these decisions exactly.
+
+{{ plan_context }}
+{% endif %}
+
 {% if feedback %}
 ### User Feedback on Previous Attempt
 

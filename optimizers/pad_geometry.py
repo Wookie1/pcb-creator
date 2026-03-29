@@ -9,6 +9,34 @@ from __future__ import annotations
 import math
 import re
 from dataclasses import dataclass
+from typing import Any
+
+
+# ---------------------------------------------------------------------------
+# Module-level defaults for tiered lookup
+# ---------------------------------------------------------------------------
+# Call configure_lookup() once at startup so that every call to
+# get_footprint_def / build_pad_map automatically uses the KiCad index and
+# component cache without each caller needing to pass them explicitly.
+
+_default_kicad_index: Any | None = None
+_default_cache: Any | None = None
+
+
+def configure_lookup(
+    *,
+    kicad_index: Any | None = None,
+    cache: Any | None = None,
+) -> None:
+    """Set module-level defaults for the tiered footprint lookup.
+
+    Called once at application startup (CLI or GUI).  All subsequent calls to
+    ``get_footprint_def`` and ``build_pad_map`` will use these unless the
+    caller provides explicit overrides.
+    """
+    global _default_kicad_index, _default_cache
+    _default_kicad_index = kicad_index
+    _default_cache = cache
 
 
 @dataclass
@@ -231,14 +259,81 @@ def _make_tqfp(pin_count: int, body_mm: float = 7.0) -> FootprintDef:
     return FootprintDef(pin_offsets=offsets, pad_size=(0.45, 1.2))
 
 
-def get_footprint_def(package: str, pin_count: int) -> FootprintDef:
-    """Return pad offsets for a known package.
+def get_footprint_def(
+    package: str,
+    pin_count: int,
+    *,
+    kicad_index: object | None = None,
+    cache: object | None = None,
+) -> FootprintDef | None:
+    """Return pad offsets for a package using tiered resolution.
 
-    Falls back to edge distribution for unknown packages.
+    Lookup order (pure data — no network I/O):
+      1. KiCad .kicad_mod library — real-world footprints from the official
+         KiCad library, community-maintained and datasheet-verified (~50K pkgs)
+      2. IPC-7351B parametric — algorithmic generation per the IPC land
+         pattern standard (QFN, BGA, SOP, SSOP, TSSOP, DFN, SOT-223, …)
+      3. Local JSON cache — entries saved from prior EasyEDA / LLM lookups
+         (real manufacturer data or at least package-specific attempts)
+      4. Built-in definitions — custom approximations shipped with this
+         project.  Last local resort before network/LLM fallback.
+
+    Returns None when all tiers miss — the caller handles EasyEDA / LLM
+    fallback (those involve network I/O) and ``_generate_fallback_footprint``.
+    """
+    # Fall back to module-level defaults set by configure_lookup()
+    if kicad_index is None:
+        kicad_index = _default_kicad_index
+    if cache is None:
+        cache = _default_cache
+
+    # --- Tier 1: KiCad library (most authoritative) ---
+    if kicad_index is not None:
+        try:
+            fp = kicad_index.get_footprint(package, pin_count)
+            if fp is not None:
+                return fp
+        except Exception:
+            pass
+
+    # --- Tier 2: IPC-7351B parametric ---
+    try:
+        from optimizers.ipc7351 import ipc7351_lookup
+        fp = ipc7351_lookup(package, pin_count)
+        if fp is not None:
+            return fp
+    except ImportError:
+        pass
+
+    # --- Tier 3: local cache (EasyEDA / prior LLM results) ---
+    if cache is not None:
+        try:
+            cached = cache.get_footprint(package)
+            if cached is not None:
+                offsets_raw = cached.get("pin_offsets", {})
+                pad_size = tuple(cached.get("pad_size", (0.5, 0.5)))
+                pin_offsets = {int(k): tuple(v) for k, v in offsets_raw.items()}
+                return FootprintDef(pin_offsets=pin_offsets, pad_size=pad_size)
+        except Exception:
+            pass
+
+    # --- Tier 4: built-in approximations (last local resort) ---
+    fp = _builtin_footprint_def(package, pin_count)
+    if fp is not None:
+        return fp
+
+    return None
+
+
+def _builtin_footprint_def(package: str, pin_count: int) -> FootprintDef | None:
+    """Check the hardcoded and parametric definitions shipped with this project.
+
+    These are custom-built approximations used when no authoritative library
+    (KiCad, IPC-7351) can resolve the package.
     """
     pkg_upper = package.upper()
 
-    # Check SMD 2-pad packages
+    # SMD 2-pad passives
     if package in _SMD_2PAD:
         return _SMD_2PAD[package]
 
@@ -258,28 +353,24 @@ def get_footprint_def(package: str, pin_count: int) -> FootprintDef:
     if package == "Fiducial_1mm":
         return _FIDUCIAL
 
-    # DIP-N pattern
+    # Parametric generators
     m = re.match(r"DIP-(\d+)", package, re.IGNORECASE)
     if m:
         return _make_dip(int(m.group(1)))
 
-    # PinHeader_1xN pattern
     m = re.match(r"PinHeader_1x(\d+)", package)
     if m:
         return _make_pin_header_1xn(int(m.group(1)))
 
-    # PinHeader_2xN pattern
     m = re.match(r"PinHeader_2x(\d+)", package)
     if m:
         total_pins = int(m.group(1)) * 2
         return _make_pin_header_2xn(total_pins)
 
-    # TQFP-N pattern
     m = re.match(r"TQFP-(\d+)", package, re.IGNORECASE)
     if m:
         return _make_tqfp(int(m.group(1)))
 
-    # Unknown: fall back to None (caller should use fallback)
     return None
 
 
@@ -351,6 +442,9 @@ def _rotate_offset(dx: float, dy: float, rotation_deg: int) -> tuple[float, floa
 def build_pad_map(
     placement: dict,
     netlist: dict,
+    *,
+    kicad_index: object | None = None,
+    cache: object | None = None,
 ) -> dict[str, PadInfo]:
     """Build a complete map of port_id -> PadInfo with absolute board coordinates.
 
@@ -409,8 +503,11 @@ def build_pad_map(
         package = plc.get("package", comp.get("package", ""))
         pin_count = comp_pin_counts.get(comp_id, 1)
 
-        # Get footprint definition
-        fp = get_footprint_def(package, pin_count)
+        # Get footprint definition (tiered lookup)
+        fp = get_footprint_def(
+            package, pin_count,
+            kicad_index=kicad_index, cache=cache,
+        )
         if fp is None:
             fp = _generate_fallback_footprint(
                 plc.get("footprint_width_mm", 2.0),

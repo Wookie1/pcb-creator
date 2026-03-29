@@ -18,12 +18,16 @@ User Input (natural language or JSON)
 ┌─────────────────────────────────┐
 │  Step 0: Requirements Gathering │
 │  ┌───────────┐  ┌────────────┐  │
-│  │ LLM       │→ │ Python     │  │  LLM translates, Python validates
-│  │ translate  │  │ validate   │  │
+│  │ LLM       │→ │ User       │  │  LLM proposes design, user
+│  │ plan      │  │ answers    │  │  confirms or overrides defaults
 │  └───────────┘  └────────────┘  │
 │  ┌───────────┐  ┌────────────┐  │
-│  │ LLM       │→ │ Python     │  │  LLM looks up specs, Python merges
-│  │ datasheet  │  │ enrich     │  │
+│  │ LLM       │→ │ Python     │  │  LLM translates (with plan
+│  │ translate  │  │ validate   │  │  context), Python validates
+│  └───────────┘  └────────────┘  │
+│  ┌───────────┐  ┌────────────┐  │
+│  │ Tiered    │→ │ Python     │  │  Curated → cache → LLM fallback
+│  │ lookup    │  │ enrich     │  │  (parallel LLM for remaining)
 │  └───────────┘  └────────────┘  │
 │  ┌───────────┐                  │
 │  │ LLM       │→ User Approval   │  LLM summarizes, user confirms
@@ -110,7 +114,8 @@ pcb-creator/
 │   ├── cli.py                  # CLI: run, design, gui, validate, import-kicad, mcp
 │   ├── runner.py               # Sequential step executor + streaming generator (Steps 0-6)
 │   ├── gradio_app.py           # Gradio web GUI (chat, viewer, settings, progress)
-│   ├── config.py               # Model, router engine, paths, limits, agent_mode
+│   ├── config.py               # Model, router engine, paths, limits, agent_mode, tiered lookup
+│   ├── cache.py                # Thread-safe JSON cache for resolved footprints + specs
 │   ├── project.py              # Project directory & file I/O
 │   ├── approval_server.py      # Ephemeral HTTP server for CLI approval gate
 │   ├── vision_review.py        # Vision-based autonomous board review (agent mode)
@@ -121,7 +126,9 @@ pcb-creator/
 │   │   ├── step_2_bom.py           # Generate + validate + QA BOM
 │   │   └── step_3_layout.py        # Generate + validate + repair + QA placement
 │   ├── gather/
-│   │   ├── conversation.py     # Interactive requirements gathering + enrichment
+│   │   ├── conversation.py     # Interactive requirements gathering + tiered enrichment
+│   │   ├── curated_specs.py    # Curated lookup tables (ICs, LEDs, transistors, footprint dims)
+│   │   ├── easyeda_lookup.py   # EasyEDA/LCSC API footprint + spec fetcher
 │   │   ├── calculator.py       # LED resistor / power calculations
 │   │   └── schema.py           # Requirements JSON schema + LLM type coercion
 │   ├── llm/
@@ -134,12 +141,14 @@ pcb-creator/
 │   ├── ratsnest.py             # Connectivity, MST, crossings, component associations
 │   ├── fiducials.py            # Fiducial marker placement (2 per populated side)
 │   ├── placement_optimizer.py  # SA optimizer (wire length, crossings, decoupling, crystal, grouping)
-│   ├── pad_geometry.py         # Pad position database (package → pin offsets)
+│   ├── pad_geometry.py         # Pad position database (tiered: KiCad → IPC-7351 → cache → built-in)
+│   ├── ipc7351.py              # IPC-7351B parametric footprint generator (QFN, BGA, SOP, etc.)
 │   ├── freerouter.py           # Freerouting integration (auto-download, DSN→SES flow)
 │   └── router.py               # Built-in A* router + IPC-2221 + copper fills + silkscreen
 ├── exporters/                 # Board export/import
 │   ├── kicad_exporter.py      # Export routed JSON → .kicad_pcb (KiCad 9)
-│   ├── kicad_importer.py      # Import .kicad_pcb → routed JSON
+│   ├── kicad_importer.py      # Import .kicad_pcb → routed JSON (S-expression parser)
+│   ├── kicad_mod_parser.py    # Parse .kicad_mod footprint files → FootprintDef + library index
 │   ├── dsn_exporter.py        # Export placement → Specctra DSN (for Freerouting)
 │   ├── ses_importer.py        # Import Specctra SES → routed JSON (from Freerouting)
 │   ├── component_heights.py   # Package height lookup table for parametric 3D models
@@ -330,9 +339,10 @@ Jinja2 templates in `orchestrator/prompts/templates/`:
 
 | Template | LLM Role | Input | Output |
 |----------|----------|-------|--------|
-| `gather_translate` | Translator | Natural language | Requirements JSON |
-| `gather_datasheet` | Datasheet lookup | Component info | Specs JSON |
-| `gather_footprint` | Footprint lookup | Component info | Footprint dimensions JSON |
+| `gather_plan` | Design consultant | Natural language | Design plan + questions JSON |
+| `gather_translate` | Translator | Natural language + plan context | Requirements JSON |
+| `gather_datasheet` | Datasheet lookup | Component info | Specs JSON (LLM fallback only) |
+| `gather_footprint` | Footprint lookup | Component info | Footprint dims JSON (LLM fallback only) |
 | `gather_summarize` | Technical writer | Requirements JSON | Markdown summary |
 | `schematic_generate` | Schematic engineer | Requirements + rules | Netlist JSON |
 | `schematic_rework` | Schematic engineer | Previous output + errors | Fixed netlist JSON |
@@ -349,20 +359,35 @@ Templates are injected with STANDARDS.md sections and engineering rules via `Pro
 ### Interactive Flow (`pcb-creator design`)
 
 ```
-User describes circuit → LLM translates to JSON
+User describes circuit
+      │
+      ▼
+LLM plans design (gather_plan)
+  → summarizes understanding
+  → proposes concrete design with defaults
+  → asks 2-5 clarifying questions
+      │
+      ▼
+User answers questions (or skips to accept defaults)
+      │
+      ▼
+LLM translates to JSON (gather_translate, with plan context)
+      │
+      ▼
+Python validates schema
+      │
+      ▼
+Tiered spec enrichment
+                    1. Curated table (ATmega328P, NE555, etc.)
+                    2. Local cache (~/.pcb-creator/component_cache.json)
+                    3. LLM fallback (parallel, results cached)
                               │
                               ▼
-                    Python validates schema
-                              │
-                              ▼
-                    Python scans for missing specs
-                    (LEDs without Vf, ICs without pin_count)
-                              │
-                              ▼
-                    LLM looks up datasheet specs + IC pinouts
-                              │
-                              ▼
-                    Python merges specs into requirements
+                    Tiered footprint enrichment
+                    1. Curated dims table
+                    2. Local cache
+                    3. EasyEDA/LCSC API (if available)
+                    4. LLM fallback (parallel, results cached)
                               │
                               ▼
                     Python runs engineering calculations
@@ -380,15 +405,53 @@ User describes circuit → LLM translates to JSON
               Run pipeline        Loop with context
 ```
 
-### Datasheet Enrichment
+### Design Planning Step
 
-During gather only (not during validation), the LLM resolves missing component specs. This keeps the validator pure Python with no LLM dependencies.
+Before translation, the LLM analyzes the user's circuit description and produces a design plan (`gather_plan.md.j2`). The plan includes:
 
-**Current enrichment triggers:**
+- **Understanding** — one paragraph summarizing the circuit's purpose and functional blocks
+- **Proposed design** — concrete choices for power source, packages, board size, component list, and engineering notes (decoupling caps, pull-ups, etc.)
+- **Clarifying questions** — 2-5 focused questions about genuinely ambiguous aspects, each with a sensible default
+
+The user can answer each question, accept the default (press Enter), or type "skip" to accept all defaults. The plan and answers are formatted into structured context that is injected into the `gather_translate` prompt, giving the translator a clear, disambiguated specification to work from.
+
+**GUI flow:** The plan appears as a chat message. The user types answers (one per line) or "skip". A new `"planning"` phase sits between `"input"` and `"review"` in the state machine.
+
+**Graceful degradation:** If the planning LLM call fails, the flow falls through to translation without plan context — identical to the pre-planning behavior.
+
+### Tiered Component Enrichment
+
+During gather only (not during validation), missing component specs and footprint dimensions are resolved through a tiered lookup that minimizes LLM calls. This keeps the validator pure Python with no LLM dependencies.
+
+**Spec enrichment triggers:**
 - LEDs missing `vf` → look up forward voltage
-- ICs missing `pin_count` → look up pin count
+- ICs missing `pin_count` or `pinout` → look up pin count and pin mapping
 - Capacitors missing `voltage_rating` → look up rating
 - Transistors missing `vce_max`/`vds_max` → look up ratings
+
+**Spec resolution tiers:**
+1. **Curated table** (`gather/curated_specs.py`) — ~30 common ICs (ATmega328P, NE555, LM7805, 74HC595, etc.), LED specs by color, transistor specs (2N2222, IRF540N, etc.), capacitor defaults. Instant, no I/O.
+2. **Local cache** (`~/.pcb-creator/component_cache.json`) — results from prior LLM calls. Keyed by `type:value:package`.
+3. **LLM fallback** — only fires for components not resolved by tiers 1-2. Remaining calls run in parallel via `ThreadPoolExecutor` (configurable workers via `PCB_LLM_ENRICHMENT_WORKERS`, default 4). Results cached with `source: "llm"` and `needs_review: true`.
+
+**Footprint dimension resolution tiers:**
+1. **Curated table** — ~35 package entries (QFN, SSOP, TSSOP, MSOP, LQFP, USB, SOT-223, etc.)
+2. **Local cache** — prior results keyed by `footprint_dims:{package}`
+3. **EasyEDA/LCSC API** — fetches real footprint data via `easyeda2kicad` (optional dependency), converts pin positions to bounding box. Rate-limited to 1 req/s.
+4. **LLM fallback** — parallel, results cached
+
+**Cache format:** Single JSON file with `footprints` and `specs` sections. Each entry tracks `source` (curated/kicad/easyeda/llm), `resolved` date, and `needs_review` flag.
+
+### Tiered Footprint Pad Geometry
+
+`pad_geometry.py` resolves package names to exact pad positions (pin offsets + pad sizes) for placement, routing, and export. Uses a tiered lookup configured once at startup via `configure_lookup()`, which sets module-level defaults used by all 9+ call sites across the codebase.
+
+**Footprint resolution tiers:**
+1. **KiCad library** — parses `.kicad_mod` files from the official KiCad footprint library (~50K packages). Community-maintained, datasheet-verified. Requires `PCB_KICAD_LIBRARY_PATH` to point to the library root. Lazy index built on first lookup with short alias generation (`SOIC-8_3.9x4.9mm_P1.27mm` → also matches `SOIC-8`).
+2. **IPC-7351B parametric** (`ipc7351.py`) — algorithmic footprint generation per the IPC land pattern standard. Covers QFN, DFN, SOP/SSOP/TSSOP/MSOP, SOT-223, SOT-89, and BGA families. Zero I/O cost.
+3. **Local cache** — cached footprints from prior EasyEDA or LLM lookups.
+4. **Built-in approximations** — hardcoded definitions (0402-1210, SOT-23, SOIC-8, TO-220, HC49, PJ-002A, 6mm tactile) and parametric generators (DIP-N, PinHeader 1xN/2xN, TQFP-N). Custom-built for this project; used as last local resort when no authoritative library is available.
+5. *(caller-managed)* **EasyEDA API** → **LLM fallback** → **perimeter distribution** (absolute last resort)
 
 **IC pinout resolution:** For complex ICs, the gather step returns the full pin-to-function mapping (e.g., ATmega328P pin 1 = PC6/RESET) in `specs.pinout`. The `validators/pinout.py` module parses these strings into structured `PinInfo` objects with inferred electrical types. During netlist validation, `_fix_pinout_from_requirements()` auto-corrects wrong pin names and electrical types before DRC runs. The `check_pinout_compliance` DRC check then flags any remaining mismatches (out-of-range pins, unresolvable name conflicts). The schematic generation prompt also receives a structured pinout table so the LLM has an unambiguous reference.
 
@@ -490,7 +553,7 @@ External autorouter via Specctra DSN/SES format exchange. Uses the Freerouting J
 
 **Workflow:** `placement.json + netlist.json` → DSN export → Freerouting JAR (headless) → SES import → copper fills → silkscreen → `routed.json`
 
-- **DSN export** (`exporters/dsn_exporter.py`): Converts placement + netlist to Specctra DSN format. Board outline, component footprints with physical pad definitions (from `pad_geometry.py`), net connectivity, and design rules. GND excluded from routing (handled by copper fill).
+- **DSN export** (`exporters/dsn_exporter.py`): Converts placement + netlist to Specctra DSN format. Board outline, component footprints with physical pad definitions (from `pad_geometry.py` tiered lookup), net connectivity, and design rules. GND excluded from routing (handled by copper fill).
 - **SES import** (`exporters/ses_importer.py`): Parses Freerouting's session output. Extracts wire paths (traces) and vias, maps net names back to internal net_ids. Reuses S-expression parser from `kicad_importer.py`.
 - **Orchestration** (`optimizers/freerouter.py`): Auto-downloads JAR to `~/.cache/pcb-creator/` on first use. Runs headlessly with `-mp 20` (max optimization passes). Falls back to built-in router on failure. Configurable timeout (default 300s).
 - **Copper fills** (`router.py:apply_copper_fills()`): Standalone function that rebuilds a routing grid from the Freerouting output, marks existing traces/vias, then runs the standard fill algorithm. Removes the fill net (GND) from unrouted list and updates completion stats to 100%.
@@ -772,7 +835,7 @@ Tested with `Qwen3.5-27B-MLX-7bit` via oMLX. Local models need longer timeouts (
 
 API key loaded from `.env` file (`PCB_LLM_API_KEY`). In the GUI, keys can be entered in the Settings accordion (overrides env var for that session).
 
-Environment variables: `PCB_LLM_API_KEY`, `PCB_LLM_API_BASE`, `PCB_GENERATE_MODEL`, `PCB_REVIEW_MODEL`, `PCB_GATHER_MODEL`, `PCB_LLM_MAX_TOKENS`, `PCB_LLM_TIMEOUT`, `PCB_VISION_MODEL`.
+Environment variables: `PCB_LLM_API_KEY`, `PCB_LLM_API_BASE`, `PCB_GENERATE_MODEL`, `PCB_REVIEW_MODEL`, `PCB_GATHER_MODEL`, `PCB_LLM_MAX_TOKENS`, `PCB_LLM_TIMEOUT`, `PCB_VISION_MODEL`, `PCB_KICAD_LIBRARY_PATH` (root of KiCad footprint library for tiered lookup), `PCB_COMPONENT_CACHE_PATH` (default `~/.pcb-creator/component_cache.json`), `PCB_LLM_ENRICHMENT_WORKERS` (parallel LLM calls for enrichment, default 4).
 
 ## Key Learnings
 

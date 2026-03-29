@@ -116,6 +116,42 @@ def _render_chat_markdown(messages: list[dict]) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Plan rendering
+# ---------------------------------------------------------------------------
+
+def _render_plan_message(plan: dict) -> str:
+    """Format a design plan as a readable chat message."""
+    lines: list[str] = []
+
+    understanding = plan.get("understanding", "")
+    if understanding:
+        lines.append(f"**My understanding:** {understanding}")
+
+    design = plan.get("proposed_design", {})
+    if design:
+        lines.append("\n**Proposed design:**")
+        for key in ("power", "packages", "board"):
+            if key in design:
+                lines.append(f"- **{key.title()}:** {design[key]}")
+        for comp in design.get("key_components", []):
+            lines.append(f"- {comp}")
+        for note in design.get("notes", []):
+            lines.append(f"- *{note}*")
+
+    questions = plan.get("questions", [])
+    if questions:
+        lines.append(f"\n**{len(questions)} question(s) before I proceed:**\n")
+        for i, q in enumerate(questions, 1):
+            question = q.get("question", "")
+            default = q.get("default", "")
+            lines.append(f"{i}. {question}")
+            lines.append(f"   *Default: {default}*\n")
+        lines.append("Answer each question (one per line), or type **skip** to accept all defaults.")
+
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
 # Error rendering
 # ---------------------------------------------------------------------------
 
@@ -294,25 +330,108 @@ def _handle_submit(
         )
         return
 
+    from .cache import ComponentCache
     from .llm.litellm_client import LiteLLMClient
     from .prompts.builder import PromptBuilder
     from .gather.conversation import RequirementsGatherer
     from .gather.schema import coerce_requirements_types, validate_requirements
+    from optimizers.pad_geometry import configure_lookup
 
     llm = LiteLLMClient(
         config.gather_model, api_base=config.api_base,
         api_key=config.api_key, extra_body=config.llm_extra_body,
         timeout=600,  # 10 min for gather/translate calls
     )
-    gatherer = RequirementsGatherer(llm, PromptBuilder(config.base_dir))
+    cache = ComponentCache(config.component_cache_path)
+
+    # Build KiCad library index if path is configured
+    kicad_index = None
+    if config.kicad_library_path:
+        from exporters.kicad_mod_parser import KiCadLibraryIndex
+        kicad_index = KiCadLibraryIndex(config.kicad_library_path)
+
+    # Set module-level defaults so all build_pad_map() calls benefit
+    configure_lookup(kicad_index=kicad_index, cache=cache)
+
+    gatherer = RequirementsGatherer(
+        llm, PromptBuilder(config.base_dir),
+        cache=cache, max_workers=config.llm_enrichment_workers,
+    )
 
     messages.append({"role": "user", "content": user_text})
 
+    plan_context = state.get("plan_context")
     feedback = None
     prev_json = None
 
     if phase == "input":
         original_description = user_text
+
+        # --- Planning step: generate design plan with questions ---
+        messages.append({"role": "system", "content": "\u23f3 Analyzing your circuit..."})
+        yield _out(
+            chat_display=_render_chat_markdown(messages),
+            status="Planning circuit design...",
+            state=state,
+        )
+
+        try:
+            logger.info("Running planning step...")
+            plan = gatherer.plan(user_text)
+        except Exception as exc:
+            logger.warning("Planning step failed: %s", exc)
+            plan = None
+
+        if plan and plan.get("questions"):
+            # Show plan and questions in chat
+            plan_msg = _render_plan_message(plan)
+            messages[-1] = {"role": "assistant", "content": plan_msg}
+
+            state.update(
+                phase="planning",
+                description=original_description,
+                messages=messages,
+                plan=plan,
+            )
+            yield _out(
+                chat_display=_render_chat_markdown(messages),
+                status="Review the design plan and answer questions below (or type 'skip').",
+                state=state,
+                submit_update=gr.update(interactive=True, value="Send Answers"),
+            )
+            return
+        else:
+            # No questions or plan failed — format whatever context we have and proceed
+            if plan:
+                plan_context = gatherer.format_plan_context(plan)
+                messages[-1] = {"role": "system",
+                                "content": "\u2705 Design plan ready — no clarifying questions needed."}
+            else:
+                messages[-1] = {"role": "system",
+                                "content": "\u23f3 Translating..."}
+
+    elif phase == "planning":
+        # User answered planning questions (or typed "skip")
+        original_description = state.get("description", "")
+        plan = state.get("plan", {})
+
+        if user_text.strip().lower() == "skip":
+            answers = {}
+        else:
+            # Parse user answers: match lines to questions by order
+            answer_lines = [line.strip() for line in user_text.split("\n") if line.strip()]
+            questions = plan.get("questions", [])
+            answers = {}
+            for i, q in enumerate(questions):
+                topic = q.get("topic", f"Q{i+1}")
+                if i < len(answer_lines) and answer_lines[i]:
+                    answers[topic] = answer_lines[i]
+                else:
+                    answers[topic] = q.get("default", "")
+
+        plan_context = gatherer.format_plan_context(plan, answers)
+        messages.append({"role": "system", "content": "\u23f3 Translating..."})
+
     elif phase == "review":
         feedback = user_text
         prev_json = json.dumps(requirements, indent=2) if requirements else None
@@ -325,11 +444,28 @@ def _handle_submit(
             if ref and comp.get("specs"):
                 prev_specs_by_ref[ref] = dict(comp["specs"])
 
-    messages.append({"role": "system", "content": "\u23f3 Translating..."})
+    if phase != "input" or not (plan and plan.get("questions")):
+        messages_has_translating = any(
+            m.get("content", "").startswith("\u23f3 Translating")
+            for m in messages[-2:]
+        )
+        if not messages_has_translating:
+            messages.append({"role": "system", "content": "\u23f3 Translating..."})
+
+    yield _out(
+        chat_display=_render_chat_markdown(messages),
+        status="Translating circuit description...",
+        state=state,
+        submit_update=gr.update(interactive=False, value="Translating..."),
+    )
 
     try:
-        logger.info("Calling translate (feedback=%s)", bool(feedback))
-        new_requirements = gatherer.translate(original_description, feedback, prev_json)
+        logger.info("Calling translate (feedback=%s, plan_context=%s)",
+                     bool(feedback), bool(plan_context))
+        new_requirements = gatherer.translate(
+            original_description, feedback, prev_json,
+            plan_context=plan_context,
+        )
         if new_requirements is not None:
             new_requirements = coerce_requirements_types(new_requirements)
 

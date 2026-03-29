@@ -69,6 +69,11 @@ class OrchestratorConfig:
     optimizer_iterations: int | None = None  # None = auto-scale from component count
     optimizer_seed: int | None = None
 
+    # Tiered lookup settings
+    kicad_library_path: str | None = None   # Root of KiCad footprint library (.pretty dirs)
+    component_cache_path: str = "~/.pcb-creator/component_cache.json"
+    llm_enrichment_workers: int = 4         # Max parallel LLM calls for spec/footprint enrichment
+
     # Paths (relative to base_dir)
     base_dir: Path = field(default_factory=lambda: Path.cwd())
     standards_path: str = "STANDARDS.md"
@@ -121,6 +126,15 @@ class OrchestratorConfig:
         config.freerouting_jar_path = Path(jar_env) if jar_env else None
         timeout_env = os.environ.get("PCB_FREEROUTING_TIMEOUT")
         config.freerouting_timeout_s = int(timeout_env) if timeout_env else config.freerouting_timeout_s
+        kicad_lib = os.environ.get("PCB_KICAD_LIBRARY_PATH")
+        if kicad_lib:
+            config.kicad_library_path = kicad_lib
+        cache_path_env = os.environ.get("PCB_COMPONENT_CACHE_PATH")
+        if cache_path_env:
+            config.component_cache_path = cache_path_env
+        workers_env = os.environ.get("PCB_LLM_ENRICHMENT_WORKERS")
+        if workers_env:
+            config.llm_enrichment_workers = int(workers_env)
         config.vision_model = os.environ.get("PCB_VISION_MODEL", config.vision_model)
         vision_attempts_env = os.environ.get("PCB_VISION_MAX_ATTEMPTS")
         if vision_attempts_env:
