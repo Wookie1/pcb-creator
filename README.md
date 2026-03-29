@@ -18,7 +18,7 @@ Upload to JLCPCB and order your board
 
 - **Web GUI** — Gradio chat interface with live board preview, step progress, and approval flow
 - **Natural language input** — describe your circuit, get a PCB
-- **Design planning** — the LLM proposes a design with assumptions and asks clarifying questions before generating
+- **Multi-turn design planning** — the LLM proposes a design, asks clarifying questions, and looks up real component specs; iterate until the plan is right, then proceed to generation
 - **Tiered component lookup** — resolves footprints and specs from KiCad library, IPC-7351B, EasyEDA/LCSC, and curated tables before falling back to LLM
 - **Parallel LLM enrichment** — remaining spec/footprint lookups run concurrently instead of sequentially
 - **Freerouting autorouter** — production-quality push-and-shove routing (auto-downloads, requires Java 17+)

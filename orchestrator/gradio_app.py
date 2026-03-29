@@ -140,13 +140,17 @@ def _render_plan_message(plan: dict) -> str:
 
     questions = plan.get("questions", [])
     if questions:
-        lines.append(f"\n**{len(questions)} question(s) before I proceed:**\n")
+        lines.append(f"\n**{len(questions)} question(s):**\n")
         for i, q in enumerate(questions, 1):
             question = q.get("question", "")
             default = q.get("default", "")
             lines.append(f"{i}. {question}")
             lines.append(f"   *Default: {default}*\n")
-        lines.append("Answer each question (one per line), or type **skip** to accept all defaults.")
+
+    lines.append("---")
+    lines.append("You can **answer questions**, **suggest changes** "
+                 "(e.g., *\"use WS2812B instead of regular LEDs\"*), "
+                 "or click **Proceed to Design \u27a1\ufe0f** when the plan looks right.")
 
     return "\n".join(lines)
 
@@ -367,7 +371,7 @@ def _handle_submit(
     if phase == "input":
         original_description = user_text
 
-        # --- Planning step: generate design plan with questions ---
+        # --- Planning step: first round of multi-turn conversation ---
         messages.append({"role": "system", "content": "\u23f3 Analyzing your circuit..."})
         yield _out(
             chat_display=_render_chat_markdown(messages),
@@ -375,15 +379,19 @@ def _handle_submit(
             state=state,
         )
 
+        planning_history: list[dict] = []
+        already_looked_up: set[str] = set()
+
         try:
-            logger.info("Running planning step...")
-            plan = gatherer.plan(user_text)
+            logger.info("Running planning step (round 1)...")
+            plan, planning_history = gatherer.plan_conversation_round(
+                user_text, user_text, planning_history, already_looked_up,
+            )
         except Exception as exc:
             logger.warning("Planning step failed: %s", exc)
             plan = None
 
-        if plan and plan.get("questions"):
-            # Show plan and questions in chat
+        if plan:
             plan_msg = _render_plan_message(plan)
             messages[-1] = {"role": "assistant", "content": plan_msg}
 
@@ -392,45 +400,76 @@ def _handle_submit(
                 description=original_description,
                 messages=messages,
                 plan=plan,
+                planning_history=planning_history,
+                already_looked_up=list(already_looked_up),
             )
             yield _out(
                 chat_display=_render_chat_markdown(messages),
-                status="Review the design plan and answer questions below (or type 'skip').",
+                status="Review the plan. Type corrections or answer questions, then click Send. "
+                       "Click Proceed to Design when ready.",
                 state=state,
-                submit_update=gr.update(interactive=True, value="Send Answers"),
+                submit_update=gr.update(interactive=True, value="Send"),
+                approve_update=gr.update(
+                    interactive=True, visible=True,
+                    value="\u27a1\ufe0f Proceed to Design",
+                ),
             )
             return
         else:
-            # No questions or plan failed — format whatever context we have and proceed
-            if plan:
-                plan_context = gatherer.format_plan_context(plan)
-                messages[-1] = {"role": "system",
-                                "content": "\u2705 Design plan ready — no clarifying questions needed."}
-            else:
-                messages[-1] = {"role": "system",
-                                "content": "\u23f3 Translating..."}
+            # Plan failed — fall through to translate without plan context
+            messages[-1] = {"role": "system",
+                            "content": "\u23f3 Translating..."}
 
     elif phase == "planning":
-        # User answered planning questions (or typed "skip")
         original_description = state.get("description", "")
         plan = state.get("plan", {})
+        planning_history = state.get("planning_history", [])
+        already_looked_up = set(state.get("already_looked_up", []))
 
-        if user_text.strip().lower() == "skip":
-            answers = {}
+        if gatherer._is_proceed_signal(user_text):
+            # Done planning — format context and proceed to translate
+            answers = gatherer._collect_default_answers(plan)
+            plan_context = gatherer.format_plan_context(plan, answers)
+            messages.append({"role": "system", "content": "\u23f3 Translating..."})
         else:
-            # Parse user answers: match lines to questions by order
-            answer_lines = [line.strip() for line in user_text.split("\n") if line.strip()]
-            questions = plan.get("questions", [])
-            answers = {}
-            for i, q in enumerate(questions):
-                topic = q.get("topic", f"Q{i+1}")
-                if i < len(answer_lines) and answer_lines[i]:
-                    answers[topic] = answer_lines[i]
-                else:
-                    answers[topic] = q.get("default", "")
+            # Another planning round — user is correcting/adding info
+            messages.append({"role": "system", "content": "\u23f3 Updating design..."})
+            yield _out(
+                chat_display=_render_chat_markdown(messages),
+                status="Updating design plan...",
+                state=state,
+                submit_update=gr.update(interactive=False, value="Thinking..."),
+                approve_update=gr.update(interactive=False),
+            )
 
-        plan_context = gatherer.format_plan_context(plan, answers)
-        messages.append({"role": "system", "content": "\u23f3 Translating..."})
+            logger.info("Planning round (correction)...")
+            new_plan, planning_history = gatherer.plan_conversation_round(
+                original_description, user_text, planning_history, already_looked_up,
+            )
+            if new_plan is not None:
+                plan = new_plan
+
+            plan_msg = _render_plan_message(plan)
+            messages[-1] = {"role": "assistant", "content": plan_msg}
+
+            state.update(
+                phase="planning",
+                plan=plan,
+                planning_history=planning_history,
+                already_looked_up=list(already_looked_up),
+                messages=messages,
+            )
+            yield _out(
+                chat_display=_render_chat_markdown(messages),
+                status="Review the updated plan. Type more corrections or click Proceed to Design.",
+                state=state,
+                submit_update=gr.update(interactive=True, value="Send"),
+                approve_update=gr.update(
+                    interactive=True, visible=True,
+                    value="\u27a1\ufe0f Proceed to Design",
+                ),
+            )
+            return
 
     elif phase == "review":
         feedback = user_text
@@ -444,19 +483,20 @@ def _handle_submit(
             if ref and comp.get("specs"):
                 prev_specs_by_ref[ref] = dict(comp["specs"])
 
-    if phase != "input" or not (plan and plan.get("questions")):
-        messages_has_translating = any(
-            m.get("content", "").startswith("\u23f3 Translating")
-            for m in messages[-2:]
-        )
-        if not messages_has_translating:
-            messages.append({"role": "system", "content": "\u23f3 Translating..."})
+    # Ensure there's a "Translating..." status in the chat
+    messages_has_translating = any(
+        m.get("content", "").startswith("\u23f3 Translating")
+        for m in messages[-2:]
+    )
+    if not messages_has_translating:
+        messages.append({"role": "system", "content": "\u23f3 Translating..."})
 
     yield _out(
         chat_display=_render_chat_markdown(messages),
         status="Translating circuit description...",
         state=state,
         submit_update=gr.update(interactive=False, value="Translating..."),
+        approve_update=gr.update(interactive=False, visible=False),
     )
 
     try:
@@ -587,6 +627,17 @@ def _approve_and_run(
     uploaded_files, api_key, api_base, model, max_tokens,
     state, base_dir,
 ):
+    phase = state.get("phase", "")
+
+    # If clicked during planning, treat as "proceed" → delegate to submit flow
+    if phase == "planning":
+        yield from _handle_submit(
+            "proceed", uploaded_files,
+            api_key, api_base, model, max_tokens,
+            state, base_dir,
+        )
+        return
+
     messages = state.get("messages", [])
     requirements = state.get("requirements")
     description = state.get("description", "")

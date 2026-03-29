@@ -138,12 +138,40 @@ class RequirementsGatherer:
         return self._summarize(requirements)
 
     # ------------------------------------------------------------------
-    # Planning step
+    # Planning — multi-turn conversation with spec grounding
     # ------------------------------------------------------------------
 
+    # Signals that the user is done with planning and wants to proceed
+    _PROCEED_SIGNALS = frozenset({
+        "looks good", "proceed", "go ahead", "approve", "done",
+        "yes", "ok", "lgtm", "build it", "start", "skip",
+        "that's fine", "perfect", "let's go", "confirmed",
+    })
+
+    @classmethod
+    def _is_proceed_signal(cls, msg: str) -> bool:
+        """Check if user message means 'stop planning, proceed to design'."""
+        m = msg.strip().lower().rstrip("!.,")
+        if not m:
+            return True  # Enter with no text = proceed
+        return m in cls._PROCEED_SIGNALS or any(
+            m.startswith(s) for s in cls._PROCEED_SIGNALS
+        )
+
     def _plan(self, user_input: str) -> dict | None:
-        """Generate a design plan with proposed assumptions and clarifying questions."""
-        context = {"user_input": user_input}
+        """Single-round plan (for agent mode / backward compat)."""
+        return self._plan_with_history(user_input, [])
+
+    def _plan_with_history(
+        self,
+        user_input: str,
+        conversation_history: list[dict],
+    ) -> dict | None:
+        """Generate a design plan, optionally incorporating conversation history."""
+        context = {
+            "user_input": user_input,
+            "conversation_history": conversation_history if conversation_history else [],
+        }
         try:
             prompt = self.prompt_builder.render("gather_plan", context)
             raw = self.llm.generate(
@@ -156,6 +184,146 @@ class RequirementsGatherer:
         except (json.JSONDecodeError, ValueError, Exception) as e:
             print(f"  Planning step failed: {e}")
             return None
+
+    # -- Spec injection: ground the plan with real component data ----------
+
+    # Keyword → component type mapping for spec lookup
+    _TYPE_KEYWORDS: dict[str, list[str]] = {
+        "led": ["LED", "WS2812", "neopixel", "SK6812"],
+        "ic": ["ATmega", "STM32", "ESP32", "NE555", "74HC", "MCP", "MAX232",
+               "LM358", "LM393", "CD4051", "L293"],
+        "voltage_regulator": ["LM78", "LM1117", "AMS1117", "LM317", "7805",
+                              "7812", "7833"],
+        "transistor_npn": ["2N2222", "2N3904", "BC547", "TIP120", "TIP122"],
+        "transistor_pnp": ["2N3906", "BC557"],
+        "transistor_nmos": ["IRF540", "IRLZ44", "2N7000", "BS170"],
+        "transistor_pmos": ["IRF9540"],
+        "resistor": ["ohm", "resistor"],
+        "capacitor": ["nF", "uF", "pF", "capacitor"],
+    }
+
+    @classmethod
+    def _guess_component_type(cls, name: str) -> str:
+        """Guess component type from a part name string."""
+        upper = name.upper()
+        for ctype, keywords in cls._TYPE_KEYWORDS.items():
+            for kw in keywords:
+                if kw.upper() in upper:
+                    return ctype
+        return "ic"  # default guess for unknown parts
+
+    def _inject_specs_for_plan(
+        self,
+        plan: dict,
+        already_looked_up: set[str],
+    ) -> list[str]:
+        """Look up specs for components mentioned in the plan.
+
+        Checks curated tables and cache. Returns formatted spec strings.
+        Updates *already_looked_up* in place to avoid redundant lookups.
+        """
+        import re as _re
+        results: list[str] = []
+        components = plan.get("proposed_design", {}).get("key_components", [])
+
+        for entry in components:
+            # Parse "ATmega328P (DIP-28)" or "3x 220ohm resistors (0805)"
+            m = _re.match(r"^(?:\d+x\s+)?(.+?)(?:\s*\(([^)]+)\))?\s*$", entry)
+            if not m:
+                continue
+            name = m.group(1).strip()
+            package = (m.group(2) or "").strip()
+            name_key = name.upper()
+
+            if name_key in already_looked_up:
+                continue
+            already_looked_up.add(name_key)
+
+            ctype = self._guess_component_type(name)
+            specs = lookup_specs(ctype, name, package)
+
+            # Also check cache
+            if specs is None and self.cache is not None:
+                cache_key = f"{ctype}:{name}:{package}"
+                cached = self.cache.get_specs(cache_key)
+                if cached:
+                    specs = {k: v for k, v in cached.items()
+                             if k not in ("source", "resolved", "needs_review")}
+
+            dims = lookup_footprint_dims(package) if package else None
+
+            if specs or dims:
+                parts: list[str] = [f"{name}"]
+                if package:
+                    parts[0] += f" ({package})"
+                parts[0] += ":"
+                if specs:
+                    spec_str = ", ".join(f"{k}={v}" for k, v in specs.items()
+                                         if k not in ("package",))
+                    parts.append(f"  Specs: {spec_str}")
+                if dims:
+                    w = dims.get("footprint_width_mm", "?")
+                    h = dims.get("footprint_height_mm", "?")
+                    parts.append(f"  Footprint: {w} x {h} mm")
+                results.append("\n".join(parts))
+
+        return results
+
+    def plan_conversation_round(
+        self,
+        user_input: str,
+        user_message: str,
+        conversation_history: list[dict],
+        already_looked_up: set[str],
+    ) -> tuple[dict | None, list[dict]]:
+        """Execute one round of multi-turn planning.
+
+        1. Appends user message to history
+        2. Calls LLM with full history
+        3. Injects component specs if new components found
+        4. Returns (plan_dict, updated_history)
+
+        Used by both CLI and GUI.
+        """
+        conversation_history.append({"role": "user", "content": user_message})
+
+        plan = self._plan_with_history(user_input, conversation_history)
+        if plan is None:
+            return None, conversation_history
+
+        # Inject specs for any new components
+        spec_messages = self._inject_specs_for_plan(plan, already_looked_up)
+        if spec_messages:
+            spec_text = "\n\n".join(spec_messages)
+            conversation_history.append({"role": "system", "content": spec_text})
+            # Re-plan with spec data so LLM can incorporate it
+            plan_with_specs = self._plan_with_history(user_input, conversation_history)
+            if plan_with_specs is not None:
+                plan = plan_with_specs
+
+        # Record the assistant's plan as text for history
+        plan_text = self._render_plan_for_history(plan)
+        conversation_history.append({"role": "assistant", "content": plan_text})
+
+        return plan, conversation_history
+
+    @staticmethod
+    def _render_plan_for_history(plan: dict) -> str:
+        """Render a plan dict as concise text for conversation history."""
+        lines: list[str] = []
+        if plan.get("understanding"):
+            lines.append(plan["understanding"])
+        design = plan.get("proposed_design", {})
+        for key in ("power", "packages", "board"):
+            if key in design:
+                lines.append(f"{key}: {design[key]}")
+        for comp in design.get("key_components", []):
+            lines.append(f"- {comp}")
+        for note in design.get("notes", []):
+            lines.append(f"Note: {note}")
+        for q in plan.get("questions", []):
+            lines.append(f"Q: {q.get('question', '')} [default: {q.get('default', '')}]")
+        return "\n".join(lines)
 
     @staticmethod
     def format_plan_context(plan: dict, answers: dict[str, str] | None = None) -> str:
@@ -193,18 +361,19 @@ class RequirementsGatherer:
 
         return "\n".join(lines)
 
-    def _run_interactive_plan(self, user_input: str) -> str | None:
-        """Run the planning step interactively on the CLI.
+    @staticmethod
+    def _collect_default_answers(plan: dict) -> dict[str, str]:
+        """Build {topic: default} for all questions in a plan."""
+        return {
+            q.get("topic", ""): q.get("default", "")
+            for q in plan.get("questions", [])
+        }
 
-        Returns formatted plan context string, or None if skipped/failed.
-        """
-        print("\n  Analyzing your circuit design...")
-        plan = self._plan(user_input)
-        if plan is None:
-            print("  (Planning step skipped — proceeding directly to translation)")
-            return None
+    # -- CLI interactive planning loop ------------------------------------
 
-        # Display the plan
+    @staticmethod
+    def _display_plan_cli(plan: dict) -> None:
+        """Print a plan to the CLI."""
         understanding = plan.get("understanding", "")
         if understanding:
             print(f"\n  Understanding: {understanding}")
@@ -223,32 +392,53 @@ class RequirementsGatherer:
                     print(f"      - {note}")
 
         questions = plan.get("questions", [])
-        if not questions:
-            print("\n  No clarifying questions needed.")
-            return self.format_plan_context(plan)
+        if questions:
+            print(f"\n  Questions:")
+            for i, q in enumerate(questions, 1):
+                print(f"    {i}. {q.get('question', '')}")
+                print(f"       [default: {q.get('default', '')}]")
 
-        # Ask questions
-        print(f"\n  {len(questions)} question(s) — press Enter to accept default, or type your answer.")
-        print("  Type 'skip' to accept all defaults.\n")
+    def _run_interactive_plan(self, user_input: str) -> str | None:
+        """Run multi-turn planning on the CLI.
 
-        answers: dict[str, str] = {}
-        for i, q in enumerate(questions, 1):
-            topic = q.get("topic", f"Q{i}")
-            question = q.get("question", "")
-            default = q.get("default", "")
+        Returns formatted plan context string, or None if skipped/failed.
+        """
+        print("\n  Analyzing your circuit design...")
 
-            response = input(f"  {i}. {question}\n     [{default}]: ").strip()
+        conversation_history: list[dict] = []
+        already_looked_up: set[str] = set()
 
-            if response.lower() == "skip":
-                # Accept all remaining defaults
-                for remaining_q in questions[i - 1:]:
-                    t = remaining_q.get("topic", "")
-                    answers[t] = remaining_q.get("default", "")
-                print("  Accepting defaults for remaining questions.")
-                break
+        plan, conversation_history = self.plan_conversation_round(
+            user_input, user_input, conversation_history, already_looked_up,
+        )
+        if plan is None:
+            print("  (Planning step skipped — proceeding directly to translation)")
+            return None
 
-            answers[topic] = response if response else default
+        self._display_plan_cli(plan)
 
+        # Multi-turn loop
+        for _ in range(10):
+            print("\n  Type corrections, answer questions, or press Enter to proceed:")
+            response = input("  > ").strip()
+
+            if self._is_proceed_signal(response):
+                answers = self._collect_default_answers(plan)
+                return self.format_plan_context(plan, answers)
+
+            print("\n  Updating design...")
+            new_plan, conversation_history = self.plan_conversation_round(
+                user_input, response, conversation_history, already_looked_up,
+            )
+            if new_plan is not None:
+                plan = new_plan
+            else:
+                print("  (Update failed, keeping previous plan)")
+
+            self._display_plan_cli(plan)
+
+        # Max rounds reached
+        answers = self._collect_default_answers(plan)
         return self.format_plan_context(plan, answers)
 
     # ------------------------------------------------------------------

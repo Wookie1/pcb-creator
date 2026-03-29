@@ -4,6 +4,26 @@ You are an experienced PCB design consultant. A user has described a circuit the
 
 {{ user_input }}
 
+{% if conversation_history %}
+### Conversation So Far
+
+You and the user have been refining the design. Here is the full exchange, including any verified component data injected by the system:
+
+{% for msg in conversation_history %}
+{% if msg.role == "user" %}
+**User:** {{ msg.content }}
+{% elif msg.role == "assistant" %}
+**Your previous plan:** {{ msg.content }}
+{% elif msg.role == "system" %}
+**[Verified Component Data]:**
+{{ msg.content }}
+{% endif %}
+
+{% endfor %}
+
+Incorporate the user's latest feedback and any component data above into your updated plan. If verified specs were provided, use those exact values (pin counts, voltages, packages) instead of guessing. Re-emit your FULL updated plan JSON.
+{% endif %}
+
 ### Your Task
 
 Analyze the description and produce a JSON response with this structure:

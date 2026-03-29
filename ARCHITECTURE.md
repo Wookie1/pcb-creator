@@ -366,9 +366,12 @@ LLM plans design (gather_plan)
   → summarizes understanding
   → proposes concrete design with defaults
   → asks 2-5 clarifying questions
+  → system injects verified component specs
       │
       ▼
-User answers questions (or skips to accept defaults)
+User reviews plan
+  ├─→ types corrections → LLM re-plans (loop)
+  └─→ clicks Proceed / presses Enter
       │
       ▼
 LLM translates to JSON (gather_translate, with plan context)
@@ -405,7 +408,7 @@ Tiered spec enrichment
               Run pipeline        Loop with context
 ```
 
-### Design Planning Step
+### Design Planning Step (Multi-Turn)
 
 Before translation, the LLM analyzes the user's circuit description and produces a design plan (`gather_plan.md.j2`). The plan includes:
 
@@ -413,11 +416,22 @@ Before translation, the LLM analyzes the user's circuit description and produces
 - **Proposed design** — concrete choices for power source, packages, board size, component list, and engineering notes (decoupling caps, pull-ups, etc.)
 - **Clarifying questions** — 2-5 focused questions about genuinely ambiguous aspects, each with a sensible default
 
-The user can answer each question, accept the default (press Enter), or type "skip" to accept all defaults. The plan and answers are formatted into structured context that is injected into the `gather_translate` prompt, giving the translator a clear, disambiguated specification to work from.
+**Multi-turn conversation:** The planning phase is a loop, not a single round. After seeing the plan, the user can:
+- Answer questions
+- Suggest design changes (e.g., "use WS2812B instead of regular LEDs")
+- Press Enter / click "Proceed to Design" when satisfied
 
-**GUI flow:** The plan appears as a chat message. The user types answers (one per line) or "skip". A new `"planning"` phase sits between `"input"` and `"review"` in the state machine.
+Each round, the system automatically looks up specs for components mentioned in the plan from the curated tables and cache (`_inject_specs_for_plan`). If real specs are found (pin counts, voltages, pinouts), they're injected into the conversation as `[Verified Component Data]` messages so the LLM can incorporate them. This grounds the plan in real data rather than LLM guesses.
 
-**Graceful degradation:** If the planning LLM call fails, the flow falls through to translation without plan context — identical to the pre-planning behavior.
+The multi-turn conversation is simulated over the single-turn LLM client by accumulating a `conversation_history` (user messages, assistant plans, system spec injections) and rendering the full history into the prompt each round.
+
+**GUI flow:** The plan appears as a chat message with a "Proceed to Design ➜" button. The user can type corrections and click Send for another round, or click Proceed when ready. The `"planning"` phase loops until proceed.
+
+**CLI flow:** Same loop via `input()`. User presses Enter to proceed or types corrections.
+
+**Agent mode:** Uses single-round `_plan()` — the agent handles iteration externally.
+
+**Graceful degradation:** If the planning LLM call fails, the flow falls through to translation without plan context — identical to the pre-planning behavior. Mid-conversation failures keep the last good plan.
 
 ### Tiered Component Enrichment
 
