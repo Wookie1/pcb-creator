@@ -408,6 +408,11 @@ def _handle_submit(
                 status="Review the plan. Type corrections or answer questions, then click Send. "
                        "Click Proceed to Design when ready.",
                 state=state,
+                chat_input=gr.update(
+                    value="", label="Chat",
+                    placeholder="Answer questions, suggest changes, or type 'proceed'...",
+                    lines=2,
+                ),
                 submit_update=gr.update(interactive=True, value="Send"),
                 approve_update=gr.update(
                     interactive=True, visible=True,
@@ -463,6 +468,11 @@ def _handle_submit(
                 chat_display=_render_chat_markdown(messages),
                 status="Review the updated plan. Type more corrections or click Proceed to Design.",
                 state=state,
+                chat_input=gr.update(
+                    value="", label="Chat",
+                    placeholder="Answer questions, suggest changes, or type 'proceed'...",
+                    lines=2,
+                ),
                 submit_update=gr.update(interactive=True, value="Send"),
                 approve_update=gr.update(
                     interactive=True, visible=True,
