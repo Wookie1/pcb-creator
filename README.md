@@ -16,14 +16,17 @@ Upload to JLCPCB and order your board
 
 ## Features
 
+- **Web GUI** — Gradio chat interface with live board preview, step progress, and approval flow
 - **Natural language input** — describe your circuit, get a PCB
+- **Design planning** — the LLM proposes a design with assumptions and asks clarifying questions before generating
+- **Tiered component lookup** — resolves footprints and specs from KiCad library, IPC-7351B, EasyEDA/LCSC, and curated tables before falling back to LLM
+- **Parallel LLM enrichment** — remaining spec/footprint lookups run concurrently instead of sequentially
 - **Freerouting autorouter** — production-quality push-and-shove routing (auto-downloads, requires Java 17+)
 - **Built-in A\* router** — fallback if Freerouting unavailable
 - **IPC-2221 trace sizing** — automatic trace width calculation for current capacity
 - **DRC with DFM profiles** — checks against JLCPCB, PCBWay, OSH Park manufacturing rules
 - **Manufacturer-ready output** — Gerber RS-274X, Excellon drill, BOM CSV, pick-and-place CSV, STEP 3D model
 - **Interactive board viewer** — HTML/SVG visualization with traces, copper fills, component hover tooltips, DRC results
-- **Approval gate** — review the routed board in your browser before generating output files
 - **KiCad export/import** — export to KiCad for manual editing, re-import to continue the pipeline
 
 ## Quick Start
@@ -45,22 +48,26 @@ PCB_LLM_API_BASE=http://localhost:11434/v1
 PCB_GENERATE_MODEL=ollama/qwen3.5:27b
 ```
 
-Run the pipeline:
+Run it:
 
 ```bash
-# Interactive mode
+# Web GUI (recommended) — chat interface with live board preview
+pcb-creator gui
+
+# CLI interactive — describe your circuit in the terminal
 pcb-creator design --project my_board
 
-# From a requirements file
+# CLI from a requirements file — skip the conversation
 pcb-creator run --requirements tests/test_switch_led.json --project led_test
 ```
 
 The pipeline will:
-1. Generate schematic, BOM, and layout using the LLM
-2. Route the board with Freerouting
-3. Run DRC against your manufacturer's DFM profile
-4. Open an interactive viewer in your browser for approval
-5. Generate Gerber files, drill file, BOM CSV, pick-and-place, and STEP model
+1. Plan the design and ask clarifying questions (power source, IC choices, LED colors, etc.)
+2. Generate schematic, BOM, and layout using the LLM
+3. Route the board with Freerouting
+4. Run DRC against your manufacturer's DFM profile
+5. Open an interactive viewer for approval
+6. Generate Gerber files, drill file, BOM CSV, pick-and-place, and STEP model
 
 ## Requirements
 
@@ -92,6 +99,9 @@ All settings via environment variables or `.env` file:
 | `PCB_ROUTER_ENGINE` | `freerouting` | `freerouting` or `builtin` |
 | `PCB_FREEROUTING_TIMEOUT` | `300` | Freerouting timeout (seconds) |
 | `PCB_MAX_REWORK` | `5` | Max LLM rework attempts per step |
+| `PCB_KICAD_LIBRARY_PATH` | *(none)* | KiCad footprint library root (for tiered lookup) |
+| `PCB_COMPONENT_CACHE_PATH` | `~/.pcb-creator/component_cache.json` | Resolved component cache |
+| `PCB_LLM_ENRICHMENT_WORKERS` | `4` | Parallel LLM calls for spec/footprint enrichment |
 
 ## Output Files
 
