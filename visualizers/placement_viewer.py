@@ -425,10 +425,23 @@ def generate_svg(
     parts: list[str] = []
 
     # Board background
-    parts.append(
-        f'<rect x="{margin}" y="{margin}" width="{board_w * scale}" height="{board_h * scale}" '
-        f'fill="#1a1a2e" stroke="#4a4a6a" stroke-width="2" rx="2"/>'
-    )
+    outline_vertices = board.get("outline_vertices")
+    if outline_vertices and len(outline_vertices) >= 3:
+        # Polygon board outline
+        points_str = " ".join(
+            f"{margin + v[0] * scale:.1f},{margin + (board_h - v[1]) * scale:.1f}"
+            for v in outline_vertices
+        )
+        parts.append(
+            f'<polygon points="{points_str}" '
+            f'fill="#1a1a2e" stroke="#4a4a6a" stroke-width="2"/>'
+        )
+    else:
+        # Rectangular board
+        parts.append(
+            f'<rect x="{margin}" y="{margin}" width="{board_w * scale}" height="{board_h * scale}" '
+            f'fill="#1a1a2e" stroke="#4a4a6a" stroke-width="2" rx="2"/>'
+        )
 
     # Grid lines (5mm spacing)
     for x_mm in range(0, int(board_w) + 1, 5):

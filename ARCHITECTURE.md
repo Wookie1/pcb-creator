@@ -720,7 +720,8 @@ Produces manufacturer-ready files in `projects/{name}/output/`. All files are st
 - **BOM CSV** (`bom_csv_exporter.py`): JLCPCB-compatible columns (Designator, Value, Package, Quantity, Description, Specs, Notes).
 - **Pick-and-place CSV** (`bom_csv_exporter.py`): JLCPCB CPL format (Designator, Val, Package, Mid X, Mid Y, Rotation, Layer). Includes fiducials for machine vision alignment.
 - **STEP AP214** (`step_exporter.py`): Populated PCB 3D model — board solid plus 3D component models at their placed positions with rotation. Component models sourced from LCSC/EasyEDA library via `easyeda2kicad` (cached in `~/.pcb-creator/3d-models/`, configurable via `PCB_3D_MODELS_DIR`). Parametric box fallbacks generated from `component_heights.py` package height database for components without library models. Generated directly in ISO 10303-21 text format (no CAD kernel dependency). Bare board export still available via `export_step()`.
-- **Gerber ZIP** (`gerber_exporter.py`): All Gerbers + drill packaged for manufacturer upload.
+- **Assembly drawing PDF** (`assembly_drawing.py`): Print-friendly assembly reference showing board outline, component courtyard rectangles with designator labels, pin 1 dots, polarity indicators, board dimensions with annotation arrows, title block (project name, date, revision), and BOM table. One page per populated side (top/bottom). Generated via SVG→PDF conversion using `cairosvg`. Supports polygon board outlines from DXF.
+- **Gerber ZIP** (`gerber_exporter.py`): All Gerbers + drill packaged for manufacturer upload. BOM CSV, CPL, and assembly PDF are separate files (uploaded independently per manufacturer workflow).
 
 **Dependencies:** `gerber-writer>=0.4` (Gerber generation). All other formats use Python stdlib.
 
@@ -732,6 +733,8 @@ Produces manufacturer-ready files in `projects/{name}/output/`. All files are st
 - **Skip-approval flag** (`--skip-approval`): Bypasses all approval gates for batch/CI runs.
 - **API-level retry**: LLM calls automatically retry up to 3 times with exponential backoff on transient errors (timeouts, rate limits, 5xx, connection errors).
 - **Relay support**: Full pipeline support for relay components (`component_type: "relay"`, designator prefix `K`). Also supports variable resistor prefix `RV`.
+- **DXF board outline** (`exporters/dxf_parser.py`): Parse DXF files containing board outlines (LWPOLYLINE, POLYLINE, or chained LINE entities). Extracted polygon vertices flow through placement, routing, and all exporters. Attach a DXF file as a `board_outline` attachment and set `outline_type: "dxf"` in requirements.
+- **Assembly drawing PDF** (`exporters/assembly_drawing.py`): Generated in Step 6 alongside Gerbers. Shows component placement with designators, polarity marks, dimensions, and BOM table. Supports polygon outlines.
 - **Netlist block diagram** (`visualizers/netlist_viewer.py`): Schematic-style visualization shown after Step 1 — components as colored boxes with pins, connected by bezier-curved nets that route around boxes.
 - **LLM output robustness** (`gather/schema.py`): Automatic type coercion (string→number) and null stripping before JSON Schema validation. Prevents rework loops caused by LLMs outputting `"2"` instead of `2` or `null` for optional fields.
 

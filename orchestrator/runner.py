@@ -375,6 +375,18 @@ def run_workflow(
     step_path = export_step_populated(routed, netlist_data, bom_data, output_dir / f"{project_name}_board.step")
     print(f"  STEP model: {step_path.name} (populated)")
 
+    # Assembly drawing PDF
+    try:
+        from exporters.assembly_drawing import export_assembly_drawing
+        assy_path = export_assembly_drawing(
+            routed, netlist_data, bom_data,
+            output_dir / f"{project_name}_assembly.pdf",
+            project_name=project_name,
+        )
+        print(f"  Assembly drawing: {assy_path.name}")
+    except Exception as e:
+        print(f"  Assembly drawing: skipped ({e})")
+
     # Zip package
     zip_path = create_output_package(output_dir, project_name)
     print(f"  Package: {zip_path.name}")

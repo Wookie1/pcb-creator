@@ -39,6 +39,8 @@ mcp = FastMCP(
     "pcb-creator",
     instructions=(
         "PCB design tools. Use design_pcb to create a PCB from a circuit description. "
+        "Optionally attach files (DXF board outlines, datasheets, sketches) via the "
+        "attachments parameter with base64-encoded content. "
         "Use list_projects, get_project_status, get_drc_report, export_kicad, and "
         "get_board_image to inspect and export completed designs."
     ),
@@ -98,6 +100,7 @@ def design_pcb(
     description: str,
     project_name: str | None = None,
     settings: dict | None = None,
+    attachments: list[dict] | None = None,
 ) -> dict:
     """Design a PCB from a natural language circuit description.
 
@@ -117,6 +120,18 @@ def design_pcb(
         project_name: Optional project slug. Auto-generated from description if omitted.
         settings: Optional config overrides: {"model": "...", "router_engine": "...",
             "max_rework_attempts": 5}
+        attachments: Optional list of file attachments. Each dict has:
+            - "filename": Name for the file (e.g., "board_outline.dxf")
+            - "content_base64": Base64-encoded file content
+            - "type": Attachment type — "board_outline", "sketch", "photo", "datasheet", "other"
+            - "purpose": Description of what the file is for
+            - "used_by_steps": List of step numbers that use this file (e.g., [3] for layout)
+
+            For DXF board outlines: set type to "board_outline" and used_by_steps
+            to [3]. The pipeline will automatically extract the outline polygon and
+            board dimensions from the DXF file — you do not need to specify
+            width_mm/height_mm. If providing structured JSON requirements, set
+            board.outline_type to "dxf".
 
     Returns:
         Dict with success status, project name, routing stats, DRC summary,
@@ -166,6 +181,32 @@ def design_pcb(
     projects_dir = _get_projects_dir()
     project_dir = projects_dir / project_name
     project_dir.mkdir(parents=True, exist_ok=True)
+
+    # Handle file attachments
+    if attachments:
+        att_metadata = []
+        for att in attachments:
+            filename = att.get("filename", "attachment")
+            content_b64 = att.get("content_base64", "")
+            att_type = att.get("type", "other")
+            purpose = att.get("purpose", "")
+            used_by = att.get("used_by_steps", [3])
+
+            # Write file to project directory
+            file_path = project_dir / filename
+            file_path.write_bytes(base64.b64decode(content_b64))
+
+            att_metadata.append({
+                "filename": filename,
+                "type": att_type,
+                "purpose": purpose,
+                "used_by_steps": used_by,
+            })
+
+        # Merge attachment metadata into requirements
+        existing_atts = requirements.get("attachments", [])
+        existing_atts.extend(att_metadata)
+        requirements["attachments"] = existing_atts
 
     req_path = project_dir / f"{project_name}_requirements_input.json"
     req_path.write_text(json.dumps(requirements, indent=2))

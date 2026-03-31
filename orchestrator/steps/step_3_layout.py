@@ -57,10 +57,18 @@ class LayoutStep(StepBase):
         board_width = board.get("width_mm", DEFAULT_BOARD_WIDTH_MM)
         board_height = board.get("height_mm", DEFAULT_BOARD_HEIGHT_MM)
 
+        # Parse DXF board outline if provided
+        outline_vertices: list[list[float]] | None = None
+        if board.get("outline_type") == "dxf":
+            outline_vertices, board_width, board_height = self._parse_dxf_outline(
+                requirements_json, board_width, board_height,
+            )
+
         # Auto-size: ensure board is large enough for all components
         board_width, board_height = self._ensure_adequate_board_size(
             board_width, board_height, netlist_content,
-            user_specified="width_mm" in board or "height_mm" in board,
+            user_specified="width_mm" in board or "height_mm" in board
+            or outline_vertices is not None,
         )
 
         # Extract placement hints
@@ -150,6 +158,13 @@ class LayoutStep(StepBase):
             placement_text = self._correct_footprint_dimensions(
                 placement_text, netlist_content
             )
+
+            # Inject DXF outline vertices into placement JSON if available
+            if outline_vertices:
+                placement_data = json.loads(placement_text)
+                placement_data.setdefault("board", {})["outline_vertices"] = outline_vertices
+                placement_data["board"]["outline_type"] = "dxf"
+                placement_text = json.dumps(placement_data, indent=2)
 
             output_path = self.project.write_output(output_filename, placement_text)
             print(f"  Saved {output_filename}")
@@ -477,6 +492,41 @@ class LayoutStep(StepBase):
                 "warnings": [],
                 "summary": "Validator execution failed",
             }
+
+    def _parse_dxf_outline(
+        self,
+        requirements_json: dict,
+        default_width: float,
+        default_height: float,
+    ) -> tuple[list[list[float]] | None, float, float]:
+        """Parse DXF board outline from attachments. Returns (vertices, width, height)."""
+        # Find the board_outline attachment
+        dxf_filename = None
+        for att in requirements_json.get("attachments", []):
+            if att.get("type") == "board_outline" and att.get("filename", "").lower().endswith(".dxf"):
+                dxf_filename = att["filename"]
+                break
+
+        if not dxf_filename:
+            print("  Warning: outline_type is 'dxf' but no board_outline DXF attachment found")
+            return None, default_width, default_height
+
+        dxf_path = self.project.project_dir / dxf_filename
+        if not dxf_path.exists():
+            print(f"  Warning: DXF file not found: {dxf_path}")
+            return None, default_width, default_height
+
+        try:
+            from exporters.dxf_parser import parse_board_outline
+            vertices, width, height = parse_board_outline(dxf_path)
+            print(f"  DXF outline: {len(vertices)} vertices, {width}x{height}mm")
+            return vertices, width, height
+        except ImportError:
+            print("  Warning: ezdxf not installed, cannot parse DXF outline")
+            return None, default_width, default_height
+        except Exception as e:
+            print(f"  Warning: DXF parsing failed: {e}")
+            return None, default_width, default_height
 
     @staticmethod
     def _ensure_adequate_board_size(

@@ -29,6 +29,10 @@ Thumbs.db
 *.swp
 *.swo
 
+# Test data
+test/
+tests/
+
 # Temp
 /tmp/
 *.tmp

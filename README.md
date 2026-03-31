@@ -25,7 +25,9 @@ Upload to JLCPCB and order your board
 - **Built-in A\* router** — fallback with API-level retry and exponential backoff
 - **IPC-2221 trace sizing** — automatic trace width calculation for current capacity
 - **DRC with DFM profiles** — checks against JLCPCB, PCBWay, OSH Park manufacturing rules
-- **Manufacturer-ready output** — Gerber RS-274X, Excellon drill, BOM CSV, pick-and-place CSV, STEP 3D model
+- **DXF board outline** — attach a DXF file to define non-rectangular board shapes
+- **Assembly drawing PDF** — print-friendly component placement reference with BOM table for manufacturing
+- **Manufacturer-ready output** — Gerber RS-274X, Excellon drill, BOM CSV, pick-and-place CSV, assembly PDF, STEP 3D model
 - **Interactive board viewer** — HTML/SVG visualization with traces, copper fills, component hover tooltips, DRC results
 - **KiCad export/import** — export to KiCad for manual editing, re-import to continue the pipeline
 
@@ -119,7 +121,8 @@ Generated in `projects/<name>/output/`:
 | `*.drl` | Excellon | Drill file |
 | `*_bom.csv` | CSV | Bill of materials (JLCPCB format) |
 | `*_cpl.csv` | CSV | Pick-and-place (JLCPCB CPL format) |
-| `*_board.step` | STEP | Bare PCB 3D model |
+| `*_board.step` | STEP | Populated PCB 3D model |
+| `*_assembly.pdf` | PDF | Assembly drawing (component placement + BOM) |
 | `*_gerbers.zip` | ZIP | All Gerbers + drill for upload |
 
 ## MCP Server
