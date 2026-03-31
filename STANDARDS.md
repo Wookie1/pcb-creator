@@ -37,7 +37,7 @@ There are exactly three element types:
 **component** — A physical electronic part.
 - `component_id`: unique ID, must start with `comp_` (e.g., `comp_r1`)
 - `designator`: standard reference designator (e.g., `R1`, `D2`, `U1`)
-- `component_type`: one of: resistor, capacitor, inductor, led, diode, transistor_npn, transistor_pnp, transistor_nmos, transistor_pmos, ic, connector, switch, voltage_regulator, crystal, fuse
+- `component_type`: one of: resistor, capacitor, inductor, led, diode, transistor_npn, transistor_pnp, transistor_nmos, transistor_pmos, ic, connector, switch, voltage_regulator, crystal, fuse, relay
 - `value`: value with units as a string (e.g., `220ohm`, `100nF`, `red`, `LM7805`)
 - `package`: footprint name (e.g., `0805`, `SOT-23`, `DIP-8`)
 - `description`: what this component does in the circuit
@@ -81,6 +81,8 @@ Standard reference designator prefixes by component type:
 | SW | switch |
 | Y | crystal |
 | F | fuse |
+| K | relay |
+| RV | resistor (variable/potentiometer) |
 
 Numbering rules:
 - Sequential starting from 1 (R1, R2, R3...)

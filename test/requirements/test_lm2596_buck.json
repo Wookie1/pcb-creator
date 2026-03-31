@@ -1,0 +1,134 @@
+{
+  "project_name": "test_lm2596_buck",
+  "description": "LM2596 adjustable buck converter module with feedback voltage divider, Schottky catch diode, power inductor, input/output filter caps, and screw terminal I/O",
+  "power": {
+    "voltage": "adjustable (1.23V-37V output)",
+    "source": "7-40V DC input via screw terminal"
+  },
+  "components": [
+    {
+      "ref": "U1",
+      "type": "voltage_regulator",
+      "value": "LM2596-ADJ",
+      "package": "TO-263-5",
+      "purpose": "Adjustable step-down switching regulator",
+      "specs": {
+        "pin_count": 5,
+        "pinout": "1:IN 2:OUT 3:GND 4:FB 5:ON_OFF",
+        "input_min": "7V",
+        "input_max": "40V",
+        "max_current": "3A"
+      }
+    },
+    {
+      "ref": "D1",
+      "type": "diode",
+      "value": "SS34",
+      "package": "SMA",
+      "purpose": "Schottky catch/freewheeling diode",
+      "specs": {"vf": "0.5V", "max_current": "3A", "voltage_rating": "40V"}
+    },
+    {
+      "ref": "L1",
+      "type": "inductor",
+      "value": "33uH",
+      "package": "12x12mm",
+      "purpose": "Power inductor for buck converter",
+      "specs": {"current_rating": "3A", "dcr": "0.05ohm"}
+    },
+    {
+      "ref": "C1",
+      "type": "capacitor",
+      "value": "220uF",
+      "package": "electrolytic_10x12",
+      "purpose": "Input filter capacitor",
+      "specs": {"voltage_rating": "50V", "type": "electrolytic"}
+    },
+    {
+      "ref": "C2",
+      "type": "capacitor",
+      "value": "220uF",
+      "package": "electrolytic_10x12",
+      "purpose": "Output filter capacitor",
+      "specs": {"voltage_rating": "35V", "type": "electrolytic"}
+    },
+    {
+      "ref": "C3",
+      "type": "capacitor",
+      "value": "100nF",
+      "package": "0805",
+      "purpose": "Input bypass capacitor",
+      "specs": {"voltage_rating": "50V", "type": "ceramic"}
+    },
+    {
+      "ref": "R1",
+      "type": "resistor",
+      "value": "1kohm",
+      "package": "0805",
+      "purpose": "Feedback divider upper resistor"
+    },
+    {
+      "ref": "R2",
+      "type": "resistor",
+      "value": "3.3kohm",
+      "package": "0805",
+      "purpose": "Feedback divider lower resistor (sets ~5V output)"
+    },
+    {
+      "ref": "J1",
+      "type": "connector",
+      "value": "screw_terminal_2pin",
+      "package": "ScrewTerminal_1x2_5mm",
+      "purpose": "DC input (7-40V)"
+    },
+    {
+      "ref": "J2",
+      "type": "connector",
+      "value": "screw_terminal_2pin",
+      "package": "ScrewTerminal_1x2_5mm",
+      "purpose": "Regulated DC output"
+    }
+  ],
+  "connections": [
+    {
+      "net_name": "VIN",
+      "net_class": "power",
+      "pins": ["J1.1", "U1.IN", "C1.1", "C3.1"]
+    },
+    {
+      "net_name": "GND",
+      "net_class": "ground",
+      "pins": ["J1.2", "U1.GND", "C1.2", "C2.2", "C3.2", "D1.anode", "R2.2", "J2.2"]
+    },
+    {
+      "net_name": "SW_NODE",
+      "net_class": "signal",
+      "pins": ["U1.OUT", "L1.1", "D1.cathode"]
+    },
+    {
+      "net_name": "VOUT",
+      "net_class": "power",
+      "pins": ["L1.2", "C2.1", "R1.1", "J2.1"]
+    },
+    {
+      "net_name": "FB",
+      "net_class": "signal",
+      "pins": ["U1.FB", "R1.2", "R2.1"]
+    },
+    {
+      "net_name": "ON_OFF",
+      "net_class": "signal",
+      "pins": ["U1.ON_OFF", "U1.GND"]
+    }
+  ],
+  "board": {
+    "width_mm": 40,
+    "height_mm": 25,
+    "layers": 2
+  },
+  "placement_hints": [
+    {"ref": "J1", "edge": "left"},
+    {"ref": "J2", "edge": "right"},
+    {"ref": "U1", "x_mm": 20, "y_mm": 12}
+  ]
+}

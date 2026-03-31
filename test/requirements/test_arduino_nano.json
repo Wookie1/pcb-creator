@@ -1,0 +1,426 @@
+{
+  "project_name": "test_arduino_nano",
+  "description": "Arduino Nano clone with ATmega328P TQFP-32 microcontroller, CH340G USB-to-serial converter, mini-USB connector, 16MHz and 12MHz crystals, LM7805 and AMS1117-3.3 regulators, power and user LEDs, reset button, and dual 15-pin headers",
+  "power": {
+    "voltage": "5V",
+    "source": "USB or VIN via LM7805 regulator"
+  },
+  "components": [
+    {
+      "ref": "J1",
+      "type": "connector",
+      "value": "mini_usb",
+      "package": "USB_Mini-B",
+      "purpose": "USB power and data connection"
+    },
+    {
+      "ref": "U1",
+      "type": "ic",
+      "value": "ATmega328P",
+      "package": "TQFP-32",
+      "purpose": "Main microcontroller",
+      "specs": {
+        "pin_count": 32,
+        "pinout": "1:PD3 2:PD4 3:GND 4:VCC 5:GND 6:VCC 7:PB6/XTAL1 8:PB7/XTAL2 9:PD5 10:PD6 11:PD7 12:PB0 13:PB1 14:PB2 15:PB3/MOSI 16:PB4/MISO 17:PB5/SCK 18:AVCC 19:ADC6 20:AREF 21:GND 22:ADC7 23:PC0 24:PC1 25:PC2 26:PC3 27:PC4 28:PC5 29:PC6/RESET 30:PD0 31:PD1 32:PD2"
+      }
+    },
+    {
+      "ref": "U2",
+      "type": "ic",
+      "value": "CH340G",
+      "package": "SOIC-16",
+      "purpose": "USB-to-serial converter",
+      "specs": {
+        "pin_count": 16,
+        "pinout": "1:GND 2:TXD 3:RXD 4:V3 5:UD+ 6:UD- 7:XI 8:XO 9:CTS 10:DSR 11:RI 12:DCD 13:DTR 14:RTS 15:R232 16:VCC"
+      }
+    },
+    {
+      "ref": "U3",
+      "type": "voltage_regulator",
+      "value": "LM7805",
+      "package": "TO-220",
+      "purpose": "5V regulator for VIN input",
+      "specs": {"output": "5V", "max_current": "1A"}
+    },
+    {
+      "ref": "U4",
+      "type": "voltage_regulator",
+      "value": "AMS1117-3.3",
+      "package": "SOT-223",
+      "purpose": "3.3V regulator for CH340G and 3.3V output pin",
+      "specs": {"output": "3.3V", "max_current": "800mA"}
+    },
+    {
+      "ref": "Y1",
+      "type": "crystal",
+      "value": "16MHz",
+      "package": "HC49",
+      "purpose": "ATmega328P main oscillator"
+    },
+    {
+      "ref": "Y2",
+      "type": "crystal",
+      "value": "12MHz",
+      "package": "HC49",
+      "purpose": "CH340G USB clock"
+    },
+    {
+      "ref": "C1",
+      "type": "capacitor",
+      "value": "22pF",
+      "package": "0805",
+      "purpose": "Crystal Y1 load cap 1",
+      "specs": {"voltage_rating": "50V", "type": "ceramic"}
+    },
+    {
+      "ref": "C2",
+      "type": "capacitor",
+      "value": "22pF",
+      "package": "0805",
+      "purpose": "Crystal Y1 load cap 2",
+      "specs": {"voltage_rating": "50V", "type": "ceramic"}
+    },
+    {
+      "ref": "C3",
+      "type": "capacitor",
+      "value": "22pF",
+      "package": "0805",
+      "purpose": "Crystal Y2 load cap 1",
+      "specs": {"voltage_rating": "50V", "type": "ceramic"}
+    },
+    {
+      "ref": "C4",
+      "type": "capacitor",
+      "value": "22pF",
+      "package": "0805",
+      "purpose": "Crystal Y2 load cap 2",
+      "specs": {"voltage_rating": "50V", "type": "ceramic"}
+    },
+    {
+      "ref": "C5",
+      "type": "capacitor",
+      "value": "100nF",
+      "package": "0805",
+      "purpose": "U1 VCC decoupling (pin 4)",
+      "specs": {"voltage_rating": "16V", "type": "ceramic"}
+    },
+    {
+      "ref": "C6",
+      "type": "capacitor",
+      "value": "100nF",
+      "package": "0805",
+      "purpose": "U1 VCC decoupling (pin 6)",
+      "specs": {"voltage_rating": "16V", "type": "ceramic"}
+    },
+    {
+      "ref": "C7",
+      "type": "capacitor",
+      "value": "100nF",
+      "package": "0805",
+      "purpose": "U1 AVCC decoupling",
+      "specs": {"voltage_rating": "16V", "type": "ceramic"}
+    },
+    {
+      "ref": "C8",
+      "type": "capacitor",
+      "value": "100nF",
+      "package": "0805",
+      "purpose": "U2 CH340G VCC decoupling",
+      "specs": {"voltage_rating": "16V", "type": "ceramic"}
+    },
+    {
+      "ref": "C9",
+      "type": "capacitor",
+      "value": "100nF",
+      "package": "0805",
+      "purpose": "U3 input decoupling",
+      "specs": {"voltage_rating": "25V", "type": "ceramic"}
+    },
+    {
+      "ref": "C10",
+      "type": "capacitor",
+      "value": "10uF",
+      "package": "0805",
+      "purpose": "U3 output bulk cap",
+      "specs": {"voltage_rating": "10V", "type": "ceramic"}
+    },
+    {
+      "ref": "C11",
+      "type": "capacitor",
+      "value": "10uF",
+      "package": "0805",
+      "purpose": "U4 output bulk cap",
+      "specs": {"voltage_rating": "10V", "type": "ceramic"}
+    },
+    {
+      "ref": "R1",
+      "type": "resistor",
+      "value": "10kohm",
+      "package": "0805",
+      "purpose": "RESET pull-up"
+    },
+    {
+      "ref": "R2",
+      "type": "resistor",
+      "value": "1kohm",
+      "package": "0805",
+      "purpose": "Power LED current limiter"
+    },
+    {
+      "ref": "R3",
+      "type": "resistor",
+      "value": "1kohm",
+      "package": "0805",
+      "purpose": "User LED (L) current limiter"
+    },
+    {
+      "ref": "D1",
+      "type": "led",
+      "value": "green",
+      "package": "0805",
+      "purpose": "Power indicator LED",
+      "specs": {"vf": "3.2V", "if": "5mA"}
+    },
+    {
+      "ref": "D2",
+      "type": "led",
+      "value": "yellow",
+      "package": "0805",
+      "purpose": "User LED on PB5 (Arduino pin 13)",
+      "specs": {"vf": "2.0V", "if": "5mA"}
+    },
+    {
+      "ref": "SW1",
+      "type": "switch",
+      "value": "pushbutton",
+      "package": "6mm_tactile",
+      "purpose": "Reset button"
+    },
+    {
+      "ref": "F1",
+      "type": "fuse",
+      "value": "500mA",
+      "package": "1206",
+      "purpose": "USB polyfuse protection"
+    },
+    {
+      "ref": "J2",
+      "type": "connector",
+      "value": "1x15_header",
+      "package": "PinHeader_1x15",
+      "purpose": "Digital side header (D0-D12, 3V3, AREF)"
+    },
+    {
+      "ref": "J3",
+      "type": "connector",
+      "value": "1x15_header",
+      "package": "PinHeader_1x15",
+      "purpose": "Analog side header (A0-A7, VIN, GND, RST, 5V)"
+    }
+  ],
+  "connections": [
+    {
+      "net_name": "USB_5V",
+      "net_class": "power",
+      "pins": ["J1.1", "F1.1"]
+    },
+    {
+      "net_name": "VBUS",
+      "net_class": "power",
+      "pins": ["F1.2", "U2.VCC", "C8.1"]
+    },
+    {
+      "net_name": "VCC",
+      "net_class": "power",
+      "pins": ["U3.OUT", "C10.1", "U4.IN", "U1.VCC", "U1.VCC2", "U1.AVCC", "C5.1", "C6.1", "C7.1", "R1.1", "R2.1", "J3.12"]
+    },
+    {
+      "net_name": "V3V3",
+      "net_class": "power",
+      "pins": ["U4.OUT", "C11.1", "U2.V3", "J2.15"]
+    },
+    {
+      "net_name": "GND",
+      "net_class": "ground",
+      "pins": ["J1.5", "U1.GND", "U1.GND2", "U1.GND3", "U2.GND", "U3.GND", "U4.GND", "C1.2", "C2.2", "C3.2", "C4.2", "C5.2", "C6.2", "C7.2", "C8.2", "C9.2", "C10.2", "C11.2", "D1.cathode", "D2.cathode", "SW1.2", "J2.14", "J3.13"]
+    },
+    {
+      "net_name": "VIN",
+      "net_class": "power",
+      "pins": ["U3.IN", "C9.1", "J3.15"]
+    },
+    {
+      "net_name": "RESET",
+      "net_class": "signal",
+      "pins": ["U1.PC6", "R1.2", "SW1.1", "U2.DTR", "J3.14"]
+    },
+    {
+      "net_name": "XTAL1",
+      "net_class": "signal",
+      "pins": ["U1.PB6", "Y1.1", "C1.1"]
+    },
+    {
+      "net_name": "XTAL2",
+      "net_class": "signal",
+      "pins": ["U1.PB7", "Y1.2", "C2.1"]
+    },
+    {
+      "net_name": "USB_XI",
+      "net_class": "signal",
+      "pins": ["U2.XI", "Y2.1", "C3.1"]
+    },
+    {
+      "net_name": "USB_XO",
+      "net_class": "signal",
+      "pins": ["U2.XO", "Y2.2", "C4.1"]
+    },
+    {
+      "net_name": "USB_DP",
+      "net_class": "signal",
+      "pins": ["J1.3", "U2.UD+"]
+    },
+    {
+      "net_name": "USB_DM",
+      "net_class": "signal",
+      "pins": ["J1.2", "U2.UD-"]
+    },
+    {
+      "net_name": "TX",
+      "net_class": "signal",
+      "pins": ["U1.PD1", "U2.RXD", "J2.2"]
+    },
+    {
+      "net_name": "RX",
+      "net_class": "signal",
+      "pins": ["U1.PD0", "U2.TXD", "J2.1"]
+    },
+    {
+      "net_name": "PWR_LED",
+      "net_class": "signal",
+      "pins": ["R2.2", "D1.anode"]
+    },
+    {
+      "net_name": "USER_LED",
+      "net_class": "signal",
+      "pins": ["U1.PB5", "R3.1"]
+    },
+    {
+      "net_name": "R3_TO_D2",
+      "net_class": "signal",
+      "pins": ["R3.2", "D2.anode"]
+    },
+    {
+      "net_name": "D2_PIN",
+      "net_class": "signal",
+      "pins": ["U1.PD2", "J2.3"]
+    },
+    {
+      "net_name": "D3_PIN",
+      "net_class": "signal",
+      "pins": ["U1.PD3", "J2.4"]
+    },
+    {
+      "net_name": "D4_PIN",
+      "net_class": "signal",
+      "pins": ["U1.PD4", "J2.5"]
+    },
+    {
+      "net_name": "D5_PIN",
+      "net_class": "signal",
+      "pins": ["U1.PD5", "J2.6"]
+    },
+    {
+      "net_name": "D6_PIN",
+      "net_class": "signal",
+      "pins": ["U1.PD6", "J2.7"]
+    },
+    {
+      "net_name": "D7_PIN",
+      "net_class": "signal",
+      "pins": ["U1.PD7", "J2.8"]
+    },
+    {
+      "net_name": "D8_PIN",
+      "net_class": "signal",
+      "pins": ["U1.PB0", "J2.9"]
+    },
+    {
+      "net_name": "D9_PIN",
+      "net_class": "signal",
+      "pins": ["U1.PB1", "J2.10"]
+    },
+    {
+      "net_name": "D10_PIN",
+      "net_class": "signal",
+      "pins": ["U1.PB2", "J2.11"]
+    },
+    {
+      "net_name": "D11_MOSI",
+      "net_class": "signal",
+      "pins": ["U1.PB3", "J2.12"]
+    },
+    {
+      "net_name": "D12_MISO",
+      "net_class": "signal",
+      "pins": ["U1.PB4", "J2.13"]
+    },
+    {
+      "net_name": "AREF",
+      "net_class": "signal",
+      "pins": ["U1.AREF", "J3.1"]
+    },
+    {
+      "net_name": "A0",
+      "net_class": "signal",
+      "pins": ["U1.PC0", "J3.2"]
+    },
+    {
+      "net_name": "A1",
+      "net_class": "signal",
+      "pins": ["U1.PC1", "J3.3"]
+    },
+    {
+      "net_name": "A2",
+      "net_class": "signal",
+      "pins": ["U1.PC2", "J3.4"]
+    },
+    {
+      "net_name": "A3",
+      "net_class": "signal",
+      "pins": ["U1.PC3", "J3.5"]
+    },
+    {
+      "net_name": "A4_SDA",
+      "net_class": "signal",
+      "pins": ["U1.PC4", "J3.6"]
+    },
+    {
+      "net_name": "A5_SCL",
+      "net_class": "signal",
+      "pins": ["U1.PC5", "J3.7"]
+    },
+    {
+      "net_name": "A6",
+      "net_class": "signal",
+      "pins": ["U1.ADC6", "J3.8"]
+    },
+    {
+      "net_name": "A7",
+      "net_class": "signal",
+      "pins": ["U1.ADC7", "J3.9"]
+    }
+  ],
+  "board": {
+    "width_mm": 45,
+    "height_mm": 18,
+    "layers": 2
+  },
+  "placement_hints": [
+    {"ref": "J1", "edge": "top"},
+    {"ref": "U1", "x_mm": 22, "y_mm": 9},
+    {"ref": "U2", "x_mm": 10, "y_mm": 9},
+    {"ref": "J2", "edge": "left"},
+    {"ref": "J3", "edge": "right"}
+  ]
+}

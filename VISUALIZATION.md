@@ -73,7 +73,7 @@ All three files cross-reference by **designator** (e.g., `R1`, `U1`, `C3`).
 | Field | Type | Description |
 |-------|------|-------------|
 | `designator` | string | Reference ID: `R1`, `C3`, `U1`, `FID1` |
-| `component_type` | string | `resistor`, `capacitor`, `led`, `ic`, `connector`, `switch`, `crystal`, `voltage_regulator`, `fiducial`, etc. |
+| `component_type` | string | `resistor`, `capacitor`, `led`, `ic`, `connector`, `switch`, `crystal`, `voltage_regulator`, `relay`, `fiducial`, etc. |
 | `package` | string | Footprint name: `0805`, `SOT-23`, `TQFP-32`, `DIP-28`, `PinHeader_1x2`, `Fiducial_1mm` |
 | `footprint_width_mm` | number | Footprint width before rotation (mm) |
 | `footprint_height_mm` | number | Footprint height before rotation (mm) |

@@ -204,6 +204,25 @@ def design_pcb(
 
     success = last_event and last_event.get("event") == "complete" and last_event.get("success", False)
 
+    # Annotate steps_completed with validator errors from STATUS.json
+    status_data: dict = {}
+    try:
+        status_path = project_dir / "STATUS.json"
+        if status_path.exists():
+            status_data = json.loads(status_path.read_text())
+    except Exception:
+        pass
+    step_status = status_data.get("steps", {})
+    for step_entry in steps_completed:
+        skey = str(step_entry["step"])
+        if skey in step_status:
+            v_errs = step_status[skey].get("validator_errors")
+            v_warns = step_status[skey].get("validator_warnings")
+            if v_errs:
+                step_entry["validator_errors"] = v_errs
+            if v_warns:
+                step_entry["validator_warnings"] = v_warns
+
     # Gather output info
     result = {
         "success": success,
@@ -301,11 +320,24 @@ def get_project_status(project_name: str) -> dict:
 
     result: dict = {"project_name": project_name}
 
-    # STATUS.json
+    # STATUS.json — include per-step validator errors for agent diagnostics
     status_path = pdir / "STATUS.json"
     if status_path.exists():
         try:
-            result["status"] = json.loads(status_path.read_text())
+            status_data = json.loads(status_path.read_text())
+            result["status"] = status_data
+            # Surface a flat list of all step errors for easy scanning
+            step_errors: dict[str, list[str]] = {}
+            step_warnings: dict[str, list[str]] = {}
+            for skey, sinfo in status_data.get("steps", {}).items():
+                if sinfo.get("validator_errors"):
+                    step_errors[skey] = sinfo["validator_errors"]
+                if sinfo.get("validator_warnings"):
+                    step_warnings[skey] = sinfo["validator_warnings"]
+            if step_errors:
+                result["step_validator_errors"] = step_errors
+            if step_warnings:
+                result["step_validator_warnings"] = step_warnings
         except json.JSONDecodeError:
             result["status"] = {}
 

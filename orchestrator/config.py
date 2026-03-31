@@ -54,6 +54,8 @@ class OrchestratorConfig:
 
     # Agent mode — use vision-based autonomous review instead of browser approval gate
     agent_mode: bool = False
+    # Skip approval gate entirely (for fully autonomous batch runs)
+    skip_approval: bool = False
 
     # Vision review settings (used when agent_mode=True)
     vision_model: str = "anthropic/claude-sonnet-4-20250514"

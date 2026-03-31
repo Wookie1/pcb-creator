@@ -57,6 +57,12 @@ class LayoutStep(StepBase):
         board_width = board.get("width_mm", DEFAULT_BOARD_WIDTH_MM)
         board_height = board.get("height_mm", DEFAULT_BOARD_HEIGHT_MM)
 
+        # Auto-size: ensure board is large enough for all components
+        board_width, board_height = self._ensure_adequate_board_size(
+            board_width, board_height, netlist_content,
+            user_specified="width_mm" in board or "height_mm" in board,
+        )
+
         # Extract placement hints
         placement_hints = requirements_json.get("placement_hints", [])
 
@@ -72,6 +78,7 @@ class LayoutStep(StepBase):
 
         previous_output = None
         issues = None
+        last_validator_result: dict = {}
 
         for attempt in range(1, max_rework + 1):
             # 1. Generate or rework placement
@@ -149,6 +156,7 @@ class LayoutStep(StepBase):
 
             # 3. Run validator
             validator_result = self._run_validator(output_path, netlist_path)
+            last_validator_result = validator_result
             print(
                 f"  Validator: {'VALID' if validator_result['valid'] else 'INVALID'}"
                 f" ({len(validator_result.get('errors', []))} errors,"
@@ -178,6 +186,7 @@ class LayoutStep(StepBase):
                         # Write repaired placement and re-validate
                         output_path = self.project.write_output(output_filename, repaired_text)
                         validator_result = self._run_validator(output_path, netlist_path)
+                        last_validator_result = validator_result
                         print(
                             f"  Post-repair validator: "
                             f"{'VALID' if validator_result['valid'] else 'INVALID'}"
@@ -289,9 +298,80 @@ class LayoutStep(StepBase):
             for issue in issues:
                 print(f"    - {issue}")
 
+        # Last resort fallbacks for persistent overlap failures
+        if last_validator_result.get("errors"):
+            overlap_errors = [
+                e for e in last_validator_result["errors"]
+                if "overlap" in e.lower() or "clearance" in e.lower()
+                or "past" in e.lower() and "board edge" in e.lower()
+            ]
+            if overlap_errors:
+                import sys as _sys
+                _sys.path.insert(0, str(self.config.base_dir))
+                from optimizers.placement_optimizer import repair_placement
+
+                netlist_data = json.loads(netlist_content)
+
+                # Fallback 1: Grow board 20% and re-run repair on LLM placement
+                if previous_output:
+                    try:
+                        print(f"  Fallback 1: growing board by 20% and re-running repair...")
+                        placement_data = json.loads(previous_output)
+                        if "board" in placement_data:
+                            placement_data["board"]["width_mm"] = round(
+                                placement_data["board"]["width_mm"] * 1.2, 1
+                            )
+                            placement_data["board"]["height_mm"] = round(
+                                placement_data["board"]["height_mm"] * 1.2, 1
+                            )
+                        repaired = repair_placement(placement_data, netlist_data)
+                        repaired_text = json.dumps(repaired, indent=2)
+                        output_path = self.project.write_output(output_filename, repaired_text)
+                        validator_result = self._run_validator(output_path, netlist_path)
+                        print(
+                            f"  Post-grow repair: "
+                            f"{'VALID' if validator_result['valid'] else 'INVALID'}"
+                            f" ({len(validator_result.get('errors', []))} errors)"
+                        )
+                        if validator_result["valid"]:
+                            self.project.update_status(self.step_number, "COMPLETE")
+                            return StepResult(success=True, output_path=str(output_path))
+                    except Exception as e:
+                        print(f"  Board grow fallback failed: {e}")
+
+                # Fallback 2: Deterministic grid placement + SA repair
+                try:
+                    grown_w = round(board_width * 1.3, 1)
+                    grown_h = round(board_height * 1.3, 1)
+                    print(f"  Fallback 2: deterministic grid placement ({grown_w}x{grown_h}mm)...")
+                    det_text = self._generate_deterministic_placement(
+                        netlist_content, grown_w, grown_h,
+                        project_name, netlist_filename, bom_filename,
+                    )
+                    if det_text:
+                        # Correct footprint dimensions
+                        det_text = self._correct_footprint_dimensions(det_text, netlist_content)
+                        det_data = json.loads(det_text)
+                        repaired = repair_placement(det_data, netlist_data)
+                        repaired_text = json.dumps(repaired, indent=2)
+                        output_path = self.project.write_output(output_filename, repaired_text)
+                        validator_result = self._run_validator(output_path, netlist_path)
+                        print(
+                            f"  Deterministic + repair: "
+                            f"{'VALID' if validator_result['valid'] else 'INVALID'}"
+                            f" ({len(validator_result.get('errors', []))} errors)"
+                        )
+                        if validator_result["valid"]:
+                            self.project.update_status(self.step_number, "COMPLETE")
+                            return StepResult(success=True, output_path=str(output_path))
+                except Exception as e:
+                    print(f"  Deterministic fallback failed: {e}")
+
         # Exhausted rework attempts
         self.project.update_status(
-            self.step_number, "BLOCKED", rework_count=max_rework
+            self.step_number, "BLOCKED", rework_count=max_rework,
+            validator_errors=last_validator_result.get("errors"),
+            validator_warnings=last_validator_result.get("warnings"),
         )
         return StepResult(
             success=False,
@@ -397,3 +477,230 @@ class LayoutStep(StepBase):
                 "warnings": [],
                 "summary": "Validator execution failed",
             }
+
+    @staticmethod
+    def _ensure_adequate_board_size(
+        width: float, height: float, netlist_content: str,
+        user_specified: bool = False,
+    ) -> tuple[float, float]:
+        """Ensure board is large enough for all components.
+
+        Computes total component footprint area + 2.5x margin and expands
+        the board if needed. Only expands defaults; user-specified sizes
+        get a warning but are respected.
+        """
+        import math as _math
+
+        try:
+            from optimizers.pad_geometry import get_footprint_def
+        except ImportError:
+            return width, height
+
+        netlist = json.loads(netlist_content)
+
+        # Collect component areas
+        comp_pin_counts: dict[str, int] = {}
+        des_to_comp_id: dict[str, str] = {}
+        components: list[dict] = []
+        for elem in netlist.get("elements", []):
+            if elem.get("element_type") == "port":
+                cid = elem.get("component_id", "")
+                comp_pin_counts[cid] = comp_pin_counts.get(cid, 0) + 1
+            elif elem.get("element_type") == "component":
+                des_to_comp_id[elem.get("designator", "")] = elem["component_id"]
+                components.append(elem)
+
+        total_area = 0.0
+        max_dim = 0.0
+        for comp in components:
+            des = comp.get("designator", "")
+            pkg = comp.get("package", "")
+            cid = des_to_comp_id.get(des, "")
+            pin_count = comp_pin_counts.get(cid, 2)
+
+            fp = get_footprint_def(pkg, pin_count)
+            if fp:
+                pw, ph = fp.pad_size
+                xs = [dx for dx, dy in fp.pin_offsets.values()]
+                ys = [dy for dx, dy in fp.pin_offsets.values()]
+                w = max(xs) - min(xs) + pw + 0.5
+                h = max(ys) - min(ys) + ph + 0.5
+            else:
+                # Fallback estimate for unknown packages
+                w = h = 3.0  # conservative default
+
+            total_area += w * h
+            max_dim = max(max_dim, w, h)
+
+        # Target: component area * 2.5 margin (allows routing channels + clearances)
+        target_area = total_area * 2.5
+        current_area = width * height
+
+        if current_area >= target_area:
+            return width, height
+
+        if user_specified:
+            print(
+                f"  Warning: user-specified board ({width}x{height}mm = {current_area:.0f}mm²) "
+                f"may be tight for {len(components)} components "
+                f"(component area: {total_area:.0f}mm², recommended: {target_area:.0f}mm²)"
+            )
+            return width, height
+
+        # Compute new dimensions maintaining aspect ratio
+        scale = _math.sqrt(target_area / current_area)
+        new_w = round(width * scale, 1)
+        new_h = round(height * scale, 1)
+
+        # Ensure minimum dimension accommodates largest component + edge margins
+        min_dim = max_dim + 4.0  # 2mm edge margin each side
+        new_w = max(new_w, min_dim)
+        new_h = max(new_h, min_dim)
+
+        print(
+            f"  Auto-sized board: {width}x{height}mm → {new_w}x{new_h}mm "
+            f"({len(components)} components, {total_area:.0f}mm² footprint area)"
+        )
+        return new_w, new_h
+
+    @staticmethod
+    def _generate_deterministic_placement(
+        netlist_content: str, board_width: float, board_height: float,
+        project_name: str, netlist_filename: str, bom_filename: str,
+    ) -> str | None:
+        """Generate a grid-based deterministic placement as a fallback.
+
+        Places components in rows sorted by size (largest first), with
+        connectors on edges. Returns placement JSON string or None on failure.
+        """
+        import math as _math
+
+        try:
+            from optimizers.pad_geometry import get_footprint_def
+        except ImportError:
+            return None
+
+        netlist = json.loads(netlist_content)
+
+        # Collect components with dimensions
+        comp_pin_counts: dict[str, int] = {}
+        des_to_comp_id: dict[str, str] = {}
+        components: list[dict] = []
+        for elem in netlist.get("elements", []):
+            if elem.get("element_type") == "port":
+                cid = elem.get("component_id", "")
+                comp_pin_counts[cid] = comp_pin_counts.get(cid, 0) + 1
+            elif elem.get("element_type") == "component":
+                des_to_comp_id[elem.get("designator", "")] = elem["component_id"]
+                components.append(elem)
+
+        if not components:
+            return None
+
+        # Compute footprint dimensions for each component
+        comp_dims: list[tuple[dict, float, float]] = []
+        for comp in components:
+            des = comp.get("designator", "")
+            pkg = comp.get("package", "")
+            cid = des_to_comp_id.get(des, "")
+            pin_count = comp_pin_counts.get(cid, 2)
+
+            fp = get_footprint_def(pkg, pin_count)
+            if fp:
+                pw, ph = fp.pad_size
+                xs = [dx for dx, dy in fp.pin_offsets.values()]
+                ys = [dy for dx, dy in fp.pin_offsets.values()]
+                w = round(max(xs) - min(xs) + pw + 0.5, 1)
+                h = round(max(ys) - min(ys) + ph + 0.5, 1)
+            else:
+                w = h = 3.0
+
+            comp_dims.append((comp, w, h))
+
+        # Separate connectors (edges) from others
+        connectors = [(c, w, h) for c, w, h in comp_dims
+                      if c.get("component_type") == "connector"]
+        others = [(c, w, h) for c, w, h in comp_dims
+                  if c.get("component_type") != "connector"]
+
+        # Sort non-connectors by area (largest first for better packing)
+        others.sort(key=lambda x: x[1] * x[2], reverse=True)
+
+        placements = []
+        margin = 1.5  # edge margin
+        clearance = 1.0  # between components
+
+        # Place connectors along left edge
+        cy = margin
+        for comp, w, h in connectors:
+            x = margin + w / 2
+            y = cy + h / 2
+            if y + h / 2 > board_height - margin:
+                # Overflow — place on right edge
+                x = board_width - margin - w / 2
+                y = margin + h / 2
+            placements.append({
+                "designator": comp["designator"],
+                "component_type": comp["component_type"],
+                "package": comp.get("package", ""),
+                "footprint_width_mm": w,
+                "footprint_height_mm": h,
+                "x_mm": round(x, 2),
+                "y_mm": round(y, 2),
+                "rotation_deg": 0,
+                "layer": "top",
+                "placement_source": "llm",
+            })
+            cy += h + clearance
+
+        # Place remaining components in rows (left to right, bottom to top)
+        row_x = margin + max((w for _, w, _ in connectors), default=0) + clearance * 2
+        row_y = margin
+        row_height = 0.0
+
+        for comp, w, h in others:
+            # Check if component fits in current row
+            if row_x + w + margin > board_width:
+                # Move to next row
+                row_x = margin + max((cw for _, cw, _ in connectors), default=0) + clearance * 2
+                row_y += row_height + clearance
+                row_height = 0.0
+
+            x = row_x + w / 2
+            y = row_y + h / 2
+
+            # If off board vertically, we've run out of space
+            if y + h / 2 > board_height - margin:
+                y = board_height - margin - h / 2  # clamp
+
+            placements.append({
+                "designator": comp["designator"],
+                "component_type": comp["component_type"],
+                "package": comp.get("package", ""),
+                "footprint_width_mm": w,
+                "footprint_height_mm": h,
+                "x_mm": round(x, 2),
+                "y_mm": round(y, 2),
+                "rotation_deg": 0,
+                "layer": "top",
+                "placement_source": "llm",
+            })
+
+            row_x += w + clearance
+            row_height = max(row_height, h)
+
+        result = {
+            "version": "1.0",
+            "project_name": project_name,
+            "source_netlist": netlist_filename,
+            "source_bom": bom_filename,
+            "board": {
+                "width_mm": board_width,
+                "height_mm": board_height,
+                "layers": 2,
+                "copper_thickness_oz": 1,
+            },
+            "placements": placements,
+        }
+
+        return json.dumps(result, indent=2)

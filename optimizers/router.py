@@ -74,7 +74,7 @@ class RouterConfig:
     ncr_via_cost_min: float = 10.0  # minimum via cost during aggressive NCR phases
     congestion_via_cost: float = 15.0  # reduced via cost for rip-up/shove of failed nets
     # Narrow trace parameters for congested signal nets
-    trace_width_signal_narrow_mm: float = 0.15
+    trace_width_signal_narrow_mm: float = 0.20
     clearance_narrow_mm: float = 0.15
     # Fine grid parameters
     fine_grid_factor: int = 2  # integer subdivision factor (0.25 → 0.125mm)
@@ -2052,6 +2052,7 @@ def _shove_pass(
     netlist: dict,
     routed_net_ids: list[str],
     diagonal: bool,
+    fill_net: "NetInfo | None" = None,
 ) -> list[tuple[NetInfo, int]]:
     """Push-and-shove pass: try to make room for failed nets by shifting
     blocking trace segments perpendicular by 1 grid cell.
@@ -3390,6 +3391,7 @@ def _fine_grid_retry(
     netlist: dict,
     diagonal: bool,
     fill_net: NetInfo | None,
+    channel_pressure: dict[str, list[float]] | None = None,
 ) -> list[tuple[NetInfo, int]]:
     """Re-route failed nets on a finer grid (2× resolution).
 
@@ -3505,6 +3507,7 @@ def _connectivity_repair(
     netlist: dict,
     diagonal: bool,
     fill_net: NetInfo | None,
+    channel_pressure: dict[str, list[float]] | None = None,
 ) -> None:
     """Detect nets with disconnected groups and re-route them.
 
@@ -4082,7 +4085,7 @@ def route_board(
         failed_nets = _shove_pass(
             grid, failed_nets, result, pad_map, net_id_map, int_to_net,
             net_trace_widths, pzi, config, netlist,
-            routed_net_ids, use_diagonal,
+            routed_net_ids, use_diagonal, fill_net,
         )
 
     # Phase 4: Narrow trace retry for congested signal nets
@@ -4120,7 +4123,7 @@ def route_board(
         failed_nets = _fine_grid_retry(
             grid, failed_nets, result, placement, pad_map, net_id_map,
             net_trace_widths, routed_net_ids, config, netlist,
-            use_diagonal, fill_net,
+            use_diagonal, fill_net, channel_pressure=channel_pressure,
         )
 
     # Pass 2: Relaxed clearance for remaining unrouted nets
@@ -4211,7 +4214,7 @@ def route_board(
     _connectivity_repair(
         grid, result, ordered_nets, pad_map, net_id_map, int_to_net,
         net_trace_widths, routed_net_ids, config, netlist, use_diagonal,
-        fill_net,
+        fill_net, channel_pressure=channel_pressure,
     )
 
     # Phase 6a: Consolidate endpoints before nudging (fix MST edge gaps)
@@ -4859,7 +4862,7 @@ def _generate_silkscreen(
                     "text": "Rev 1.0",
                     "x_mm": round(lx, 3),
                     "y_mm": round(ly + 1.5, 3),
-                    "font_height_mm": 0.8,
+                    "font_height_mm": 1.0,
                     "layer": "top_silk",
                     "anchor": anchor,
                     "purpose": "revision",

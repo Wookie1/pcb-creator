@@ -69,7 +69,8 @@
             "switch",
             "voltage_regulator",
             "crystal",
-            "fuse"
+            "fuse",
+            "relay"
           ],
           "description": "Component type from the allowed list."
         },
@@ -151,8 +152,8 @@
         },
         "net_id": {
           "type": "string",
-          "pattern": "^net_[a-z][a-z0-9_]*$",
-          "description": "Unique ID with 'net_' prefix. Example: 'net_vcc'"
+          "pattern": "^net_[a-z0-9][a-z0-9_]*$",
+          "description": "Unique ID with 'net_' prefix. Example: 'net_vcc', 'net_5v'"
         },
         "name": {
           "type": "string",
@@ -164,8 +165,7 @@
             "type": "string",
             "pattern": "^port_[a-z][a-z0-9_]*$"
           },
-          "minItems": 2,
-          "description": "Array of port_id values connected by this net. Minimum 2."
+          "description": "Array of port_id values connected by this net. Minimum 2 (enforced by validator with prescriptive error messages)."
         },
         "net_class": {
           "type": "string",

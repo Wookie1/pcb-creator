@@ -40,6 +40,7 @@ class BOMStep(StepBase):
 
         previous_output = None
         issues = None
+        last_validator_result: dict = {}
 
         for attempt in range(1, max_rework + 1):
             # 1. Generate or rework BOM
@@ -103,6 +104,7 @@ class BOMStep(StepBase):
 
             # 3. Run validator
             validator_result = self._run_validator(output_path, netlist_path)
+            last_validator_result = validator_result
             print(
                 f"  Validator: {'VALID' if validator_result['valid'] else 'INVALID'}"
                 f" ({len(validator_result.get('errors', []))} errors,"
@@ -190,7 +192,9 @@ class BOMStep(StepBase):
 
         # Exhausted rework attempts
         self.project.update_status(
-            self.step_number, "BLOCKED", rework_count=max_rework
+            self.step_number, "BLOCKED", rework_count=max_rework,
+            validator_errors=last_validator_result.get("errors"),
+            validator_warnings=last_validator_result.get("warnings"),
         )
         return StepResult(
             success=False,

@@ -1,0 +1,148 @@
+LLM stopped early with only 3584 chars (finish_reason=stop). Output may be truncated.
+LLM stopped early with only 2531 chars (finish_reason=stop). Output may be truncated.
+LLM stopped early with only 1167 chars (finish_reason=stop). Output may be truncated.
+LLM stopped early with only 1426 chars (finish_reason=stop). Output may be truncated.
+LLM stopped early with only 4658 chars (finish_reason=stop). Output may be truncated.
+LLM stopped early with only 4657 chars (finish_reason=stop). Output may be truncated.
+LLM stopped early with only 4647 chars (finish_reason=stop). Output may be truncated.
+LLM stopped early with only 4652 chars (finish_reason=stop). Output may be truncated.
+LLM stopped early with only 4652 chars (finish_reason=stop). Output may be truncated.
+
+[Step 0: Requirements]
+  Created /Users/James/ai-sandbox/Productizr/pcb-creator/projects/test_esp8266_breakout/REQUIREMENTS.md
+  COMPLETE
+
+[Step 1: Schematic/Netlist]
+  Large circuit (~9000 chars expected) — using chunked generation
+  [Chunked] Phase 1: Generating components...
+    [LLM] iter=0 finish='stop' chunk=3584 total=3584 tokens(in=2268 out=1073)
+    [LLM] WARNING: model stopped early with only 3584 chars (finish_reason=stop, completion_tokens=1073). Output likely truncated.
+  [Chunked] Phase 1 raw: 3584 chars (min expected 3000)
+  [Chunked] Phase 1 done: 15 components
+  [Chunked] Phase 2: Generating ports...
+    [LLM] iter=0 finish='stop' chunk=8488 total=8488 tokens(in=3268 out=2498)
+  [Chunked] Phase 2 raw: 8488 chars (min expected 7800)
+  [Chunked] Phase 2 done: 67 ports
+  [Chunked] Phase 3: Generating nets...
+    [LLM] iter=0 finish='stop' chunk=2531 total=2531 tokens(in=5546 out=836)
+    [LLM] WARNING: model stopped early with only 2531 chars (finish_reason=stop, completion_tokens=836). Output likely truncated.
+  [Chunked] Phase 3 raw: 2531 chars (min expected 4500)
+  [Chunked] Phase 3 done: 18 nets
+  [Attempt 1/5] Generating netlist...
+  Saved test_esp8266_breakout_netlist.json
+  Validator: VALID (0 errors, 8 warnings)
+  Running QA review...
+    [LLM] iter=0 finish='stop' chunk=1167 total=1167 tokens(in=8264 out=303)
+    [LLM] WARNING: model stopped early with only 1167 chars (finish_reason=stop, completion_tokens=303). Output likely truncated.
+  QA: OVERRIDDEN — validator passed cleanly, treating QA issues as warnings
+  QA: PASSED — Validator passed. QA raised concerns (overridden): The netlist is structurally valid but fails requirements due to a discrepancy between the calculated LED resistor value (260 ohm) and the selected component value (1kohm), resulting in incorrect LED current.
+  COMPLETE
+
+[Step 2: Component Selection]
+  [Attempt 1/5] Generating BOM...
+    [LLM] iter=0 finish='stop' chunk=6572 total=6572 tokens(in=7688 out=2485)
+  Saved test_esp8266_breakout_bom.json
+  Validator: VALID (0 errors, 0 warnings)
+  Running QA review...
+    [LLM] iter=0 finish='stop' chunk=1426 total=1426 tokens(in=4691 out=370)
+    [LLM] WARNING: model stopped early with only 1426 chars (finish_reason=stop, completion_tokens=370). Output likely truncated.
+  QA: OVERRIDDEN — validator passed cleanly, treating QA issues as warnings
+  QA: PASSED — Validator passed. QA raised concerns (overridden): The output fails because it is missing the required netlist structure (ports/nets) for validation and contains a component value deviation (R4) that conflicts with the specified 5mA LED current requirement.
+  COMPLETE
+
+[Step 3: Board Layout]
+  [Attempt 1/5] Generating placement...
+    [LLM] iter=0 finish='stop' chunk=4658 total=4658 tokens(in=10134 out=1860)
+    [LLM] WARNING: model stopped early with only 4658 chars (finish_reason=stop, completion_tokens=1860). Output likely truncated.
+  Corrected 1 footprint dimensions from pad geometry
+  Saved test_esp8266_breakout_placement.json
+  Validator: INVALID (33 errors, 1 warnings)
+  Validation found 33 overlap/boundary errors, attempting repair...
+  Repair pre-pass: snapped 5 out-of-bounds component(s) onto board
+  Repair: 10000 iterations
+  Violations: 35 → 3
+  WARNING: 3 violations remain
+  Post-repair validator: INVALID (3 errors, 11 warnings)
+  Repair incomplete, will rework...
+    - U1 and U2 overlap on top layer
+    - U2 and SW1 overlap on top layer
+    - U2 and SW2 overlap on top layer
+  [Attempt 2/5] Generating placement...
+    [LLM] iter=0 finish='stop' chunk=4657 total=4657 tokens(in=10588 out=1859)
+    [LLM] WARNING: model stopped early with only 4657 chars (finish_reason=stop, completion_tokens=1859). Output likely truncated.
+  Saved test_esp8266_breakout_placement.json
+  Validator: INVALID (29 errors, 5 warnings)
+  Validation found 29 overlap/boundary errors, attempting repair...
+  Repair pre-pass: snapped 6 out-of-bounds component(s) onto board
+  Repair: 10000 iterations
+  Violations: 31 → 4
+  WARNING: 4 violations remain
+  Post-repair validator: INVALID (4 errors, 9 warnings)
+  Repair incomplete, will rework...
+    - U1 and U2 overlap on top layer
+    - U2 and C3 overlap on top layer
+    - U2 and SW2 overlap on top layer
+    - U2 and J2 overlap on top layer
+  [Attempt 3/5] Generating placement...
+    [LLM] iter=0 finish='stop' chunk=4647 total=4647 tokens(in=10603 out=1849)
+    [LLM] WARNING: model stopped early with only 4647 chars (finish_reason=stop, completion_tokens=1849). Output likely truncated.
+  Saved test_esp8266_breakout_placement.json
+  Validator: INVALID (23 errors, 7 warnings)
+  Validation found 23 overlap/boundary errors, attempting repair...
+  Repair pre-pass: snapped 3 out-of-bounds component(s) onto board
+  Repair: 10000 iterations
+  Violations: 27 → 4
+  WARNING: 4 violations remain
+  Post-repair validator: INVALID (3 errors, 11 warnings)
+  Repair incomplete, will rework...
+    - J1 and J3 overlap on top layer
+    - U1 and U2 overlap on top layer
+    - U2 and SW1 overlap on top layer
+  [Attempt 4/5] Generating placement...
+    [LLM] iter=0 finish='stop' chunk=4652 total=4652 tokens(in=10590 out=1854)
+    [LLM] WARNING: model stopped early with only 4652 chars (finish_reason=stop, completion_tokens=1854). Output likely truncated.
+  Saved test_esp8266_breakout_placement.json
+  Validator: INVALID (25 errors, 7 warnings)
+  Validation found 25 overlap/boundary errors, attempting repair...
+  Repair pre-pass: snapped 3 out-of-bounds component(s) onto board
+  Repair: 6535 iterations
+  Violations: 27 → 4
+  WARNING: 4 violations remain
+  Post-repair validator: INVALID (4 errors, 11 warnings)
+  Repair incomplete, will rework...
+    - J1 and J3 overlap on top layer
+    - C1 and U2: clearance 0.14mm < minimum 0.5mm
+    - U2 and R2 overlap on top layer
+    - U2 and SW2 overlap on top layer
+  [Attempt 5/5] Generating placement...
+    [LLM] iter=0 finish='stop' chunk=4652 total=4652 tokens(in=10620 out=1854)
+    [LLM] WARNING: model stopped early with only 4652 chars (finish_reason=stop, completion_tokens=1854). Output likely truncated.
+  Saved test_esp8266_breakout_placement.json
+  Validator: INVALID (18 errors, 7 warnings)
+  Validation found 18 overlap/boundary errors, attempting repair...
+  Repair pre-pass: snapped 3 out-of-bounds component(s) onto board
+  Repair: 5452 iterations
+  Violations: 20 → 3
+  WARNING: 3 violations remain
+  Post-repair validator: INVALID (2 errors, 11 warnings)
+  Repair incomplete, will rework...
+    - U1 and U2 overlap on top layer
+    - U2 and SW1 overlap on top layer
+  Last resort: growing board by 20% and re-running repair...
+  Repair pre-pass: snapped 1 out-of-bounds component(s) onto board
+  Repair: 7165 iterations
+  Violations: 5 → 1
+  WARNING: 1 violations remain
+  Post-grow repair: INVALID (1 errors)
+
+  BLOCKED: Step 3 (Board Layout) failed after 5 attempts
+
+WORKFLOW BLOCKED
+==============================================
+Project : test_esp8266_breakout
+Step    : 3 — Board Layout
+Reason  : Step 3 (Board Layout) failed after 5 attempts
+
+The workflow has stopped. Please review the issues above.
+==============================================
+

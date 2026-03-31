@@ -138,7 +138,27 @@ If a component's package is not in this table, estimate reasonable courtyard dim
 - **x_mm, y_mm**: Center of component, measured from board origin (bottom-left)
 - **rotation_deg**: 0, 90, 180, or 270
 - **layer**: "top" or "bottom"
-- **placement_source**: "user" for hint-specified positions, "llm" for your placements
+- **placement_source**: always `"llm"` — never use "user" (that is reserved for human-specified positions)
+
+### Placement Bounds Formula (CRITICAL)
+
+For every component, compute the valid center range BEFORE placing it:
+
+```
+min_x = footprint_width_mm / 2 + 1.0   (1mm edge clearance)
+max_x = board_width - footprint_width_mm / 2 - 1.0
+min_y = footprint_height_mm / 2 + 1.0
+max_y = board_height - footprint_height_mm / 2 - 1.0
+```
+
+**x_mm must be in [min_x, max_x] and y_mm must be in [min_y, max_y].** Placing the center outside this range means the component extends past the board edge — invalid.
+
+Example for U1 (Arduino_Nano_SMD_45x18mm, 45mm×18mm) on a 55×40mm board:
+- min_x = 22.5 + 1 = 23.5, max_x = 55 - 22.5 - 1 = 31.5
+- min_y = 9 + 1 = 10, max_y = 40 - 9 - 1 = 30
+- Valid center: x ∈ [23.5, 31.5], y ∈ [10, 30]
+
+If min_x > max_x or min_y > max_y, the component does not fit at the current board size — you MUST rotate it 90° and recalculate. If it still doesn't fit after rotation, the board is too small.
 
 ### Output
 

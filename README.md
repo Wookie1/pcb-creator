@@ -21,8 +21,8 @@ Upload to JLCPCB and order your board
 - **Multi-turn design planning** — the LLM proposes a design, asks clarifying questions, and looks up real component specs; iterate until the plan is right, then proceed to generation
 - **Tiered component lookup** — resolves footprints and specs from KiCad library, IPC-7351B, EasyEDA/LCSC, and curated tables before falling back to LLM
 - **Parallel LLM enrichment** — remaining spec/footprint lookups run concurrently instead of sequentially
-- **Freerouting autorouter** — production-quality push-and-shove routing (auto-downloads, requires Java 17+)
-- **Built-in A\* router** — fallback if Freerouting unavailable
+- **Freerouting autorouter** — production-quality push-and-shove routing via headless mode (auto-downloads, requires Java 17+)
+- **Built-in A\* router** — fallback with API-level retry and exponential backoff
 - **IPC-2221 trace sizing** — automatic trace width calculation for current capacity
 - **DRC with DFM profiles** — checks against JLCPCB, PCBWay, OSH Park manufacturing rules
 - **Manufacturer-ready output** — Gerber RS-274X, Excellon drill, BOM CSV, pick-and-place CSV, STEP 3D model
@@ -59,6 +59,9 @@ pcb-creator design --project my_board
 
 # CLI from a requirements file — skip the conversation
 pcb-creator run --requirements tests/test_switch_led.json --project led_test
+
+# Batch/CI mode — skip approval gate entirely
+pcb-creator run --requirements tests/test_switch_led.json --project led_test --skip-approval
 ```
 
 The pipeline will:

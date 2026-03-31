@@ -172,7 +172,8 @@ def route_with_freerouting(
         print(f"  DSN exported: {dsn_path}")
 
         # 2. Build command
-        cmd = [java_bin, "-jar", str(jar), "-de", str(dsn_path), "-do", str(ses_path),
+        cmd = [java_bin, "-Djava.awt.headless=true",
+               "-jar", str(jar), "-de", str(dsn_path), "-do", str(ses_path),
                "-mp", "20"]  # max 20 optimization passes to prevent infinite loop
         if exclude_nets:
             cmd.extend(["-inc", ",".join(exclude_nets)])

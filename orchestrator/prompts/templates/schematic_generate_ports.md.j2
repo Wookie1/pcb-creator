@@ -1,0 +1,51 @@
+You are the Schematic Engineer. Generate ALL port elements for the components below. Every component pin must have a port.
+
+### Requirements
+
+{{ requirements }}
+
+### Components (already generated)
+
+{{ components_json }}
+
+### Output Format
+
+Produce a JSON array of port objects. Each port has these required fields:
+- `element_type`: always "port"
+- `port_id`: prefix `port_` + component ref + pin (e.g., `port_r1_1`, `port_u1_vcc`)
+- `component_id`: must match a component_id from the list above
+- `pin_number`: integer, starts at 1
+- `name`: pin name (e.g., "1", "anode", "VCC", "GND")
+- `electrical_type`: one of: power_in, power_out, signal, ground, passive, no_connect
+
+{% if pinout_table %}
+### IC Pinout Reference
+
+For each IC below, you MUST use EXACTLY these pin numbers, names, and electrical types. Do not invent or guess pin names.
+
+{{ pinout_table }}
+{% endif %}
+
+### Rules
+
+- Every component MUST have ports for ALL physical pins on its package — see "Required Port Counts" below.
+- Resistors/capacitors/inductors have 2 pins (passive type).
+- LEDs/diodes have 2 pins (anode=passive, cathode=passive).
+- ICs: use the pinout reference above for exact pin counts and names.
+- Connectors: create one port per pin as specified in requirements.
+- Unused pins MUST still have a port with `electrical_type: "no_connect"`.
+{% if pin_count_table %}
+
+### Required Port Counts
+
+The validator checks that every component has the EXACT port count matching its package pin count. Missing ports cause routing failures and the netlist will be rejected.
+
+{{ pin_count_table }}
+
+Example: if U1 (TQFP-32) uses 20 pins in the circuit, create 20 connected ports + 12 no_connect ports = 32 total.
+{% endif %}
+
+### Output
+
+Output ONLY a JSON array of port objects. No wrapper object, no explanation, no markdown fences.
+Use compact formatting.

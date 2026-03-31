@@ -1,0 +1,175 @@
+LLM stopped early with only 761 chars (finish_reason=stop). Output may be truncated.
+LLM stopped early with only 3132 chars (finish_reason=stop). Output may be truncated.
+LLM stopped early with only 579 chars (finish_reason=stop). Output may be truncated.
+LLM stopped early with only 2401 chars (finish_reason=stop). Output may be truncated.
+LLM stopped early with only 461 chars (finish_reason=stop). Output may be truncated.
+Traceback (most recent call last):
+  File "<frozen runpy>", line 198, in _run_module_as_main
+  File "<frozen runpy>", line 88, in _run_code
+  File "/Users/James/ai-sandbox/Productizr/pcb-creator/orchestrator/__main__.py", line 7, in <module>
+    sys.exit(main())
+             ~~~~^^
+  File "/Users/James/ai-sandbox/Productizr/pcb-creator/orchestrator/cli.py", line 172, in main
+    success = run_workflow(
+        args.requirements,
+    ...<2 lines>...
+        attach_files=getattr(args, "attach", []) or None,
+    )
+  File "/Users/James/ai-sandbox/Productizr/pcb-creator/orchestrator/runner.py", line 240, in run_workflow
+    routed = route_board(placement_data, netlist_data, router_config)
+  File "/Users/James/ai-sandbox/Productizr/pcb-creator/optimizers/router.py", line 4121, in route_board
+    failed_nets = _fine_grid_retry(
+        grid, failed_nets, result, placement, pad_map, net_id_map,
+        net_trace_widths, routed_net_ids, config, netlist,
+        use_diagonal, fill_net,
+    )
+  File "/Users/James/ai-sandbox/Productizr/pcb-creator/optimizers/router.py", line 3478, in _fine_grid_retry
+    channel_pressure=channel_pressure,
+                     ^^^^^^^^^^^^^^^^
+NameError: name 'channel_pressure' is not defined. Did you mean: '_build_channel_pressure'?
+
+[Step 0: Requirements]
+  Created /Users/James/ai-sandbox/Productizr/pcb-creator/projects/test_soil_moisture/REQUIREMENTS.md
+  COMPLETE
+
+[Step 1: Schematic/Netlist]
+  [Attempt 1/5] Generating netlist...
+
+[1;31mProvider List: https://docs.litellm.ai/docs/providers[0m
+
+    [LLM] iter=0 finish='stop' chunk=10772 total=10772 tokens(in=2994 out=85791)
+  Saved test_soil_moisture_netlist.json
+  Validator: INVALID (1 errors, 0 warnings)
+  Validation failed, will rework...
+  [Attempt 2/5] Generating netlist...
+    [LLM] iter=0 finish='stop' chunk=10761 total=10761 tokens(in=6551 out=9670)
+
+[1;31mProvider List: https://docs.litellm.ai/docs/providers[0m
+
+  Saved test_soil_moisture_netlist.json
+  Validator: VALID (0 errors, 4 warnings)
+  Running QA review...
+    [LLM] iter=0 finish='stop' chunk=761 total=761 tokens(in=5745 out=6807)
+
+[1;31mProvider List: https://docs.litellm.ai/docs/providers[0m
+
+    [LLM] WARNING: model stopped early with only 761 chars (finish_reason=stop, completion_tokens=6807). Output likely truncated.
+  QA: OVERRIDDEN — validator passed cleanly, treating QA issues as warnings
+  QA: PASSED — Validator passed. QA raised concerns (overridden): Netlist fails due to potentiometer designator mismatch and LED resistor values not meeting specified current requirements.
+  COMPLETE
+
+[Step 2: Component Selection]
+  [Attempt 1/5] Generating BOM...
+    [LLM] iter=0 finish='stop' chunk=3132 total=3132 tokens(in=5365 out=4705)
+
+[1;31mProvider List: https://docs.litellm.ai/docs/providers[0m
+
+    [LLM] WARNING: model stopped early with only 3132 chars (finish_reason=stop, completion_tokens=4705). Output likely truncated.
+  Saved test_soil_moisture_bom.json
+  Validator: VALID (0 errors, 0 warnings)
+  Running QA review...
+    [LLM] iter=0 finish='stop' chunk=579 total=579 tokens(in=2812 out=4611)
+    [LLM] WARNING: model stopped early with only 579 chars (finish_reason=stop, completion_tokens=4611). Output likely truncated.
+  QA: OVERRIDDEN — validator passed cleanly, treating QA issues as warnings
+
+[1;31mProvider List: https://docs.litellm.ai/docs/providers[0m
+
+  QA: PASSED — Validator passed. QA raised concerns (overridden): Component selection failed due to designator mismatch and incorrect LED resistor calculations relative to engineering rules.
+  COMPLETE
+
+[Step 3: Board Layout]
+  [Attempt 1/5] Generating placement...
+    [LLM] iter=0 finish='stop' chunk=63724 total=63724 tokens(in=6821 out=52598)
+
+[1;31mProvider List: https://docs.litellm.ai/docs/providers[0m
+
+  [Attempt 1] Failed to extract JSON from response
+    Response length: 63724 chars
+    First 200 chars: The user wants a valid placement JSON for a PCB board based on the provided netlist, BOM, and constraints.
+
+**Board Dimensions:**
+- Width: 30mm
+- Height: 20mm
+- Origin: (0, 0) bottom-left
+
+**Component
+    Last 200 chars: = 6.3.
+Clearance = 4.0mm. OK.
+R5 Bottom = 7.3.
+Board Bottom = 0.
+Clearance = 7.3mm. OK.
+R5 Center Y = 8.8.
+U1 Pin 3 Y = 8.8.
+Distance = 0.0mm.
+Perfect.
+So R5: 10.0, 8.8, 0.
+
+Wait, R5 connects to......
+  [Attempt 2/5] Generating placement...
+    [LLM] iter=0 finish='stop' chunk=2401 total=2401 tokens(in=39204 out=4797)
+    [LLM] WARNING: model stopped early with only 2401 chars (finish_reason=stop, completion_tokens=4797). Output likely truncated.
+
+[1;31mProvider List: https://docs.litellm.ai/docs/providers[0m
+
+  Saved test_soil_moisture_placement.json
+  Validator: INVALID (3 errors, 0 warnings)
+  Validation found 3 overlap/boundary errors, attempting repair...
+  Repair: 615 iterations
+  Violations: 3 → 0
+  All overlaps resolved ✓
+  Post-repair validator: VALID (0 errors, 2 warnings)
+  Warning: C1 (decoupling cap): 7.2mm from U1 (recommended < 5.0mm)
+  Warning: C1 (decoupling cap): 7.2mm from U1 (recommended < 5.0mm)
+  Running QA review...
+    [LLM] iter=0 finish='stop' chunk=461 total=461 tokens(in=3160 out=3629)
+    [LLM] WARNING: model stopped early with only 461 chars (finish_reason=stop, completion_tokens=3629). Output likely truncated.
+  QA: OVERRIDDEN — validator passed cleanly, treating QA issues as warnings
+
+[1;31mProvider List: https://docs.litellm.ai/docs/providers[0m
+
+  QA: PASSED — Validator passed. QA raised concerns (overridden): Board layout failed due to designator mismatch for the trimmer potentiometer and incorrect placement of the J2 connector.
+  COMPLETE
+
+[Optimizer: Placement SA]
+  Decoupling associations: 1 (cap→IC pairs)
+  Grouping pairs: 12 (components sharing 2+ nets)
+  SA Optimizer: 5806 iterations, 1913 accepted moves
+  Wire length : 159.2mm → 116.5mm
+  Crossings   : 4 → 1
+  Decoupling  : proximity cost 26.5 → 0.0
+  Improvement : 45.6%
+  Validation: PASSED (13 components, 2 fiducials)
+
+[Step 4: Routing]
+  Engine: Freerouting
+  DSN exported: /var/folders/zb/2kw4kjs525j70pvjdhhlvxp00000gp/T/pcb-freeroute-4xfy8pv6/input.dsn
+  Running Freerouting (timeout=300s)...
+  Freerouting FAILED: Freerouting timed out after 300s. Try increasing PCB_FREEROUTING_TIMEOUT or simplifying the board.
+  Falling back to built-in router...
+  Engine: Built-in (fallback)
+  Detected 1 routing channel(s): capacities [9]
+  Pre-fill routing: 6/7 nets — trying without pre-fill...
+  Pre-fill kept (6 >= 6)
+  NCR: starting PathFinder (20 max iterations, 7 nets)
+  NCR iter 0: 7 routed, 15 overused cells, 4 legal nets [0.1s]
+  NCR iter 1: 7 routed, 8 overused cells, 4 legal nets [0.2s]
+  NCR iter 2: 7 routed, 8 overused cells, 4 legal nets [0.3s]
+  NCR iter 3: 7 routed, 8 overused cells, 4 legal nets [0.4s]
+  NCR iter 4: 7 routed, 8 overused cells, 4 legal nets [0.5s]
+  NCR iter 5: 7 routed, 8 overused cells, 4 legal nets [0.7s]
+  NCR iter 6: 7 routed, 8 overused cells, 4 legal nets [0.8s]
+  NCR iter 7: 7 routed, 8 overused cells, 4 legal nets [0.9s]
+  NCR iter 8: 7 routed, 8 overused cells, 4 legal nets [1.0s]
+  NCR iter 9: 7 routed, 8 overused cells, 4 legal nets [1.1s]
+  NCR iter 10: 7 routed, 8 overused cells, 4 legal nets [1.2s]
+  NCR iter 11: 7 routed, 8 overused cells, 4 legal nets [1.3s]
+  NCR iter 12: 7 routed, 8 overused cells, 4 legal nets [1.5s]
+  NCR iter 13: 7 routed, 8 overused cells, 4 legal nets [1.6s]
+  NCR iter 14: 7 routed, 8 overused cells, 4 legal nets [1.7s]
+  NCR iter 15: 7 routed, 8 overused cells, 4 legal nets [1.8s]
+  NCR iter 16: 7 routed, 8 overused cells, 4 legal nets [1.9s]
+  NCR iter 17: 7 routed, 8 overused cells, 4 legal nets [2.1s]
+  NCR iter 18: 7 routed, 8 overused cells, 4 legal nets [2.2s]
+  NCR iter 19: 7 routed, 8 overused cells, 4 legal nets [2.3s]
+  NCR: did not converge after 20 iterations, committing best (4 legal nets)
+  NCR did not improve (6 vs 6)

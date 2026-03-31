@@ -542,10 +542,16 @@ Re-validate → Approval gate
 
 Pure Python, zero LLM calls. Two modes:
 
-- **Repair mode**: Resolves overlaps from invalid LLM placements. Cost function heavily penalizes violations (boundary + overlap), with wire length as secondary objective. Runs up to 10,000 iterations.
+- **Repair mode**: Resolves overlaps from invalid LLM placements. Cost function heavily penalizes violations (boundary + overlap), with wire length as secondary objective. Runs up to 10,000 iterations with stagnation limits of 1,500 (no violations) / 3,000 (general).
 - **Optimize mode**: Improves valid placements. Minimizes wire length (MST-based ratsnest) and crossing count via simulated annealing. Iteration count auto-scales from component count (1000 × movable components, bounded [2000, 50000]). Early termination on stagnation.
 
 Move types: translate (70%), swap same-package (15%), rotate (15%). Pinned components (user-placed, connectors, fiducials) excluded from moves.
+
+**Board auto-sizing:** Before the first LLM attempt, board dimensions are checked against total component footprint area × 2.5. Default board sizes are auto-expanded if too small; user-specified sizes are warned but respected.
+
+**Fallback chain** (after all LLM rework attempts exhausted):
+1. Grow board 20%, re-run SA repair on last LLM placement
+2. Generate deterministic grid-based placement on 30%-larger board (connectors on edges, largest components first), then SA repair
 
 ### Fiducials
 
@@ -581,7 +587,8 @@ Grid-based A* with 8-connected movement (orthogonal + 45° diagonal) on a 0.25mm
 **Multi-pass routing:**
 1. **Pass 1** — 8-connected A* with normal clearance, best ordering from multi-trial search
 2. **Rip-up-and-retry** — If a net fails, clear previously routed signal nets, route the failed net, re-route cleared nets
-3. **Pass 2 (relaxed clearance)** — Remaining unrouted nets retry with 70% of normal clearance
+3. **Fine-grid retry** — Failed nets re-route on a 2x finer grid with narrower trace width (0.20mm min, above DFM minimum)
+4. **Pass 2 (relaxed clearance)** — Remaining unrouted nets retry with 85% of normal clearance
 
 **Trace sizing:** IPC-2221 auto-calculation from copper weight and estimated net current.
 
@@ -597,7 +604,9 @@ Two modes depending on how the pipeline is invoked:
 
 **GUI mode** (`pcb-creator gui`): The Gradio UI itself provides the approval flow — the board viewer updates progressively, and Export/Import/Continue buttons appear in the Gradio interface. No ephemeral server needed.
 
-**Agent mode** (`pcb-creator run --agent-mode`): Uses vision-based autonomous review (`orchestrator/vision_review.py`). The board is rendered to PNG via `cairosvg`, then sent with DRC/routing stats to a vision-capable LLM (configurable via `PCB_VISION_MODEL`, default `anthropic/claude-sonnet-4-20250514`). The LLM responds APPROVE or REQUEST_CHANGES. Pre-checks auto-approve if 100% routed with 0 DRC errors, and auto-escalate if routing is incomplete. After 3 failed review attempts (configurable via `PCB_VISION_MAX_ATTEMPTS`), escalates to human review via the browser approval gate. In GUI mode, escalation shows the approve button for manual approval.
+**Agent mode** (`pcb-creator run --agent-mode`): Uses vision-based autonomous review (`orchestrator/vision_review.py`). The board is rendered to PNG via `cairosvg`, then sent with DRC/routing stats to a vision-capable LLM (configurable via `PCB_VISION_MODEL`, default `anthropic/claude-sonnet-4-20250514`). The LLM responds APPROVE or REQUEST_CHANGES. Pre-checks auto-approve if 100% routed with 0 DRC errors, and auto-escalate if routing is incomplete. After 3 failed review attempts (configurable via `PCB_VISION_MAX_ATTEMPTS`), auto-approves and continues. In GUI mode, escalation shows the approve button for manual approval.
+
+**Skip-approval mode** (`pcb-creator run --skip-approval`): Bypasses all approval gates entirely — no vision review, no browser gate. Intended for batch testing and CI pipelines.
 
 **Viewer features:**
 - Routed traces (color-coded by net, layered by copper layer)
@@ -719,7 +728,10 @@ Produces manufacturer-ready files in `projects/{name}/output/`. All files are st
 
 - **Gradio GUI** (`pcb-creator gui`): Web UI with chat-style circuit description input, drag-and-drop file upload, LLM-powered requirements translation with review/feedback loop, progressive board visualization (netlist → placement → routed → DRC), provider presets (OpenRouter/Local/Custom), Export KiCad and Import KiCad actions, step progress panel, and settings accordion. Viewer embedded via iframe with `sandbox="allow-scripts"` for full JavaScript interactivity (tooltips, pan/zoom).
 - **Conversational requirements refinement**: After the LLM translates a circuit description, the GUI shows a rich markdown summary (with tables, calculations, wiring details) for user review. Users can send feedback/corrections that re-run the translation with context, or approve to start the pipeline. Input controls hide during pipeline execution to maximize progress panel visibility.
-- **Agent-mode flag** (`--agent-mode`): Replaces the browser approval gate with vision-based autonomous review. Escalates to human review after max attempts. Used internally by the GUI.
+- **Agent-mode flag** (`--agent-mode`): Replaces the browser approval gate with vision-based autonomous review. Auto-approves on escalation. Used internally by the GUI.
+- **Skip-approval flag** (`--skip-approval`): Bypasses all approval gates for batch/CI runs.
+- **API-level retry**: LLM calls automatically retry up to 3 times with exponential backoff on transient errors (timeouts, rate limits, 5xx, connection errors).
+- **Relay support**: Full pipeline support for relay components (`component_type: "relay"`, designator prefix `K`). Also supports variable resistor prefix `RV`.
 - **Netlist block diagram** (`visualizers/netlist_viewer.py`): Schematic-style visualization shown after Step 1 — components as colored boxes with pins, connected by bezier-curved nets that route around boxes.
 - **LLM output robustness** (`gather/schema.py`): Automatic type coercion (string→number) and null stripping before JSON Schema validation. Prevents rework loops caused by LLMs outputting `"2"` instead of `2` or `null` for optional fields.
 
@@ -811,7 +823,8 @@ The GUI is a single Gradio Blocks app (`orchestrator/gradio_app.py`) with two co
 | `pcb-creator gui` | Launch Gradio web GUI (port 7860) |
 | `pcb-creator gui --port 8080 --share` | Custom port + public Gradio URL |
 | `pcb-creator run --requirements req.json --project name` | Headless pipeline with browser approval |
-| `pcb-creator run ... --agent-mode` | Headless pipeline, vision-based approval |
+| `pcb-creator run ... --agent-mode` | Headless pipeline, vision-based approval (auto-approves on escalation) |
+| `pcb-creator run ... --skip-approval` | Headless pipeline, skip all approval gates (batch/CI) |
 | `pcb-creator design --project name` | Interactive CLI requirements gathering |
 | `pcb-creator import-kicad --project name --kicad-file board.kicad_pcb` | Re-import edited KiCad file |
 | `pcb-creator validate netlist.json` | Validate an existing netlist |

@@ -23,6 +23,18 @@ For each IC below, you MUST use EXACTLY these pin numbers, names, and electrical
 
 {{ pinout_table }}
 {% endif %}
+{% if pin_count_table %}
+
+### Required Port Counts
+
+The validator checks that every component has the EXACT port count matching its package pin count. Missing ports cause routing failures and the netlist will be rejected.
+
+{{ pin_count_table }}
+
+**Unused pins:** If a pin is not connected in the circuit, you MUST still create a port for it with `electrical_type: "no_connect"`. Example: if U1 (TQFP-32) uses 20 pins in the circuit, create 20 connected ports + 12 no_connect ports = 32 total.
+
+**Pin headers (PinHeader_1xN):** Create one port per header pin, numbered 1 through N. Connect each to its signal net or mark as no_connect.
+{% endif %}
 
 ### Output Format
 
@@ -41,7 +53,7 @@ There are exactly 3 element types:
 
 **component** — required fields: `element_type` ("component"), `component_id` (prefix: `comp_`), `designator` (e.g., R1, D2), `component_type` (from allowed list), `value` (with units, e.g., "220ohm"), `package` (e.g., "0805"), `description`. Optional: `properties` object.
 
-Allowed component_type values: resistor, capacitor, inductor, led, diode, transistor_npn, transistor_pnp, transistor_nmos, transistor_pmos, ic, connector, switch, voltage_regulator, crystal, fuse
+Allowed component_type values: resistor, capacitor, inductor, led, diode, transistor_npn, transistor_pnp, transistor_nmos, transistor_pmos, ic, connector, switch, voltage_regulator, crystal, fuse, relay
 
 **port** — required fields: `element_type` ("port"), `port_id` (prefix: `port_`), `component_id` (must match a component), `pin_number` (integer, starts at 1), `name` (e.g., "1", "anode", "VCC"), `electrical_type` (one of: power_in, power_out, signal, ground, passive, no_connect)
 
@@ -61,6 +73,8 @@ Allowed component_type values: resistor, capacitor, inductor, led, diode, transi
 | SW | switch |
 | Y | crystal |
 | F | fuse |
+| K | relay |
+| RV | resistor (variable/potentiometer) |
 
 Number sequentially starting at 1 (R1, R2, R3...). No gaps.
 
@@ -74,6 +88,28 @@ All IDs use lowercase letters, numbers, and underscores only.
 ### Engineering Calculation Rules
 
 {{ engineering_rules }}
+
+### Pin-to-Net Rule (CRITICAL)
+
+Each port_id may appear in at most ONE net. A pin cannot be in two nets simultaneously.
+
+**Dual-function pins**: ATmega328P PC4 is both A4 and SDA — ONE physical pin. Create ONE net (e.g., "A4_SDA") not two separate nets both containing the same port. Same for PC5 (A5/SCL).
+
+**Pull-up resistors**: If R1 connects VCC to RESET:
+- `port_r1_2` (VCC side) → goes ONLY in the VCC net
+- `port_r1_1` (signal side) → goes ONLY in the RESET net
+- NEVER put `port_r1_2` in both VCC and RESET nets
+
+**Crystal**: Y1 pin 1 → XTAL1 net only. Y1 pin 2 → XTAL2 net only. Load caps bridge the crystal net to GND — the crystal pin is NOT directly in the GND net.
+
+### Net Rules (CRITICAL — common source of rework failures)
+
+**Every net MUST have at least 2 ports in `connected_port_ids`.** A net with only 1 port is a schema error.
+
+- All ground pins (electrical_type "ground") must go into a single shared GND net — not separate per-component nets.
+- All power pins on the same voltage rail must share one net (e.g., one VCC net).
+- Decoupling capacitors: one pin → VCC net, other pin → GND net. Do NOT create isolated nets like `net_c1_gnd`.
+- If a port truly has nothing to connect to, mark it `no_connect` — never create a single-port net for it.
 
 ### Output
 

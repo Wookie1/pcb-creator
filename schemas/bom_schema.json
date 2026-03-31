@@ -57,7 +57,8 @@
             "switch",
             "voltage_regulator",
             "crystal",
-            "fuse"
+            "fuse",
+            "relay"
           ],
           "description": "Component type matching the netlist."
         },

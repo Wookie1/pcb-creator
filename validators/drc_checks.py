@@ -186,8 +186,10 @@ def check_pin_type_conflicts(
 
         power_out_count = etypes.count("power_out")
         if power_out_count >= 2:
-            errors.append(
-                f"Net '{name}': {power_out_count} power_out pins — potential short circuit"
+            # Multiple power sources on the same rail is common (e.g., USB VBUS +
+            # voltage regulator output both feed VCC_5V via protection diodes).
+            warnings.append(
+                f"Net '{name}': {power_out_count} power_out pins — verify sources are isolated (diode/switch)"
             )
 
     return errors, warnings
@@ -381,16 +383,27 @@ def check_resistor_power(
             power = (v_supply ** 2) / r_ohms
 
         if power > rated_power / RESISTOR_POWER_DERATING:
+            # Suggest a fix: larger package or higher resistance
+            fix_suggestions = []
+            for alt_pkg, alt_rating in sorted(PACKAGE_POWER.items(), key=lambda x: x[1]):
+                if alt_rating >= power * RESISTOR_POWER_DERATING and alt_pkg != package:
+                    fix_suggestions.append(alt_pkg)
+                    break
+            fix_hint = f" Change {des} to package {fix_suggestions[0]}." if fix_suggestions else ""
+            alt_r = int((v_supply ** 2) / (rated_power / RESISTOR_POWER_DERATING))
+            if not fix_suggestions:
+                fix_hint = f" Increase {des} resistance above {alt_r}Ω, or use a larger package."
+
             if power > rated_power:
                 errors.append(
                     f"{des}: power dissipation {power * 1000:.1f}mW exceeds "
-                    f"{package} rating {rated_power * 1000:.0f}mW"
+                    f"{package} rating {rated_power * 1000:.0f}mW.{fix_hint}"
                 )
             else:
                 errors.append(
                     f"{des}: power dissipation {power * 1000:.1f}mW exceeds "
                     f"{package} derated limit {rated_power / RESISTOR_POWER_DERATING * 1000:.0f}mW "
-                    f"(2× safety margin)"
+                    f"(2× safety margin).{fix_hint}"
                 )
         elif power > rated_power / (RESISTOR_POWER_DERATING * 1.33):
             # Within 75% of derated limit — warn

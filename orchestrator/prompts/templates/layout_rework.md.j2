@@ -33,6 +33,19 @@ Fix ALL the issues listed above. The corrected placement must:
 4. Maintain at least 0.5mm clearance between all component courtyards.
 5. Use valid rotation (0, 90, 180, 270) and layer ("top" or "bottom").
 6. Match component_type and package from the netlist exactly.
+7. Set `"placement_source": "llm"` for all placements — NEVER use "user" (that is reserved for human input).
+
+### Placement Bounds Formula (use this to verify each component before placing)
+
+```
+min_x = footprint_width_mm / 2 + 1.0
+max_x = {{ board_width_mm }} - footprint_width_mm / 2 - 1.0
+min_y = footprint_height_mm / 2 + 1.0
+max_y = {{ board_height_mm }} - footprint_height_mm / 2 - 1.0
+```
+
+x_mm must be in [min_x, max_x] and y_mm must be in [min_y, max_y].
+If a component doesn't fit in its current orientation, rotate it 90° and recalculate.
 
 ### Output
 

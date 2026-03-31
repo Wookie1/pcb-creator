@@ -87,6 +87,12 @@ def main(argv: list[str] | None = None) -> int:
         default=False,
         help="Skip browser approval gate (for autonomous/agent workflows)",
     )
+    run_parser.add_argument(
+        "--skip-approval",
+        action="store_true",
+        default=False,
+        help="Skip all approval gates entirely (for batch/CI runs)",
+    )
 
     # gui command — Gradio web UI
     gui_parser = subparsers.add_parser("gui", help="Launch the Gradio web GUI")
@@ -169,6 +175,8 @@ def main(argv: list[str] | None = None) -> int:
             config.export_kicad = args.export_kicad
         if getattr(args, "agent_mode", False):
             config.agent_mode = True
+        if getattr(args, "skip_approval", False):
+            config.skip_approval = True
         success = run_workflow(
             args.requirements,
             args.project,

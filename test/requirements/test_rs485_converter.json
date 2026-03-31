@@ -1,0 +1,145 @@
+{
+  "project_name": "test_rs485_converter",
+  "description": "RS-485 to TTL serial converter using MAX485 transceiver IC, with 120-ohm bus termination resistor, TVS ESD protection diodes on A/B lines, power LED, and pin headers for TTL and screw terminal for RS-485 bus",
+  "power": {
+    "voltage": "5V",
+    "source": "Pin header from host MCU"
+  },
+  "components": [
+    {
+      "ref": "U1",
+      "type": "ic",
+      "value": "MAX485",
+      "package": "SOIC-8",
+      "purpose": "RS-485/RS-422 transceiver",
+      "specs": {
+        "pin_count": 8,
+        "pinout": "1:RO 2:RE 3:DE 4:DI 5:GND 6:A 7:B 8:VCC"
+      }
+    },
+    {
+      "ref": "D1",
+      "type": "diode",
+      "value": "SMBJ6.0CA",
+      "package": "SOD-323",
+      "purpose": "TVS ESD protection on A line",
+      "specs": {"voltage_rating": "6V", "type": "TVS bidirectional"}
+    },
+    {
+      "ref": "D2",
+      "type": "diode",
+      "value": "SMBJ6.0CA",
+      "package": "SOD-323",
+      "purpose": "TVS ESD protection on B line",
+      "specs": {"voltage_rating": "6V", "type": "TVS bidirectional"}
+    },
+    {
+      "ref": "D3",
+      "type": "led",
+      "value": "green",
+      "package": "0805",
+      "purpose": "Power indicator LED",
+      "specs": {"vf": "3.2V", "if": "5mA", "color": "green"}
+    },
+    {
+      "ref": "R1",
+      "type": "resistor",
+      "value": "120ohm",
+      "package": "0805",
+      "purpose": "RS-485 bus termination resistor"
+    },
+    {
+      "ref": "R2",
+      "type": "resistor",
+      "value": "1kohm",
+      "package": "0805",
+      "purpose": "Power LED current limiter"
+    },
+    {
+      "ref": "C1",
+      "type": "capacitor",
+      "value": "100nF",
+      "package": "0805",
+      "purpose": "VCC decoupling",
+      "specs": {"voltage_rating": "16V", "type": "ceramic"}
+    },
+    {
+      "ref": "J1",
+      "type": "connector",
+      "value": "1x4_header",
+      "package": "PinHeader_1x4",
+      "purpose": "TTL side (VCC, GND, TX, RX)"
+    },
+    {
+      "ref": "J2",
+      "type": "connector",
+      "value": "1x2_header",
+      "package": "PinHeader_1x2",
+      "purpose": "Direction control (DE/RE tied)"
+    },
+    {
+      "ref": "J3",
+      "type": "connector",
+      "value": "screw_terminal_2pin",
+      "package": "ScrewTerminal_1x2_5mm",
+      "purpose": "RS-485 bus (A, B)"
+    }
+  ],
+  "connections": [
+    {
+      "net_name": "VCC",
+      "net_class": "power",
+      "pins": ["J1.1", "U1.VCC", "C1.1", "R2.1"]
+    },
+    {
+      "net_name": "GND",
+      "net_class": "ground",
+      "pins": ["J1.2", "U1.GND", "C1.2", "D1.anode", "D2.anode", "D3.cathode"]
+    },
+    {
+      "net_name": "TX_IN",
+      "net_class": "signal",
+      "pins": ["J1.3", "U1.DI"]
+    },
+    {
+      "net_name": "RX_OUT",
+      "net_class": "signal",
+      "pins": ["J1.4", "U1.RO"]
+    },
+    {
+      "net_name": "DIR",
+      "net_class": "signal",
+      "pins": ["U1.DE", "U1.RE", "J2.1"]
+    },
+    {
+      "net_name": "RS485_A",
+      "net_class": "signal",
+      "pins": ["U1.A", "R1.1", "D1.cathode", "J3.1"]
+    },
+    {
+      "net_name": "RS485_B",
+      "net_class": "signal",
+      "pins": ["U1.B", "R1.2", "D2.cathode", "J3.2"]
+    },
+    {
+      "net_name": "PWR_LED",
+      "net_class": "signal",
+      "pins": ["R2.2", "D3.anode"]
+    },
+    {
+      "net_name": "DIR_GND",
+      "net_class": "ground",
+      "pins": ["J2.2", "U1.GND"]
+    }
+  ],
+  "board": {
+    "width_mm": 25,
+    "height_mm": 20,
+    "layers": 2
+  },
+  "placement_hints": [
+    {"ref": "U1", "x_mm": 12, "y_mm": 10},
+    {"ref": "J1", "edge": "left"},
+    {"ref": "J3", "edge": "right"}
+  ]
+}

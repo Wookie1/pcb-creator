@@ -1,0 +1,129 @@
+{
+  "project_name": "test_ads1115_breakout",
+  "description": "ADS1115 16-bit I2C ADC breakout board with address select resistor, I2C pull-ups, decoupling capacitors, and pin headers for analog inputs and I2C bus",
+  "power": {
+    "voltage": "3.3V",
+    "source": "Pin header from host MCU"
+  },
+  "components": [
+    {
+      "ref": "U1",
+      "type": "ic",
+      "value": "ADS1115",
+      "package": "MSOP-10",
+      "purpose": "16-bit 4-channel I2C ADC",
+      "specs": {
+        "pin_count": 10,
+        "pinout": "1:ADDR 2:ALERT 3:GND 4:AIN0 5:AIN1 6:AIN2 7:AIN3 8:VDD 9:SDA 10:SCL"
+      }
+    },
+    {
+      "ref": "C1",
+      "type": "capacitor",
+      "value": "100nF",
+      "package": "0603",
+      "purpose": "VDD decoupling",
+      "specs": {"voltage_rating": "10V", "type": "ceramic"}
+    },
+    {
+      "ref": "C2",
+      "type": "capacitor",
+      "value": "10uF",
+      "package": "0805",
+      "purpose": "Bulk decoupling",
+      "specs": {"voltage_rating": "10V", "type": "ceramic"}
+    },
+    {
+      "ref": "R1",
+      "type": "resistor",
+      "value": "4.7kohm",
+      "package": "0603",
+      "purpose": "I2C SDA pull-up"
+    },
+    {
+      "ref": "R2",
+      "type": "resistor",
+      "value": "4.7kohm",
+      "package": "0603",
+      "purpose": "I2C SCL pull-up"
+    },
+    {
+      "ref": "R3",
+      "type": "resistor",
+      "value": "0ohm",
+      "package": "0603",
+      "purpose": "ADDR to GND (I2C address 0x48)"
+    },
+    {
+      "ref": "J1",
+      "type": "connector",
+      "value": "1x4_header",
+      "package": "PinHeader_1x4",
+      "purpose": "I2C + power (VDD, GND, SDA, SCL)"
+    },
+    {
+      "ref": "J2",
+      "type": "connector",
+      "value": "1x4_header",
+      "package": "PinHeader_1x4",
+      "purpose": "Analog inputs (AIN0-AIN3)"
+    }
+  ],
+  "connections": [
+    {
+      "net_name": "VDD",
+      "net_class": "power",
+      "pins": ["J1.1", "U1.VDD", "C1.1", "C2.1", "R1.1", "R2.1"]
+    },
+    {
+      "net_name": "GND",
+      "net_class": "ground",
+      "pins": ["J1.2", "U1.GND", "C1.2", "C2.2", "R3.2"]
+    },
+    {
+      "net_name": "SDA",
+      "net_class": "signal",
+      "pins": ["U1.SDA", "R1.2", "J1.3"]
+    },
+    {
+      "net_name": "SCL",
+      "net_class": "signal",
+      "pins": ["U1.SCL", "R2.2", "J1.4"]
+    },
+    {
+      "net_name": "ADDR",
+      "net_class": "signal",
+      "pins": ["U1.ADDR", "R3.1"]
+    },
+    {
+      "net_name": "AIN0",
+      "net_class": "signal",
+      "pins": ["U1.AIN0", "J2.1"]
+    },
+    {
+      "net_name": "AIN1",
+      "net_class": "signal",
+      "pins": ["U1.AIN1", "J2.2"]
+    },
+    {
+      "net_name": "AIN2",
+      "net_class": "signal",
+      "pins": ["U1.AIN2", "J2.3"]
+    },
+    {
+      "net_name": "AIN3",
+      "net_class": "signal",
+      "pins": ["U1.AIN3", "J2.4"]
+    }
+  ],
+  "board": {
+    "width_mm": 20,
+    "height_mm": 18,
+    "layers": 2
+  },
+  "placement_hints": [
+    {"ref": "U1", "x_mm": 10, "y_mm": 9},
+    {"ref": "J1", "edge": "left"},
+    {"ref": "J2", "edge": "right"}
+  ]
+}

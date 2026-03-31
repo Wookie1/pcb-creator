@@ -1,0 +1,232 @@
+{
+  "project_name": "test_esp8266_breakout",
+  "description": "ESP-12F WiFi module breakout board with AMS1117-3.3V LDO regulator, boot mode resistors, reset and flash buttons, power LED, and GPIO pin headers",
+  "power": {
+    "voltage": "3.3V",
+    "source": "5V input via AMS1117-3.3 LDO"
+  },
+  "components": [
+    {
+      "ref": "J1",
+      "type": "connector",
+      "value": "1x2_header",
+      "package": "PinHeader_1x2",
+      "purpose": "5V power input"
+    },
+    {
+      "ref": "U1",
+      "type": "voltage_regulator",
+      "value": "AMS1117-3.3",
+      "package": "SOT-223",
+      "purpose": "3.3V LDO regulator",
+      "specs": {
+        "input_min": "4.5V",
+        "input_max": "12V",
+        "output": "3.3V",
+        "max_current": "800mA"
+      }
+    },
+    {
+      "ref": "U2",
+      "type": "ic",
+      "value": "ESP-12F",
+      "package": "ESP-12F",
+      "purpose": "WiFi module with ESP8266",
+      "specs": {
+        "pin_count": 22,
+        "pinout": "1:RST 2:ADC 3:EN 4:GPIO16 5:GPIO14 6:GPIO12 7:GPIO13 8:VCC 9:CS0 10:MISO 11:GPIO9 12:GPIO10 13:MOSI 14:SCLK 15:GND 16:GPIO15 17:GPIO2 18:GPIO0 19:GPIO4 20:GPIO5 21:RXD 22:TXD"
+      }
+    },
+    {
+      "ref": "C1",
+      "type": "capacitor",
+      "value": "10uF",
+      "package": "0805",
+      "purpose": "LDO input capacitor",
+      "specs": {"voltage_rating": "16V", "type": "ceramic"}
+    },
+    {
+      "ref": "C2",
+      "type": "capacitor",
+      "value": "10uF",
+      "package": "0805",
+      "purpose": "LDO output capacitor",
+      "specs": {"voltage_rating": "10V", "type": "ceramic"}
+    },
+    {
+      "ref": "C3",
+      "type": "capacitor",
+      "value": "100nF",
+      "package": "0603",
+      "purpose": "ESP module decoupling",
+      "specs": {"voltage_rating": "10V", "type": "ceramic"}
+    },
+    {
+      "ref": "R1",
+      "type": "resistor",
+      "value": "10kohm",
+      "package": "0603",
+      "purpose": "EN pull-up (chip enable)"
+    },
+    {
+      "ref": "R2",
+      "type": "resistor",
+      "value": "10kohm",
+      "package": "0603",
+      "purpose": "GPIO0 pull-up (normal boot)"
+    },
+    {
+      "ref": "R3",
+      "type": "resistor",
+      "value": "10kohm",
+      "package": "0603",
+      "purpose": "GPIO15 pull-down (boot mode)"
+    },
+    {
+      "ref": "R4",
+      "type": "resistor",
+      "value": "1kohm",
+      "package": "0603",
+      "purpose": "Power LED current limiter"
+    },
+    {
+      "ref": "D1",
+      "type": "led",
+      "value": "red",
+      "package": "0603",
+      "purpose": "Power indicator LED",
+      "specs": {"vf": "2.0V", "if": "5mA", "color": "red"}
+    },
+    {
+      "ref": "SW1",
+      "type": "switch",
+      "value": "pushbutton",
+      "package": "6mm_tactile",
+      "purpose": "Reset button"
+    },
+    {
+      "ref": "SW2",
+      "type": "switch",
+      "value": "pushbutton",
+      "package": "6mm_tactile",
+      "purpose": "Flash/program button (pulls GPIO0 low)"
+    },
+    {
+      "ref": "J2",
+      "type": "connector",
+      "value": "1x8_header",
+      "package": "PinHeader_1x8",
+      "purpose": "GPIO pins left side"
+    },
+    {
+      "ref": "J3",
+      "type": "connector",
+      "value": "1x8_header",
+      "package": "PinHeader_1x8",
+      "purpose": "GPIO pins right side"
+    }
+  ],
+  "connections": [
+    {
+      "net_name": "VIN_5V",
+      "net_class": "power",
+      "pins": ["J1.1", "U1.IN", "C1.1"]
+    },
+    {
+      "net_name": "VCC_3V3",
+      "net_class": "power",
+      "pins": ["U1.OUT", "C2.1", "C3.1", "U2.VCC", "U2.EN", "R1.1", "R2.1", "R4.1", "J2.1"]
+    },
+    {
+      "net_name": "GND",
+      "net_class": "ground",
+      "pins": ["J1.2", "U1.GND", "C1.2", "C2.2", "C3.2", "U2.GND", "R3.2", "D1.cathode", "SW1.2", "SW2.2", "J2.8", "J3.8"]
+    },
+    {
+      "net_name": "RST",
+      "net_class": "signal",
+      "pins": ["U2.RST", "SW1.1", "J3.1"]
+    },
+    {
+      "net_name": "EN",
+      "net_class": "signal",
+      "pins": ["R1.2", "U2.EN"]
+    },
+    {
+      "net_name": "GPIO0",
+      "net_class": "signal",
+      "pins": ["U2.GPIO0", "R2.2", "SW2.1", "J2.2"]
+    },
+    {
+      "net_name": "GPIO15",
+      "net_class": "signal",
+      "pins": ["U2.GPIO15", "R3.1"]
+    },
+    {
+      "net_name": "GPIO2",
+      "net_class": "signal",
+      "pins": ["U2.GPIO2", "J2.3"]
+    },
+    {
+      "net_name": "GPIO4",
+      "net_class": "signal",
+      "pins": ["U2.GPIO4", "J2.4"]
+    },
+    {
+      "net_name": "GPIO5",
+      "net_class": "signal",
+      "pins": ["U2.GPIO5", "J2.5"]
+    },
+    {
+      "net_name": "GPIO12",
+      "net_class": "signal",
+      "pins": ["U2.GPIO12", "J2.6"]
+    },
+    {
+      "net_name": "GPIO13",
+      "net_class": "signal",
+      "pins": ["U2.GPIO13", "J2.7"]
+    },
+    {
+      "net_name": "GPIO14",
+      "net_class": "signal",
+      "pins": ["U2.GPIO14", "J3.2"]
+    },
+    {
+      "net_name": "GPIO16",
+      "net_class": "signal",
+      "pins": ["U2.GPIO16", "J3.3"]
+    },
+    {
+      "net_name": "ADC",
+      "net_class": "signal",
+      "pins": ["U2.ADC", "J3.4"]
+    },
+    {
+      "net_name": "TXD",
+      "net_class": "signal",
+      "pins": ["U2.TXD", "J3.5"]
+    },
+    {
+      "net_name": "RXD",
+      "net_class": "signal",
+      "pins": ["U2.RXD", "J3.6"]
+    },
+    {
+      "net_name": "PWR_LED",
+      "net_class": "signal",
+      "pins": ["R4.2", "D1.anode"]
+    }
+  ],
+  "board": {
+    "width_mm": 35,
+    "height_mm": 28,
+    "layers": 2
+  },
+  "placement_hints": [
+    {"ref": "J1", "edge": "top"},
+    {"ref": "U2", "x_mm": 17, "y_mm": 14},
+    {"ref": "J2", "edge": "left"},
+    {"ref": "J3", "edge": "right"}
+  ]
+}

@@ -1,0 +1,191 @@
+
+[Step 0: Requirements]
+  Created /Users/James/ai-sandbox/Productizr/pcb-creator/projects/test_soil_moisture/REQUIREMENTS.md
+  COMPLETE
+
+[Step 1: Schematic/Netlist]
+  [Attempt 1/5] Generating netlist...
+
+[1;31mProvider List: https://docs.litellm.ai/docs/providers[0m
+
+    [LLM] iter=0 finish='length' chunk=0 total=0 tokens(in=2993 out=32768)
+    [LLM] finish=length — requesting continuation 1...
+    [LLM] iter=1 finish='stop' chunk=10760 total=10760 tokens(in=3017 out=10288)
+
+[1;31mProvider List: https://docs.litellm.ai/docs/providers[0m
+
+  Saved test_soil_moisture_netlist.json
+  Validator: INVALID (1 errors, 0 warnings)
+  Validation failed, will rework...
+  [Attempt 2/5] Generating netlist...
+
+[1;31mGive Feedback / Get Help: https://github.com/BerriAI/litellm/issues/new[0m
+LiteLLM.Info: If you need to debug this error, use `litellm._turn_on_debug()'.
+
+
+[1;31mProvider List: https://docs.litellm.ai/docs/providers[0m
+
+
+  BLOCKED: LLM call failed: litellm.APIError: APIError: OpenrouterException - Unable to get json response - Expecting value: line 77 column 1 (char 418), Original Response: 
+         
+
+         
+
+         
+
+         
+
+         
+
+         
+
+         
+
+         
+
+         
+
+         
+
+         
+
+         
+
+         
+
+         
+
+         
+
+         
+
+         
+
+         
+
+         
+
+         
+
+         
+
+         
+
+         
+
+         
+
+         
+
+         
+
+         
+
+         
+
+         
+
+         
+
+         
+
+         
+
+         
+
+         
+
+         
+
+         
+
+         
+
+         
+
+
+WORKFLOW BLOCKED
+==============================================
+Project : test_soil_moisture
+Step    : 1 — Schematic/Netlist
+Reason  : LLM call failed: litellm.APIError: APIError: OpenrouterException - Unable to get json response - Expecting value: line 77 column 1 (char 418), Original Response: 
+         
+
+         
+
+         
+
+         
+
+         
+
+         
+
+         
+
+         
+
+         
+
+         
+
+         
+
+         
+
+         
+
+         
+
+         
+
+         
+
+         
+
+         
+
+         
+
+         
+
+         
+
+         
+
+         
+
+         
+
+         
+
+         
+
+         
+
+         
+
+         
+
+         
+
+         
+
+         
+
+         
+
+         
+
+         
+
+         
+
+         
+
+         
+
+
+The workflow has stopped. Please review the issues above.
+==============================================
+

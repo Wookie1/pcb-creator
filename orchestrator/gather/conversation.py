@@ -466,7 +466,7 @@ class RequirementsGatherer:
             raw = self.llm.generate(
                 system_prompt="",
                 user_prompt=prompt,
-                max_tokens=4096,
+                max_tokens=16384,
                 temperature=0.0,
             )
             json_str = extract_json(raw)

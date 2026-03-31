@@ -6,6 +6,7 @@ into structured data for validation and auto-correction of LLM-generated netlist
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 
 
@@ -172,3 +173,74 @@ def build_pinout_from_requirements(
             result[ref] = parsed
 
     return result
+
+
+# ---------------------------------------------------------------------------
+# Expected pin count from package name / specs
+# ---------------------------------------------------------------------------
+
+# Regex patterns: (compiled_regex, group_index_for_count | fixed_count)
+_PACKAGE_PIN_PATTERNS: list[tuple[re.Pattern, int | None, int | None]] = [
+    # QFP family: TQFP-32, LQFP-48, QFP-100
+    (re.compile(r"(?:T|L)?QFP-?(\d+)", re.IGNORECASE), 1, None),
+    # SOIC/SOP family: SOIC-8, SOP-8, SSOP-28, TSSOP-20, MSOP-8
+    (re.compile(r"(?:S|TS|MS)?SOP-?(\d+)", re.IGNORECASE), 1, None),
+    (re.compile(r"SOIC-?(\d+)", re.IGNORECASE), 1, None),
+    # DIP family: DIP-8, PDIP-28, CDIP-16
+    (re.compile(r"(?:P|C)?DIP-?(\d+)", re.IGNORECASE), 1, None),
+    # QFN/DFN: QFN-32, DFN-8
+    (re.compile(r"[QD]FN-?(\d+)", re.IGNORECASE), 1, None),
+    # BGA: BGA-256
+    (re.compile(r"BGA-?(\d+)", re.IGNORECASE), 1, None),
+    # SOT fixed counts
+    (re.compile(r"SOT-23\b", re.IGNORECASE), None, 3),
+    (re.compile(r"SOT-223\b", re.IGNORECASE), None, 3),
+    (re.compile(r"SOT-89\b", re.IGNORECASE), None, 3),
+    # Pin headers: PinHeader_1x15, PinHeader_2x20
+    (re.compile(r"PinHeader_(\d+)x(\d+)", re.IGNORECASE), None, None),  # special
+    # USB connectors with pin count: USB-C-16P-SMD, USB_C_12P
+    (re.compile(r"USB.*?(\d+)P", re.IGNORECASE), 1, None),
+    # Standard passive footprints (2-pad)
+    (re.compile(r"^(0402|0603|0805|1206|1210|2512)\b"), None, 2),
+    # Diode packages (2-pad)
+    (re.compile(r"^(SMA|SMB|SMC)\b", re.IGNORECASE), None, 2),
+    (re.compile(r"DO-?214|SOD-?\d+|DO-?41", re.IGNORECASE), None, 2),
+]
+
+# Special handler for PinHeader
+_PIN_HEADER_RE = re.compile(r"PinHeader_(\d+)x(\d+)", re.IGNORECASE)
+
+
+def expected_pin_count(package: str, specs: dict | None = None) -> int | None:
+    """Determine the expected number of pins for a package.
+
+    Priority:
+    1. specs["pin_count"] if present (authoritative for ICs)
+    2. Parse from package name using known patterns
+    3. None if unrecognized (caller should skip validation)
+    """
+    # 1. Authoritative from specs
+    if specs and "pin_count" in specs:
+        try:
+            return int(specs["pin_count"])
+        except (ValueError, TypeError):
+            pass
+
+    if not package:
+        return None
+
+    # 2. Special case: pin headers (product of rows × columns)
+    m = _PIN_HEADER_RE.search(package)
+    if m:
+        return int(m.group(1)) * int(m.group(2))
+
+    # 3. Pattern matching
+    for pattern, group_idx, fixed_count in _PACKAGE_PIN_PATTERNS:
+        m = pattern.search(package)
+        if m:
+            if fixed_count is not None:
+                return fixed_count
+            if group_idx is not None:
+                return int(m.group(group_idx))
+
+    return None

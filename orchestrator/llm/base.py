@@ -15,6 +15,21 @@ class LLMClient(ABC):
         """Send prompt, return raw text response."""
         ...
 
+    def generate_long(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        max_tokens: int = 8192,
+        temperature: float = 0.0,
+        expected_min_length: int = 5000,
+        partial_output: str | None = None,
+    ) -> str:
+        """Generate with forced continuation for models that stop early on long outputs.
+
+        Falls back to generate() by default. Override for provider-specific logic.
+        """
+        return self.generate(system_prompt, user_prompt, max_tokens, temperature)
+
     def generate_with_vision(
         self,
         system_prompt: str,

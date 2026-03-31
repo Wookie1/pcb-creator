@@ -1,0 +1,485 @@
+{
+  "project_name": "test_4ch_relay_module",
+  "description": "4-channel relay module with PC817 optocoupler isolation, S8050 NPN transistor drivers, 1N4148 flyback diodes, status LEDs per channel, and screw terminals for relay outputs",
+  "power": {
+    "voltage": "5V",
+    "source": "Pin header from host MCU"
+  },
+  "components": [
+    {
+      "ref": "J1",
+      "type": "connector",
+      "value": "1x6_header",
+      "package": "PinHeader_1x6",
+      "purpose": "Control input (VCC, GND, IN1-IN4)"
+    },
+    {
+      "ref": "K1",
+      "type": "relay",
+      "value": "SRD-05VDC-SL-C",
+      "package": "relay_19x15",
+      "purpose": "Relay channel 1 (SPDT)",
+      "specs": {"pin_count": 5, "pinout": "1:COIL+ 2:COIL- 3:COM 4:NO 5:NC"}
+    },
+    {
+      "ref": "K2",
+      "type": "relay",
+      "value": "SRD-05VDC-SL-C",
+      "package": "relay_19x15",
+      "purpose": "Relay channel 2 (SPDT)",
+      "specs": {"pin_count": 5, "pinout": "1:COIL+ 2:COIL- 3:COM 4:NO 5:NC"}
+    },
+    {
+      "ref": "K3",
+      "type": "relay",
+      "value": "SRD-05VDC-SL-C",
+      "package": "relay_19x15",
+      "purpose": "Relay channel 3 (SPDT)",
+      "specs": {"pin_count": 5, "pinout": "1:COIL+ 2:COIL- 3:COM 4:NO 5:NC"}
+    },
+    {
+      "ref": "K4",
+      "type": "relay",
+      "value": "SRD-05VDC-SL-C",
+      "package": "relay_19x15",
+      "purpose": "Relay channel 4 (SPDT)",
+      "specs": {"pin_count": 5, "pinout": "1:COIL+ 2:COIL- 3:COM 4:NO 5:NC"}
+    },
+    {
+      "ref": "U1",
+      "type": "ic",
+      "value": "PC817",
+      "package": "DIP-4",
+      "purpose": "Optocoupler isolation channel 1",
+      "specs": {"pin_count": 4, "pinout": "1:ANODE 2:CATHODE 3:EMITTER 4:COLLECTOR"}
+    },
+    {
+      "ref": "U2",
+      "type": "ic",
+      "value": "PC817",
+      "package": "DIP-4",
+      "purpose": "Optocoupler isolation channel 2",
+      "specs": {"pin_count": 4, "pinout": "1:ANODE 2:CATHODE 3:EMITTER 4:COLLECTOR"}
+    },
+    {
+      "ref": "U3",
+      "type": "ic",
+      "value": "PC817",
+      "package": "DIP-4",
+      "purpose": "Optocoupler isolation channel 3",
+      "specs": {"pin_count": 4, "pinout": "1:ANODE 2:CATHODE 3:EMITTER 4:COLLECTOR"}
+    },
+    {
+      "ref": "U4",
+      "type": "ic",
+      "value": "PC817",
+      "package": "DIP-4",
+      "purpose": "Optocoupler isolation channel 4",
+      "specs": {"pin_count": 4, "pinout": "1:ANODE 2:CATHODE 3:EMITTER 4:COLLECTOR"}
+    },
+    {
+      "ref": "Q1",
+      "type": "transistor_npn",
+      "value": "S8050",
+      "package": "SOT-23",
+      "purpose": "Relay driver transistor channel 1"
+    },
+    {
+      "ref": "Q2",
+      "type": "transistor_npn",
+      "value": "S8050",
+      "package": "SOT-23",
+      "purpose": "Relay driver transistor channel 2"
+    },
+    {
+      "ref": "Q3",
+      "type": "transistor_npn",
+      "value": "S8050",
+      "package": "SOT-23",
+      "purpose": "Relay driver transistor channel 3"
+    },
+    {
+      "ref": "Q4",
+      "type": "transistor_npn",
+      "value": "S8050",
+      "package": "SOT-23",
+      "purpose": "Relay driver transistor channel 4"
+    },
+    {
+      "ref": "D1",
+      "type": "diode",
+      "value": "1N4148",
+      "package": "SOD-323",
+      "purpose": "Flyback diode relay 1"
+    },
+    {
+      "ref": "D2",
+      "type": "diode",
+      "value": "1N4148",
+      "package": "SOD-323",
+      "purpose": "Flyback diode relay 2"
+    },
+    {
+      "ref": "D3",
+      "type": "diode",
+      "value": "1N4148",
+      "package": "SOD-323",
+      "purpose": "Flyback diode relay 3"
+    },
+    {
+      "ref": "D4",
+      "type": "diode",
+      "value": "1N4148",
+      "package": "SOD-323",
+      "purpose": "Flyback diode relay 4"
+    },
+    {
+      "ref": "D5",
+      "type": "led",
+      "value": "red",
+      "package": "0805",
+      "purpose": "Status LED channel 1",
+      "specs": {"vf": "2.0V", "if": "10mA"}
+    },
+    {
+      "ref": "D6",
+      "type": "led",
+      "value": "red",
+      "package": "0805",
+      "purpose": "Status LED channel 2",
+      "specs": {"vf": "2.0V", "if": "10mA"}
+    },
+    {
+      "ref": "D7",
+      "type": "led",
+      "value": "red",
+      "package": "0805",
+      "purpose": "Status LED channel 3",
+      "specs": {"vf": "2.0V", "if": "10mA"}
+    },
+    {
+      "ref": "D8",
+      "type": "led",
+      "value": "red",
+      "package": "0805",
+      "purpose": "Status LED channel 4",
+      "specs": {"vf": "2.0V", "if": "10mA"}
+    },
+    {
+      "ref": "R1",
+      "type": "resistor",
+      "value": "1kohm",
+      "package": "0805",
+      "purpose": "Optocoupler input resistor ch1"
+    },
+    {
+      "ref": "R2",
+      "type": "resistor",
+      "value": "1kohm",
+      "package": "0805",
+      "purpose": "Optocoupler input resistor ch2"
+    },
+    {
+      "ref": "R3",
+      "type": "resistor",
+      "value": "1kohm",
+      "package": "0805",
+      "purpose": "Optocoupler input resistor ch3"
+    },
+    {
+      "ref": "R4",
+      "type": "resistor",
+      "value": "1kohm",
+      "package": "0805",
+      "purpose": "Optocoupler input resistor ch4"
+    },
+    {
+      "ref": "R5",
+      "type": "resistor",
+      "value": "1kohm",
+      "package": "0805",
+      "purpose": "Base resistor Q1"
+    },
+    {
+      "ref": "R6",
+      "type": "resistor",
+      "value": "1kohm",
+      "package": "0805",
+      "purpose": "Base resistor Q2"
+    },
+    {
+      "ref": "R7",
+      "type": "resistor",
+      "value": "1kohm",
+      "package": "0805",
+      "purpose": "Base resistor Q3"
+    },
+    {
+      "ref": "R8",
+      "type": "resistor",
+      "value": "1kohm",
+      "package": "0805",
+      "purpose": "Base resistor Q4"
+    },
+    {
+      "ref": "R9",
+      "type": "resistor",
+      "value": "330ohm",
+      "package": "0805",
+      "purpose": "LED resistor ch1"
+    },
+    {
+      "ref": "R10",
+      "type": "resistor",
+      "value": "330ohm",
+      "package": "0805",
+      "purpose": "LED resistor ch2"
+    },
+    {
+      "ref": "R11",
+      "type": "resistor",
+      "value": "330ohm",
+      "package": "0805",
+      "purpose": "LED resistor ch3"
+    },
+    {
+      "ref": "R12",
+      "type": "resistor",
+      "value": "330ohm",
+      "package": "0805",
+      "purpose": "LED resistor ch4"
+    },
+    {
+      "ref": "J2",
+      "type": "connector",
+      "value": "screw_terminal_3pin",
+      "package": "ScrewTerminal_1x3_5mm",
+      "purpose": "Relay 1 output (COM, NO, NC)"
+    },
+    {
+      "ref": "J3",
+      "type": "connector",
+      "value": "screw_terminal_3pin",
+      "package": "ScrewTerminal_1x3_5mm",
+      "purpose": "Relay 2 output (COM, NO, NC)"
+    },
+    {
+      "ref": "J4",
+      "type": "connector",
+      "value": "screw_terminal_3pin",
+      "package": "ScrewTerminal_1x3_5mm",
+      "purpose": "Relay 3 output (COM, NO, NC)"
+    },
+    {
+      "ref": "J5",
+      "type": "connector",
+      "value": "screw_terminal_3pin",
+      "package": "ScrewTerminal_1x3_5mm",
+      "purpose": "Relay 4 output (COM, NO, NC)"
+    }
+  ],
+  "connections": [
+    {
+      "net_name": "VCC",
+      "net_class": "power",
+      "pins": ["J1.1", "K1.COIL+", "K2.COIL+", "K3.COIL+", "K4.COIL+", "D1.cathode", "D2.cathode", "D3.cathode", "D4.cathode", "U1.COLLECTOR", "U2.COLLECTOR", "U3.COLLECTOR", "U4.COLLECTOR"]
+    },
+    {
+      "net_name": "GND",
+      "net_class": "ground",
+      "pins": ["J1.2", "Q1.emitter", "Q2.emitter", "Q3.emitter", "Q4.emitter", "U1.CATHODE", "U2.CATHODE", "U3.CATHODE", "U4.CATHODE", "D5.cathode", "D6.cathode", "D7.cathode", "D8.cathode"]
+    },
+    {
+      "net_name": "IN1",
+      "net_class": "signal",
+      "pins": ["J1.3", "R1.1"]
+    },
+    {
+      "net_name": "IN2",
+      "net_class": "signal",
+      "pins": ["J1.4", "R2.1"]
+    },
+    {
+      "net_name": "IN3",
+      "net_class": "signal",
+      "pins": ["J1.5", "R3.1"]
+    },
+    {
+      "net_name": "IN4",
+      "net_class": "signal",
+      "pins": ["J1.6", "R4.1"]
+    },
+    {
+      "net_name": "OPTO1_IN",
+      "net_class": "signal",
+      "pins": ["R1.2", "U1.ANODE"]
+    },
+    {
+      "net_name": "OPTO2_IN",
+      "net_class": "signal",
+      "pins": ["R2.2", "U2.ANODE"]
+    },
+    {
+      "net_name": "OPTO3_IN",
+      "net_class": "signal",
+      "pins": ["R3.2", "U3.ANODE"]
+    },
+    {
+      "net_name": "OPTO4_IN",
+      "net_class": "signal",
+      "pins": ["R4.2", "U4.ANODE"]
+    },
+    {
+      "net_name": "BASE1",
+      "net_class": "signal",
+      "pins": ["U1.EMITTER", "R5.1"]
+    },
+    {
+      "net_name": "BASE2",
+      "net_class": "signal",
+      "pins": ["U2.EMITTER", "R6.1"]
+    },
+    {
+      "net_name": "BASE3",
+      "net_class": "signal",
+      "pins": ["U3.EMITTER", "R7.1"]
+    },
+    {
+      "net_name": "BASE4",
+      "net_class": "signal",
+      "pins": ["U4.EMITTER", "R8.1"]
+    },
+    {
+      "net_name": "Q1_BASE",
+      "net_class": "signal",
+      "pins": ["R5.2", "Q1.base"]
+    },
+    {
+      "net_name": "Q2_BASE",
+      "net_class": "signal",
+      "pins": ["R6.2", "Q2.base"]
+    },
+    {
+      "net_name": "Q3_BASE",
+      "net_class": "signal",
+      "pins": ["R7.2", "Q3.base"]
+    },
+    {
+      "net_name": "Q4_BASE",
+      "net_class": "signal",
+      "pins": ["R8.2", "Q4.base"]
+    },
+    {
+      "net_name": "COIL1_GND",
+      "net_class": "signal",
+      "pins": ["K1.COIL-", "Q1.collector", "D1.anode", "R9.1"]
+    },
+    {
+      "net_name": "COIL2_GND",
+      "net_class": "signal",
+      "pins": ["K2.COIL-", "Q2.collector", "D2.anode", "R10.1"]
+    },
+    {
+      "net_name": "COIL3_GND",
+      "net_class": "signal",
+      "pins": ["K3.COIL-", "Q3.collector", "D3.anode", "R11.1"]
+    },
+    {
+      "net_name": "COIL4_GND",
+      "net_class": "signal",
+      "pins": ["K4.COIL-", "Q4.collector", "D4.anode", "R12.1"]
+    },
+    {
+      "net_name": "LED1",
+      "net_class": "signal",
+      "pins": ["R9.2", "D5.anode"]
+    },
+    {
+      "net_name": "LED2",
+      "net_class": "signal",
+      "pins": ["R10.2", "D6.anode"]
+    },
+    {
+      "net_name": "LED3",
+      "net_class": "signal",
+      "pins": ["R11.2", "D7.anode"]
+    },
+    {
+      "net_name": "LED4",
+      "net_class": "signal",
+      "pins": ["R12.2", "D8.anode"]
+    },
+    {
+      "net_name": "RLY1_COM",
+      "net_class": "signal",
+      "pins": ["K1.COM", "J2.1"]
+    },
+    {
+      "net_name": "RLY1_NO",
+      "net_class": "signal",
+      "pins": ["K1.NO", "J2.2"]
+    },
+    {
+      "net_name": "RLY1_NC",
+      "net_class": "signal",
+      "pins": ["K1.NC", "J2.3"]
+    },
+    {
+      "net_name": "RLY2_COM",
+      "net_class": "signal",
+      "pins": ["K2.COM", "J3.1"]
+    },
+    {
+      "net_name": "RLY2_NO",
+      "net_class": "signal",
+      "pins": ["K2.NO", "J3.2"]
+    },
+    {
+      "net_name": "RLY2_NC",
+      "net_class": "signal",
+      "pins": ["K2.NC", "J3.3"]
+    },
+    {
+      "net_name": "RLY3_COM",
+      "net_class": "signal",
+      "pins": ["K3.COM", "J4.1"]
+    },
+    {
+      "net_name": "RLY3_NO",
+      "net_class": "signal",
+      "pins": ["K3.NO", "J4.2"]
+    },
+    {
+      "net_name": "RLY3_NC",
+      "net_class": "signal",
+      "pins": ["K3.NC", "J4.3"]
+    },
+    {
+      "net_name": "RLY4_COM",
+      "net_class": "signal",
+      "pins": ["K4.COM", "J5.1"]
+    },
+    {
+      "net_name": "RLY4_NO",
+      "net_class": "signal",
+      "pins": ["K4.NO", "J5.2"]
+    },
+    {
+      "net_name": "RLY4_NC",
+      "net_class": "signal",
+      "pins": ["K4.NC", "J5.3"]
+    }
+  ],
+  "board": {
+    "width_mm": 80,
+    "height_mm": 50,
+    "layers": 2
+  },
+  "placement_hints": [
+    {"ref": "J1", "edge": "left"},
+    {"ref": "J2", "edge": "right"},
+    {"ref": "J3", "edge": "right"},
+    {"ref": "J4", "edge": "right"},
+    {"ref": "J5", "edge": "right"}
+  ]
+}

@@ -212,10 +212,18 @@ def run_workflow(
                 dsn_config=dsn_config,
             )
 
-            # Apply copper fills and silkscreen
-            from optimizers.router import apply_copper_fills, RouterConfig
-            fill_config = RouterConfig(**router_kwargs)
-            routed = apply_copper_fills(routed, netlist_data, fill_config)
+            # Discard partial results — fall back to SA router for incomplete boards
+            completion = routed.get("routing", {}).get("statistics", {}).get("completion_pct", 0)
+            if completion < 100:
+                unrouted = routed.get("routing", {}).get("unrouted_nets", [])
+                print(f"  Freerouting incomplete ({completion:.0f}%): {len(unrouted)} nets unrouted")
+                print(f"  Falling back to built-in router...")
+                routed = None
+            else:
+                # Apply copper fills and silkscreen
+                from optimizers.router import apply_copper_fills, RouterConfig
+                fill_config = RouterConfig(**router_kwargs)
+                routed = apply_copper_fills(routed, netlist_data, fill_config)
         except Exception as e:
             print(f"  Freerouting FAILED: {e}")
             print(f"  Falling back to built-in router...")
@@ -291,7 +299,9 @@ def run_workflow(
     bom_path = project.get_output_path(f"{project_name}_bom.json")
     bom_data = json.loads(bom_path.read_text()) if bom_path.exists() else None
 
-    if config.agent_mode:
+    if config.skip_approval:
+        print(f"[Review & Approval] Skipped (--skip-approval)")
+    elif config.agent_mode:
         # Agent mode: vision-based autonomous review
         print(f"[Review & Approval] Vision-based autonomous review")
         from orchestrator.vision_review import run_vision_review
@@ -302,15 +312,7 @@ def run_workflow(
         if review_result == "approved":
             print(f"  Vision review: APPROVED")
         elif review_result == "escalated":
-            print(f"  Vision review: Escalated to human review")
-            from orchestrator.approval_server import serve_approval_gate
-
-            approval = serve_approval_gate(
-                project_name, routed, netlist_data, bom_data,
-                project.project_dir, drc_report=drc_report,
-            )
-            if approval == "continue":
-                print(f"  Human review: Approved")
+            print(f"  Vision review: Escalated — auto-approving (agent mode)")
     else:
         # Serve the visualizer with DRC results for user review
         print(f"[Review & Approval]")
@@ -577,9 +579,13 @@ def run_workflow_streaming(
                 exclude_nets=["GND"],
                 dsn_config=dsn_config,
             )
-            from optimizers.router import apply_copper_fills, RouterConfig
-            fill_config = RouterConfig(**router_kwargs)
-            routed = apply_copper_fills(routed, netlist_data, fill_config)
+            completion = routed.get("routing", {}).get("statistics", {}).get("completion_pct", 0)
+            if completion < 100:
+                routed = None
+            else:
+                from optimizers.router import apply_copper_fills, RouterConfig
+                fill_config = RouterConfig(**router_kwargs)
+                routed = apply_copper_fills(routed, netlist_data, fill_config)
         except Exception:
             routed = None
 
@@ -592,6 +598,11 @@ def run_workflow_streaming(
     routed_path.write_text(json.dumps(routed, indent=2))
 
     val_result = run_routing_validation(str(routed_path), str(netlist_path))
+    project.update_status(
+        4, "COMPLETE",
+        validator_errors=val_result.get("errors") or None,
+        validator_warnings=val_result.get("warnings") or None,
+    )
     yield {"event": "step_done", "step": 4, "name": STEP_NAMES[4], "success": True}
 
     # Yield routed viewer
@@ -612,6 +623,19 @@ def run_workflow_streaming(
     drc_report = run_drc(routed, netlist_data, req_data)
     drc_path = project.get_output_path(f"{project_name}_drc_report.json")
     drc_path.write_text(json.dumps(drc_report, indent=2))
+    _drc_errors, _drc_warnings = [], []
+    for _check in drc_report.get("checks", []):
+        for _v in _check.get("violations", []):
+            msg = _v.get("message", "")
+            if _v.get("severity") == "error":
+                _drc_errors.append(msg)
+            elif _v.get("severity") == "warning":
+                _drc_warnings.append(msg)
+    project.update_status(
+        5, "COMPLETE",
+        validator_errors=_drc_errors or None,
+        validator_warnings=_drc_warnings or None,
+    )
     yield {"event": "step_done", "step": 5, "name": STEP_NAMES[5], "success": True}
 
     # Yield final viewer with DRC

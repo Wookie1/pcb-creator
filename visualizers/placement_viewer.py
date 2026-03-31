@@ -42,6 +42,7 @@ TYPE_COLORS = {
     "switch": "#14b8a6",
     "crystal": "#ec4899",
     "fuse": "#f97316",
+    "relay": "#b45309",
     "fiducial": "#888888",
     "transistor_npn": "#059669",
     "transistor_pnp": "#059669",

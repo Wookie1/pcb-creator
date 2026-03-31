@@ -107,6 +107,7 @@ _TYPE_DEFAULT_HEIGHTS_MM: dict[str, float] = {
     "switch": 5.0,
     "crystal": 3.5,
     "fuse": 3.0,
+    "relay": 15.0,
 }
 
 

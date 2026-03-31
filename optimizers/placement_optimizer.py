@@ -683,17 +683,60 @@ def repair_placement(
         rotations[des] = item.get("rotation_deg", 0)
         footprints[des] = (item["footprint_width_mm"], item["footprint_height_mm"])
         layers[des] = item.get("layer", "top")
-        if item.get("placement_source") == "user":
-            pinned.add(des)
 
         pkg = item.get("package", "")
         cid = des_to_comp_id.get(des, "")
         pin_count = comp_pin_counts.get(cid, 2)
         packages[des] = (pkg, pin_count)
 
+    # In repair mode, only pin components that are within board boundaries.
+    # "placement_source: user" is set by the LLM on components it considers
+    # important — but if they're outside the board we must still move them.
+    for item in items:
+        des = item["designator"]
+        x, y = positions[des]
+        fw, fh = footprints[des]
+        rot = rotations[des]
+        xmin, ymin, xmax, ymax = _get_bounding_box(x, y, fw, fh, rot)
+        within_bounds = xmin >= 0 and ymin >= 0 and xmax <= board_w and ymax <= board_h
+        if within_bounds and item.get("placement_source") == "user":
+            pinned.add(des)  # user-placed AND within bounds → respect it
+
     movable = [d for d in positions if d not in pinned]
     if not movable:
         return copy.deepcopy(placement)
+
+    # --- Deterministic pre-pass: snap out-of-bounds components onto the board ---
+    # This gives SA a valid starting point instead of requiring it to make large jumps.
+    snapped = 0
+    for des in movable:
+        x, y = positions[des]
+        fw, fh = footprints[des]
+        rot = rotations[des]
+        if rot in (90, 270):
+            fw, fh = fh, fw
+        hw, hh = fw / 2, fh / 2
+        margin = BOARD_EDGE_CLEARANCE_MM
+        nx = max(hw + margin, min(board_w - hw - margin, x))
+        ny = max(hh + margin, min(board_h - hh - margin, y))
+        if nx != x or ny != y:
+            positions[des] = (round(nx, 2), round(ny, 2))
+            snapped += 1
+        # If component is taller than 90% of the board, rotate 90° and snap near an edge.
+        # After rotation it becomes wide+short, so place it near top or bottom edge.
+        if fh > board_h * 0.9 and fw <= board_w * 0.9 and rotations[des] in (0, 180):
+            rotations[des] = 90
+            hw2, hh2 = fh / 2, fw / 2  # swapped after 90° rotation
+            nx2 = max(hw2 + margin, min(board_w - hw2 - margin, positions[des][0]))
+            # Place near bottom or top edge — whichever is further from existing snapped pos
+            cy = positions[des][1]
+            near_bottom = hh2 + margin
+            near_top = board_h - hh2 - margin
+            ny2 = near_bottom if cy < board_h / 2 else near_top
+            positions[des] = (round(nx2, 2), round(ny2, 2))
+            snapped += 1
+    if snapped:
+        print(f"  Repair pre-pass: snapped {snapped} out-of-bounds component(s) onto board")
 
     # Build connectivity if netlist provided
     nets = []
@@ -737,7 +780,7 @@ def repair_placement(
     T = 200.0  # Higher initial temp for repair — need aggressive moves
     cooling = 0.997
     stagnation = 0
-    max_stagnation = 1000
+    max_stagnation = 3000
 
     for iteration in range(max_iterations):
         new_pos, new_rot = _generate_move(
@@ -767,7 +810,7 @@ def repair_placement(
             stagnation += 1
 
         # Early exit if we've resolved all violations and stagnated
-        if best_violations == 0 and stagnation >= 500:
+        if best_violations == 0 and stagnation >= 1500:
             break
         if stagnation >= max_stagnation:
             break

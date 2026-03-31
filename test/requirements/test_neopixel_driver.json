@@ -1,0 +1,117 @@
+{
+  "project_name": "test_neopixel_driver",
+  "description": "WS2812B NeoPixel LED strip driver with ATtiny85 microcontroller, BSS138 N-MOSFET level shifter for 5V data signal, and screw terminals for power and data output",
+  "power": {
+    "voltage": "5V",
+    "source": "Screw terminal DC input"
+  },
+  "components": [
+    {
+      "ref": "U1",
+      "type": "ic",
+      "value": "ATtiny85",
+      "package": "DIP-8",
+      "purpose": "Microcontroller for NeoPixel control",
+      "specs": {
+        "pin_count": 8,
+        "pinout": "1:PB5/RESET 2:PB3 3:PB4 4:GND 5:PB0/MOSI 6:PB1/MISO 7:PB2/SCK 8:VCC"
+      }
+    },
+    {
+      "ref": "Q1",
+      "type": "transistor_nmos",
+      "value": "BSS138",
+      "package": "SOT-23",
+      "purpose": "Level shifter for 3.3V to 5V data signal",
+      "specs": {
+        "vgs_th": "1.5V",
+        "rds_on": "3.5ohm"
+      }
+    },
+    {
+      "ref": "R1",
+      "type": "resistor",
+      "value": "10kohm",
+      "package": "0805",
+      "purpose": "Gate pull-down / low-side pull-up"
+    },
+    {
+      "ref": "R2",
+      "type": "resistor",
+      "value": "10kohm",
+      "package": "0805",
+      "purpose": "High-side pull-up to 5V"
+    },
+    {
+      "ref": "R3",
+      "type": "resistor",
+      "value": "470ohm",
+      "package": "0805",
+      "purpose": "Data line series resistor (signal integrity)"
+    },
+    {
+      "ref": "C1",
+      "type": "capacitor",
+      "value": "100nF",
+      "package": "0805",
+      "purpose": "MCU decoupling capacitor",
+      "specs": {"voltage_rating": "10V", "type": "ceramic"}
+    },
+    {
+      "ref": "J1",
+      "type": "connector",
+      "value": "screw_terminal_2pin",
+      "package": "ScrewTerminal_1x2_5mm",
+      "purpose": "5V power input"
+    },
+    {
+      "ref": "J2",
+      "type": "connector",
+      "value": "screw_terminal_3pin",
+      "package": "ScrewTerminal_1x3_5mm",
+      "purpose": "NeoPixel strip output (5V, DATA, GND)"
+    }
+  ],
+  "connections": [
+    {
+      "net_name": "VCC",
+      "net_class": "power",
+      "pins": ["J1.1", "U1.VCC", "C1.1", "R1.1", "R2.1", "J2.1"]
+    },
+    {
+      "net_name": "GND",
+      "net_class": "ground",
+      "pins": ["J1.2", "U1.GND", "C1.2", "J2.3"]
+    },
+    {
+      "net_name": "DATA_3V",
+      "net_class": "signal",
+      "pins": ["U1.PB0", "R1.2", "Q1.source"]
+    },
+    {
+      "net_name": "DATA_5V",
+      "net_class": "signal",
+      "pins": ["Q1.drain", "R2.2", "R3.1"]
+    },
+    {
+      "net_name": "DATA_OUT",
+      "net_class": "signal",
+      "pins": ["R3.2", "J2.2"]
+    },
+    {
+      "net_name": "GATE",
+      "net_class": "signal",
+      "pins": ["Q1.gate", "U1.VCC"]
+    }
+  ],
+  "board": {
+    "width_mm": 25,
+    "height_mm": 20,
+    "layers": 2
+  },
+  "placement_hints": [
+    {"ref": "J1", "edge": "left"},
+    {"ref": "J2", "edge": "right"},
+    {"ref": "U1", "x_mm": 12, "y_mm": 10}
+  ]
+}

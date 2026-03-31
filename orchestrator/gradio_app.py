@@ -266,7 +266,11 @@ def _build_config(api_key, api_base, model, max_tokens, base_dir):
     if max_tokens:
         config.max_tokens = int(max_tokens)
     config.agent_mode = True
+    # Disable extended thinking/reasoning for all supported model formats.
+    # Different providers use different parameter names.
     config.llm_extra_body["thinking"] = False
+    config.llm_extra_body["reasoning_effort"] = "none"
+    config.llm_extra_body["reasoning"] = {"effort": "none"}
     return config
 
 
@@ -377,6 +381,14 @@ def _handle_submit(
             chat_display=_render_chat_markdown(messages),
             status="Planning circuit design...",
             state=state,
+            # Immediately clear + disable the input while planning runs so the
+            # Circuit Description box doesn't linger with the original text.
+            chat_input=gr.update(
+                value="", interactive=False, label="Thinking...",
+                placeholder="",
+            ),
+            submit_update=gr.update(interactive=False, value="Thinking..."),
+            approve_update=gr.update(interactive=False),
         )
 
         planning_history: list[dict] = []
@@ -409,7 +421,7 @@ def _handle_submit(
                        "Click Proceed to Design when ready.",
                 state=state,
                 chat_input=gr.update(
-                    value="", label="Chat",
+                    value="", label="Chat", interactive=True,
                     placeholder="Answer questions, suggest changes, or type 'proceed'...",
                     lines=2,
                 ),
@@ -469,7 +481,7 @@ def _handle_submit(
                 status="Review the updated plan. Type more corrections or click Proceed to Design.",
                 state=state,
                 chat_input=gr.update(
-                    value="", label="Chat",
+                    value="", label="Chat", interactive=True,
                     placeholder="Answer questions, suggest changes, or type 'proceed'...",
                     lines=2,
                 ),

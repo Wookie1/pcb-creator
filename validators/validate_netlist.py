@@ -33,12 +33,12 @@ except ImportError:
     sys.exit(1)
 
 from drc_checks import run_all_drc_checks
-from pinout import build_pinout_from_requirements
+from pinout import build_pinout_from_requirements, expected_pin_count
 
 
 # Maps component_type to expected designator prefix(es)
 DESIGNATOR_MAP = {
-    "resistor": ["R"],
+    "resistor": ["R", "RV"],
     "capacitor": ["C"],
     "inductor": ["L"],
     "led": ["D"],
@@ -53,6 +53,7 @@ DESIGNATOR_MAP = {
     "voltage_regulator": ["U"],
     "crystal": ["Y"],
     "fuse": ["F"],
+    "relay": ["K"],
 }
 
 
@@ -118,6 +119,25 @@ def validate_referential_integrity(netlist: dict) -> tuple[list[str], list[str]]
             if port_ref not in ports:
                 errors.append(f"Net '{nid}' references non-existent port '{port_ref}'")
 
+    # Check that every net has at least 2 ports (prescriptive message for rework)
+    for nid, net in nets.items():
+        port_count = len(net.get("connected_port_ids", []))
+        if port_count < 2:
+            net_name = net.get("name", nid)
+            port_ids = net.get("connected_port_ids", [])
+            single_port = port_ids[0] if port_ids else "(none)"
+            # Give a prescriptive fix: tell LLM exactly what to do
+            net_class = net.get("net_class", "")
+            if net_class == "ground":
+                fix = f"Add '{single_port}' to the shared GND net instead of creating a separate net for it."
+            elif net_class == "power":
+                fix = f"Add '{single_port}' to the shared VCC/power net instead of creating a separate net for it."
+            else:
+                fix = f"Either connect '{single_port}' to another port, or mark the port as no_connect and remove this net."
+            errors.append(
+                f"Net '{nid}' ('{net_name}') has only {port_count} port(s) — nets require at least 2. {fix}"
+            )
+
     # Check that every component has at least one port
     components_with_ports = set()
     for port in ports.values():
@@ -133,9 +153,42 @@ def validate_referential_integrity(netlist: dict) -> tuple[list[str], list[str]]
             ports_in_nets.add(port_ref)
     for pid, port in ports.items():
         if pid not in ports_in_nets:
-            if port.get("electrical_type") == "no_connect":
+            etype = port.get("electrical_type", "")
+            if etype == "no_connect":
                 continue
-            warnings.append(f"Port '{pid}' is not connected to any net (and is not 'no_connect')")
+            comp_des = components.get(port.get("component_id", ""), {}).get("designator", "?")
+            pin_name = port.get("name", port.get("pin_number", "?"))
+            msg = (
+                f"Port '{pid}' ({comp_des} pin {pin_name}) is not connected to any net. "
+                f"Either add it to an appropriate net, or set electrical_type to 'no_connect'."
+            )
+            # Power and ground pins MUST be connected — error.
+            # Signal/passive pins are warnings (unused GPIO is fine).
+            if etype in ("power_in", "power_out", "ground"):
+                errors.append(msg)
+            else:
+                warnings.append(msg)
+
+    # Auto-fix common designator prefix mismatches (e.g., LED1 → D1)
+    # Maps wrong_prefix → (component_type, correct_prefix)
+    _DESIGNATOR_FIXES = {
+        "LED": ("led", "D"),
+    }
+    _fix_counter: dict[str, int] = {}  # track next available number per prefix
+    for cid, comp in components.items():
+        designator = comp.get("designator", "")
+        prefix_match = re.match(r"^([A-Z]+)(\d+)$", designator)
+        if prefix_match:
+            prefix, num = prefix_match.group(1), prefix_match.group(2)
+            if prefix in _DESIGNATOR_FIXES:
+                fix_ctype, fix_prefix = _DESIGNATOR_FIXES[prefix]
+                if comp.get("component_type") == fix_ctype:
+                    new_des = f"{fix_prefix}{num}"
+                    warnings.append(
+                        f"Auto-fix: designator '{designator}' → '{new_des}' "
+                        f"('{prefix}' is not standard for {fix_ctype}, using '{fix_prefix}')"
+                    )
+                    comp["designator"] = new_des
 
     # Check that designator prefixes match component_type
     for cid, comp in components.items():
@@ -239,18 +292,121 @@ def validate_referential_integrity(netlist: dict) -> tuple[list[str], list[str]]
                 pin_to_nets[key] = []
             pin_to_nets[key].append((port_ref, nid))
     for (cid, pin), entries in pin_to_nets.items():
-        # Deduplicate by net_id — same pin in same net via different ports is
-        # caught by the duplicate-pin check, not here.
         unique_nets = list({nid for _, nid in entries})
         if len(unique_nets) > 1:
+            port_ids = [pid for pid, _ in entries]
+            # If all port_ids are the same, this is already reported by the
+            # "appears in multiple nets" check above — skip to avoid duplication.
+            if len(set(port_ids)) == 1:
+                continue
             comp = components.get(cid, {})
             designator = comp.get("designator", cid)
             net_names = [nets[nid].get("name", nid) for nid in unique_nets]
-            port_ids = [pid for pid, _ in entries]
             errors.append(
                 f"Physical pin {designator} pin {pin} connects to "
                 f"{len(unique_nets)} nets ({net_names}) via port elements "
                 f"{port_ids}. A pin can only belong to one net."
+            )
+
+    return errors, warnings
+
+
+def _check_package_compliance(
+    netlist: dict,
+    requirements: dict,
+) -> list[str]:
+    """Compare component packages against requirements. Returns warnings for mismatches."""
+    warnings: list[str] = []
+    req_components = requirements.get("components", [])
+    if not req_components:
+        return warnings
+
+    # Build lookup: ref -> required package
+    req_pkg_map: dict[str, str] = {}
+    for rc in req_components:
+        ref = rc.get("ref", "")
+        pkg = rc.get("package", "")
+        if ref and pkg:
+            req_pkg_map[ref] = pkg
+
+    if not req_pkg_map:
+        return warnings
+
+    components = netlist.get("components", {})
+    for cid, comp in components.items():
+        des = comp.get("designator", "")
+        net_pkg = comp.get("package", "")
+        if des in req_pkg_map and net_pkg:
+            req_pkg = req_pkg_map[des]
+            if net_pkg.lower() != req_pkg.lower():
+                warnings.append(
+                    f"Package mismatch: '{des}' has '{net_pkg}' but "
+                    f"requirements specify '{req_pkg}'"
+                )
+
+    return warnings
+
+
+def _check_port_completeness(
+    netlist: dict,
+    requirements: dict | None = None,
+) -> tuple[list[str], list[str]]:
+    """Check that every component has ports for ALL physical pins on its package.
+
+    Uses expected_pin_count() to determine the required port count from the
+    package name and/or requirements specs. Returns (errors, warnings).
+    """
+    errors: list[str] = []
+    warnings: list[str] = []
+
+    elements = netlist.get("elements", [])
+
+    # Build component lookup: component_id -> {designator, package}
+    components: dict[str, dict] = {}
+    for elem in elements:
+        if elem.get("element_type") == "component":
+            components[elem.get("component_id", "")] = elem
+
+    # Count ports per component_id
+    port_counts: dict[str, int] = {}
+    for elem in elements:
+        if elem.get("element_type") == "port":
+            cid = elem.get("component_id", "")
+            port_counts[cid] = port_counts.get(cid, 0) + 1
+
+    # Build package -> specs lookup from requirements (match by package string
+    # since the LLM may assign different designators than requirements refs)
+    pkg_specs: dict[str, dict] = {}
+    if requirements:
+        for comp in requirements.get("components", []):
+            pkg = comp.get("package", "")
+            specs = comp.get("specs", {})
+            if pkg and specs:
+                pkg_specs[pkg] = specs
+
+    for cid, comp in components.items():
+        designator = comp.get("designator", cid)
+        package = comp.get("package", "")
+        actual = port_counts.get(cid, 0)
+
+        # Look up specs by package name
+        specs = pkg_specs.get(package)
+        expected = expected_pin_count(package, specs)
+
+        if expected is None:
+            continue
+
+        if actual < expected:
+            missing = expected - actual
+            errors.append(
+                f"{designator} ({package}) has {actual} ports but requires "
+                f"{expected}. Add the missing {missing} port(s) — unused pins "
+                f"must have electrical_type 'no_connect'."
+            )
+        elif actual > expected:
+            warnings.append(
+                f"{designator} ({package}) has {actual} ports but package "
+                f"has {expected} pins — possible duplicate ports."
             )
 
     return errors, warnings
@@ -361,9 +517,10 @@ def _fix_pinout_from_requirements(
             )
             elem["name"] = full_name
 
-        # Fix electrical type if mismatched
+        # Fix electrical type if mismatched — but never override an explicit no_connect.
+        # If the LLM marked a pin no_connect it means it's intentionally unused; respect that.
         current_type = elem.get("electrical_type", "")
-        if current_type != expected.inferred_electrical_type:
+        if current_type != expected.inferred_electrical_type and current_type != "no_connect":
             corrections.append(
                 f"Pinout auto-fix: {designator} {port_id} pin {pin_num} "
                 f"type '{current_type}' -> '{expected.inferred_electrical_type}'"
@@ -449,6 +606,17 @@ def validate_netlist(
         ref_errors, ref_warnings = validate_referential_integrity(netlist)
         all_errors.extend(ref_errors)
         all_warnings.extend(ref_warnings)
+
+    # 2b. Port completeness (only if schema is roughly valid)
+    if not schema_errors:
+        pc_errors, pc_warnings = _check_port_completeness(netlist, requirements)
+        all_errors.extend(pc_errors)
+        all_warnings.extend(pc_warnings)
+
+    # 2c. Package compliance against requirements
+    if not schema_errors and requirements:
+        pkg_warnings = _check_package_compliance(netlist, requirements)
+        all_warnings.extend(pkg_warnings)
 
     # 3. DRC checks (only if schema and referential integrity pass)
     if not all_errors:

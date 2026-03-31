@@ -1,0 +1,62 @@
+You are the Schematic Engineer. Generate ALL net connections for the circuit below. Every port must appear in exactly one net (unless electrical_type is "no_connect").
+
+### Requirements
+
+{{ requirements }}
+
+### Components
+
+{{ components_json }}
+
+### Ports
+
+{{ ports_json }}
+
+### Output Format
+
+Produce a JSON array of net objects. Each net has these required fields:
+- `element_type`: always "net"
+- `net_id`: prefix `net_` + name (e.g., `net_vcc`, `net_gnd`, `net_spi_mosi`)
+- `name`: descriptive name (e.g., "VCC", "GND", "SPI_MOSI")
+- `connected_port_ids`: array of port_id strings (minimum 2 ports per net)
+- `net_class`: one of: signal, power, ground
+
+### Rules
+
+- Every port with electrical_type != "no_connect" must appear in exactly one net.
+- Power nets (VCC, 5V, 3V3, etc.) connect all power_in ports to power_out sources.
+- Ground nets connect all ground-type ports.
+- Signal nets connect signal ports as specified in the requirements.
+- Ensure electrical continuity — current must have a path from power to ground.
+- Passive component pins connect to the nets they bridge.
+
+### Pin-to-Net Rule (CRITICAL)
+
+Each port_id may appear in at most ONE net. A pin cannot be in two nets.
+
+**Pull-up resistors**: R1 connects VCC to RESET. `port_r1_2` (VCC side) → VCC net ONLY. `port_r1_1` (signal side) → RESET net ONLY. Never add `port_r1_2` to both VCC and RESET.
+
+**Crystal**: Y1 pin 1 → XTAL1 net only. Y1 pin 2 → XTAL2 net only. Load caps have one pin on the crystal signal and the other on GND — the crystal pin itself is NOT directly in GND.
+
+### Net Minimum Size Rule (CRITICAL)
+
+**Every net MUST have at least 2 ports.** A net with only 1 port is a schema violation and will be rejected.
+
+- All ground pins → single shared GND net (include ALL of them: IC grounds, capacitor grounds, connector grounds, resistor grounds).
+- All VCC pins → single shared VCC net (include ALL power_in and power_out ports on the same rail).
+- Decoupling capacitors: pin 1 → VCC net, pin 2 → GND net. Never create separate nets for them.
+- If you cannot find a second port for a net, the port should be marked `no_connect` instead — do not emit the net at all.
+
+**WRONG:**
+```json
+{"net_id": "net_c1_gnd", "connected_port_ids": ["port_c1_2"]}
+```
+**CORRECT:**
+```json
+{"net_id": "net_gnd", "connected_port_ids": ["port_u1_gnd", "port_c1_2", "port_c2_2", "port_j1_gnd"]}
+```
+
+### Output
+
+Output ONLY a JSON array of net objects. No wrapper object, no explanation, no markdown fences.
+Use compact formatting.

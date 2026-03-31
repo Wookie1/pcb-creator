@@ -1,0 +1,140 @@
+{
+  "project_name": "test_555_blinker",
+  "description": "555 timer astable multivibrator circuit that blinks a red LED at approximately 1Hz, powered by 9V DC via barrel jack connector",
+  "power": {
+    "voltage": "9V",
+    "source": "Barrel jack DC input"
+  },
+  "components": [
+    {
+      "ref": "J1",
+      "type": "connector",
+      "value": "barrel_jack",
+      "package": "PJ-002A",
+      "purpose": "DC power input (9V)"
+    },
+    {
+      "ref": "U1",
+      "type": "ic",
+      "value": "NE555",
+      "package": "SOIC-8",
+      "purpose": "Timer IC in astable mode",
+      "specs": {
+        "pin_count": 8,
+        "pinout": "1:GND 2:TRIG 3:OUT 4:RESET 5:CTRL 6:THR 7:DIS 8:VCC"
+      }
+    },
+    {
+      "ref": "R1",
+      "type": "resistor",
+      "value": "1kohm",
+      "package": "0805",
+      "purpose": "Timing resistor RA (charge path)"
+    },
+    {
+      "ref": "R2",
+      "type": "resistor",
+      "value": "470kohm",
+      "package": "0805",
+      "purpose": "Timing resistor RB (charge/discharge path)"
+    },
+    {
+      "ref": "R3",
+      "type": "resistor",
+      "value": "330ohm",
+      "package": "0805",
+      "purpose": "LED current-limiting resistor"
+    },
+    {
+      "ref": "C1",
+      "type": "capacitor",
+      "value": "1uF",
+      "package": "0805",
+      "purpose": "Timing capacitor",
+      "specs": {
+        "voltage_rating": "16V",
+        "type": "ceramic"
+      }
+    },
+    {
+      "ref": "C2",
+      "type": "capacitor",
+      "value": "10nF",
+      "package": "0805",
+      "purpose": "Control pin bypass capacitor",
+      "specs": {
+        "voltage_rating": "16V",
+        "type": "ceramic"
+      }
+    },
+    {
+      "ref": "C3",
+      "type": "capacitor",
+      "value": "100nF",
+      "package": "0805",
+      "purpose": "Power supply decoupling",
+      "specs": {
+        "voltage_rating": "16V",
+        "type": "ceramic"
+      }
+    },
+    {
+      "ref": "D1",
+      "type": "led",
+      "value": "red",
+      "package": "0805",
+      "purpose": "Blinking output LED",
+      "specs": {
+        "vf": "2.0V",
+        "if": "20mA",
+        "color": "red"
+      }
+    }
+  ],
+  "connections": [
+    {
+      "net_name": "VCC",
+      "net_class": "power",
+      "pins": ["J1.1", "U1.VCC", "U1.RESET", "R1.1", "C3.1"]
+    },
+    {
+      "net_name": "GND",
+      "net_class": "ground",
+      "pins": ["J1.2", "U1.GND", "C1.2", "C2.2", "C3.2", "D1.cathode"]
+    },
+    {
+      "net_name": "DIS_NODE",
+      "net_class": "signal",
+      "pins": ["R1.2", "R2.1", "U1.DIS"]
+    },
+    {
+      "net_name": "THR_TRIG",
+      "net_class": "signal",
+      "pins": ["R2.2", "C1.1", "U1.THR", "U1.TRIG"]
+    },
+    {
+      "net_name": "CTRL",
+      "net_class": "signal",
+      "pins": ["U1.CTRL", "C2.1"]
+    },
+    {
+      "net_name": "OUT_LED",
+      "net_class": "signal",
+      "pins": ["U1.OUT", "R3.1"]
+    },
+    {
+      "net_name": "R3_TO_D1",
+      "net_class": "signal",
+      "pins": ["R3.2", "D1.anode"]
+    }
+  ],
+  "board": {
+    "width_mm": 30,
+    "height_mm": 25,
+    "layers": 2
+  },
+  "placement_hints": [
+    {"ref": "J1", "edge": "left"},
+    {"ref": "U1", "x_mm": 15, "y_mm": 12}
+  ]
+}

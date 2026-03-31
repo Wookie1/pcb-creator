@@ -17,9 +17,18 @@ class ProjectManager:
         self._write_initial_status()
 
     def update_status(
-        self, step: int, status: str, rework_count: int = 0
+        self,
+        step: int,
+        status: str,
+        rework_count: int = 0,
+        validator_errors: list[str] | None = None,
+        validator_warnings: list[str] | None = None,
     ) -> None:
-        """Update STATUS.json with new step status."""
+        """Update STATUS.json with new step status.
+
+        validator_errors/validator_warnings are persisted when a step is
+        BLOCKED or ERROR so MCP callers can understand what went wrong.
+        """
         status_path = self.project_dir / "STATUS.json"
         data = json.loads(status_path.read_text()) if status_path.exists() else {
             "project_name": self.project_name,
@@ -41,6 +50,10 @@ class ProjectManager:
         data["steps"][step_key]["timestamp"] = now
         if rework_count > 0:
             data["steps"][step_key]["rework_count"] = rework_count
+        if validator_errors is not None:
+            data["steps"][step_key]["validator_errors"] = validator_errors
+        if validator_warnings is not None:
+            data["steps"][step_key]["validator_warnings"] = validator_warnings
 
         status_path.write_text(json.dumps(data, indent=2) + "\n")
 

@@ -1,0 +1,217 @@
+{
+  "project_name": "test_l298n_motor_driver",
+  "description": "L298N dual H-bridge motor driver board with flyback Schottky diodes, 78M05 5V logic regulator, screw terminals for motors and power, and logic input pin header",
+  "power": {
+    "voltage": "5V logic / 7-35V motor",
+    "source": "Screw terminal for motor power, on-board 78M05 for logic"
+  },
+  "components": [
+    {
+      "ref": "U1",
+      "type": "ic",
+      "value": "L298N",
+      "package": "Multiwatt-15",
+      "purpose": "Dual full-bridge motor driver",
+      "specs": {
+        "pin_count": 15,
+        "pinout": "1:SENSE_A 2:OUT1 3:OUT2 4:VS 5:IN1 6:ENA 7:IN2 8:GND 9:IN3 10:ENB 11:IN4 12:VS 13:OUT3 14:OUT4 15:SENSE_B",
+        "max_current": "2A"
+      }
+    },
+    {
+      "ref": "U2",
+      "type": "voltage_regulator",
+      "value": "78M05",
+      "package": "DPAK",
+      "purpose": "5V logic supply regulator",
+      "specs": {"output": "5V", "max_current": "500mA"}
+    },
+    {
+      "ref": "D1",
+      "type": "diode",
+      "value": "SS14",
+      "package": "SMA",
+      "purpose": "Flyback diode OUT1 high-side"
+    },
+    {
+      "ref": "D2",
+      "type": "diode",
+      "value": "SS14",
+      "package": "SMA",
+      "purpose": "Flyback diode OUT1 low-side"
+    },
+    {
+      "ref": "D3",
+      "type": "diode",
+      "value": "SS14",
+      "package": "SMA",
+      "purpose": "Flyback diode OUT2 high-side"
+    },
+    {
+      "ref": "D4",
+      "type": "diode",
+      "value": "SS14",
+      "package": "SMA",
+      "purpose": "Flyback diode OUT2 low-side"
+    },
+    {
+      "ref": "D5",
+      "type": "diode",
+      "value": "SS14",
+      "package": "SMA",
+      "purpose": "Flyback diode OUT3 high-side"
+    },
+    {
+      "ref": "D6",
+      "type": "diode",
+      "value": "SS14",
+      "package": "SMA",
+      "purpose": "Flyback diode OUT3 low-side"
+    },
+    {
+      "ref": "D7",
+      "type": "diode",
+      "value": "SS14",
+      "package": "SMA",
+      "purpose": "Flyback diode OUT4 high-side"
+    },
+    {
+      "ref": "D8",
+      "type": "diode",
+      "value": "SS14",
+      "package": "SMA",
+      "purpose": "Flyback diode OUT4 low-side"
+    },
+    {
+      "ref": "C1",
+      "type": "capacitor",
+      "value": "100nF",
+      "package": "0805",
+      "purpose": "Motor supply decoupling",
+      "specs": {"voltage_rating": "50V", "type": "ceramic"}
+    },
+    {
+      "ref": "C2",
+      "type": "capacitor",
+      "value": "100uF",
+      "package": "electrolytic_8x10",
+      "purpose": "Motor supply bulk capacitor",
+      "specs": {"voltage_rating": "50V", "type": "electrolytic"}
+    },
+    {
+      "ref": "C3",
+      "type": "capacitor",
+      "value": "100nF",
+      "package": "0805",
+      "purpose": "5V logic decoupling",
+      "specs": {"voltage_rating": "16V", "type": "ceramic"}
+    },
+    {
+      "ref": "J1",
+      "type": "connector",
+      "value": "screw_terminal_3pin",
+      "package": "ScrewTerminal_1x3_5mm",
+      "purpose": "Motor power input (+VS, GND, 5V out)"
+    },
+    {
+      "ref": "J2",
+      "type": "connector",
+      "value": "screw_terminal_2pin",
+      "package": "ScrewTerminal_1x2_5mm",
+      "purpose": "Motor A output"
+    },
+    {
+      "ref": "J3",
+      "type": "connector",
+      "value": "screw_terminal_2pin",
+      "package": "ScrewTerminal_1x2_5mm",
+      "purpose": "Motor B output"
+    },
+    {
+      "ref": "J4",
+      "type": "connector",
+      "value": "1x6_header",
+      "package": "PinHeader_1x6",
+      "purpose": "Logic inputs (ENA, IN1, IN2, IN3, IN4, ENB)"
+    }
+  ],
+  "connections": [
+    {
+      "net_name": "VS",
+      "net_class": "power",
+      "pins": ["J1.1", "U1.VS", "U2.IN", "C1.1", "C2.1", "D1.cathode", "D3.cathode", "D5.cathode", "D7.cathode"]
+    },
+    {
+      "net_name": "GND",
+      "net_class": "ground",
+      "pins": ["J1.2", "U1.GND", "U1.SENSE_A", "U1.SENSE_B", "U2.GND", "C1.2", "C2.2", "C3.2", "D2.anode", "D4.anode", "D6.anode", "D8.anode"]
+    },
+    {
+      "net_name": "VCC_5V",
+      "net_class": "power",
+      "pins": ["U2.OUT", "C3.1", "J1.3"]
+    },
+    {
+      "net_name": "OUT1",
+      "net_class": "signal",
+      "pins": ["U1.OUT1", "J2.1", "D1.anode", "D2.cathode"]
+    },
+    {
+      "net_name": "OUT2",
+      "net_class": "signal",
+      "pins": ["U1.OUT2", "J2.2", "D3.anode", "D4.cathode"]
+    },
+    {
+      "net_name": "OUT3",
+      "net_class": "signal",
+      "pins": ["U1.OUT3", "J3.1", "D5.anode", "D6.cathode"]
+    },
+    {
+      "net_name": "OUT4",
+      "net_class": "signal",
+      "pins": ["U1.OUT4", "J3.2", "D7.anode", "D8.cathode"]
+    },
+    {
+      "net_name": "ENA",
+      "net_class": "signal",
+      "pins": ["U1.ENA", "J4.1"]
+    },
+    {
+      "net_name": "IN1",
+      "net_class": "signal",
+      "pins": ["U1.IN1", "J4.2"]
+    },
+    {
+      "net_name": "IN2",
+      "net_class": "signal",
+      "pins": ["U1.IN2", "J4.3"]
+    },
+    {
+      "net_name": "IN3",
+      "net_class": "signal",
+      "pins": ["U1.IN3", "J4.4"]
+    },
+    {
+      "net_name": "IN4",
+      "net_class": "signal",
+      "pins": ["U1.IN4", "J4.5"]
+    },
+    {
+      "net_name": "ENB",
+      "net_class": "signal",
+      "pins": ["U1.ENB", "J4.6"]
+    }
+  ],
+  "board": {
+    "width_mm": 50,
+    "height_mm": 40,
+    "layers": 2
+  },
+  "placement_hints": [
+    {"ref": "U1", "x_mm": 25, "y_mm": 20},
+    {"ref": "J1", "edge": "top"},
+    {"ref": "J2", "edge": "left"},
+    {"ref": "J3", "edge": "right"},
+    {"ref": "J4", "edge": "bottom"}
+  ]
+}
