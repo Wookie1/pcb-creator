@@ -95,15 +95,40 @@ You must produce a JSON object with this exact structure:
 ### Critical Rules
 
 1. **Every component must have a unique ref** following standard designator conventions (R1, R2, D1, J1, U1, etc.)
-2. **Every component pin must appear in exactly one connection** — no floating pins
+2. **Every component pin must appear in exactly ONE connection** — a physical pin is a single electrical point and cannot carry two different signals. This applies to ALL components including connectors and headers.
+   - WRONG: `J3.5` in VCC net AND `J3.5` in D4_PWM net (same pin, two nets — physically impossible)
+   - RIGHT: Use separate pins: `J3.7` for VCC, `J3.8` for GND, `J3.1`-`J3.6` for signals
+   - If a header needs both power and signal pins, size it large enough (e.g., 1x8 instead of 1x6) or use a separate power header.
+   - The same rule applies to resistors, caps, and all other components — no pin may appear in more than one net.
 3. **Connections define exact point-to-point wiring**. If two components need separate signal paths, they MUST be on separate nets. For example: if R1 drives D1 and R2 drives D2, these are TWO separate nets (R1_TO_D1 and R2_TO_D2), NOT one shared net.
 4. **Calculate component values** using the engineering rules above. Include the calculation in the calculations field.
-5. **Pin naming**: Use numeric pins for passive components (R1.1, R1.2), named pins for polarized components (D1.anode, D1.cathode), and functional names for ICs (U1.VCC, U1.GND).
+5. **Pin naming**: Use numeric pins for passive components (R1.1, R1.2), named pins for polarized components (D1.anode, D1.cathode), and **functional names for ICs** (U1.VCC, U1.GND, U1.RESET, U1.PB0, U1.XTAL1). NEVER use physical pin numbers for ICs — the downstream pipeline resolves functional names to physical pins using the IC's actual pinout data. This prevents pin assignment errors.
+   - Correct: `"pins": ["U1.GND", "C1.1"]`
+   - Wrong: `"pins": ["U1.3", "C1.1"]` (3 is a physical pin number, not a function)
+   - For multi-pin functions (e.g., multiple GND or VCC pins), use `U1.GND` once — the pipeline connects all GND pins automatically.
+   - **Dual-function MCU pins** (e.g., ATmega328P): When a MCU pin serves both a peripheral function and digital I/O, create ONE net for both. Do NOT create separate nets:
+     - ICSP MOSI = PB3 = Arduino D11 → one net: `"pins": ["U1.PB3", "J_ICSP.4", "J_DIGITAL.11"]`
+     - ICSP MISO = PB4 = Arduino D12 → one net: `"pins": ["U1.PB4", "J_ICSP.1", "J_DIGITAL.12"]`
+     - ICSP SCK = PB5 = Arduino D13 → one net: `"pins": ["U1.PB5", "J_ICSP.3", "J_DIGITAL.13"]`
+     - SDA = PC4 = Arduino A4 → one net: `"pins": ["U1.PC4", "J_ANALOG.5"]`
+     - SCL = PC5 = Arduino A5 → one net: `"pins": ["U1.PC5", "J_ANALOG.6"]`
+     - ICSP header pin 2 = VCC, pin 6 = GND, pin 5 = RESET (connect to their respective power/reset nets)
 6. If any information is missing or ambiguous, make reasonable engineering assumptions and note them in the component's purpose field.
 7. **Board dimensions**: If the user mentions board size, include the `board` object. If not mentioned, estimate a reasonable board size based on component count and packages. Use `outline_type: "rectangle"` unless the user provides a DXF file.
 8. **DXF board outlines**: When a DXF file is attached as a board outline, set `outline_type: "dxf"` and do NOT ask the user for board dimensions — the pipeline will automatically extract the outline polygon and dimensions from the DXF file. You may omit `width_mm` and `height_mm` from the `board` object in this case.
 9. **Placement hints**: If the user specifies where components should go (e.g., "connector on the left edge", "LED near the switch"), capture these as `placement_hints`. Use `edge` for board-edge placement, `near` for proximity to another component, and `x_mm`/`y_mm` for exact coordinates if given.
 10. **Attachments**: If the user mentions files (DXF board outlines, sketches, photos), list them in `attachments` with their type and purpose. Set `used_by_steps` to indicate which pipeline steps need the file (step 3 = layout, step 4 = routing).
+11. **Design completeness**: Ensure the design is complete — do not omit supporting components. For microcontroller boards, this means:
+    - Decoupling capacitor (100nF) for EVERY VCC/AVCC pin
+    - Crystal/resonator with 2 load capacitors (if needed for clock)
+    - Reset circuit (pull-up resistor + optional button + filter cap)
+    - Power input connector and voltage regulator (if needed)
+    - Power indicator LED with current-limiting resistor
+    - I/O pin headers for user access
+    - USB-to-serial IC with its own decoupling caps (if USB is specified)
+    - ICSP/programming header (if applicable)
+    For other board types, include all standard supporting circuitry (bypass caps, protection diodes, pull-ups, etc.)
+
 ### Output
 
 Output ONLY the JSON. No explanation, no markdown fences, no additional text.

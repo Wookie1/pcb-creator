@@ -35,6 +35,96 @@ def _strip_markdown_fences(raw: str) -> str:
     return raw
 
 
+def _auto_merge_shared_nets(netlist: dict) -> tuple[dict, list[str]]:
+    """Auto-merge nets that share a port (same physical pin in multiple nets).
+
+    When two nets share a port_id, they are electrically the same net.
+    Merge all port_ids from the smaller net into the larger one and delete
+    the smaller net. Returns (fixed_netlist, warnings).
+    """
+    import copy
+    netlist = copy.deepcopy(netlist)
+    warnings: list[str] = []
+
+    elements = netlist.get("elements", [])
+
+    # Build port_id → list of net element indices
+    port_to_nets: dict[str, list[int]] = {}
+    net_indices: list[int] = []
+    for i, elem in enumerate(elements):
+        if elem.get("element_type") == "net":
+            net_indices.append(i)
+            for port_ref in elem.get("connected_port_ids", []):
+                port_to_nets.setdefault(port_ref, []).append(i)
+
+    # Also check same physical pin (component_id + pin_number) via different ports
+    pin_to_ports: dict[tuple[str, str], list[str]] = {}
+    for elem in elements:
+        if elem.get("element_type") == "port":
+            key = (elem.get("component_id", ""), str(elem.get("pin_number", "")))
+            pin_to_ports.setdefault(key, []).append(elem["port_id"])
+
+    # Add cross-port shared-pin mappings to port_to_nets
+    for (cid, pin), port_ids in pin_to_ports.items():
+        if len(port_ids) <= 1:
+            continue
+        # All these ports are the same physical pin — union their nets
+        all_net_indices: set[int] = set()
+        for pid in port_ids:
+            all_net_indices.update(port_to_nets.get(pid, []))
+        if len(all_net_indices) > 1:
+            # Create a synthetic shared entry so the merge loop picks it up
+            for pid in port_ids:
+                port_to_nets[pid] = list(all_net_indices)
+
+    # Find ports that appear in multiple nets → those nets must merge
+    merged_into: dict[int, int] = {}  # net_idx → target_idx (union-find)
+
+    def find_root(idx: int) -> int:
+        while idx in merged_into:
+            idx = merged_into[idx]
+        return idx
+
+    for port_ref, net_idxs in port_to_nets.items():
+        if len(net_idxs) <= 1:
+            continue
+        roots = list({find_root(i) for i in net_idxs})
+        if len(roots) <= 1:
+            continue
+        # Merge all into the first (largest) root
+        target = roots[0]
+        for other in roots[1:]:
+            merged_into[other] = target
+            target_net = elements[target]
+            other_net = elements[other]
+            # Merge port lists (deduplicate)
+            existing = set(target_net.get("connected_port_ids", []))
+            for pid in other_net.get("connected_port_ids", []):
+                if pid not in existing:
+                    target_net["connected_port_ids"].append(pid)
+                    existing.add(pid)
+            warnings.append(
+                f"Auto-merged net '{other_net.get('name', other_net.get('net_id', '?'))}' "
+                f"into '{target_net.get('name', target_net.get('net_id', '?'))}' "
+                f"(shared port)"
+            )
+
+    # Remove merged nets
+    if merged_into:
+        removed = {find_root(k) != k and k or -1 for k in merged_into}
+        # Get actual indices to remove (those that were merged INTO another)
+        to_remove = set()
+        for src, _ in merged_into.items():
+            root = find_root(src)
+            if root != src:
+                to_remove.add(src)
+        netlist["elements"] = [
+            elem for i, elem in enumerate(elements) if i not in to_remove
+        ]
+
+    return netlist, warnings
+
+
 def _json_error_context(candidate: str, err: json.JSONDecodeError) -> str:
     """Build a descriptive error message that includes position and surrounding context."""
     pos = err.pos
@@ -409,6 +499,31 @@ class SchematicStep(StepBase):
                 f" ({len(validator_result.get('errors', []))} errors,"
                 f" {len(validator_result.get('warnings', []))} warnings)"
             )
+
+            # 3b. Auto-merge nets that share a port (defense in depth)
+            if not validator_result["valid"]:
+                merge_errors = [
+                    e for e in validator_result["errors"]
+                    if "appears in multiple nets" in e or "connects to" in e and "nets" in e
+                ]
+                if merge_errors:
+                    try:
+                        netlist_data = json.loads(netlist_text)
+                        netlist_data, merge_warnings = _auto_merge_shared_nets(netlist_data)
+                        if merge_warnings:
+                            for mw in merge_warnings:
+                                print(f"    {mw}")
+                            netlist_text = json.dumps(netlist_data, indent=2)
+                            output_path = self.project.write_output(output_filename, netlist_text)
+                            validator_result = self._run_validator(output_path)
+                            last_validator_result = validator_result
+                            print(
+                                f"  Post-merge validator: "
+                                f"{'VALID' if validator_result['valid'] else 'INVALID'}"
+                                f" ({len(validator_result.get('errors', []))} errors)"
+                            )
+                    except Exception as e:
+                        print(f"    Auto-merge failed: {e}")
 
             # 4. If validator fails, go straight to rework (skip QA)
             if not validator_result["valid"]:

@@ -302,4 +302,95 @@ def validate_requirements(data: dict) -> list[str]:
     for error in sorted(validator.iter_errors(data), key=lambda e: list(e.path)):
         path = ".".join(str(p) for p in error.absolute_path) or "(root)"
         errors.append(f"{path}: {error.message}")
+
+    # Post-schema: check for duplicate pins across connections
+    errors.extend(_validate_pin_uniqueness(data))
+
     return errors
+
+
+def _validate_pin_uniqueness(data: dict) -> list[str]:
+    """Ensure each component pin appears in at most one connection/net."""
+    errors = []
+    pin_to_net: dict[str, str] = {}
+
+    for conn in data.get("connections", []):
+        net_name = conn.get("net_name", "?")
+        for pin in conn.get("pins", []):
+            if pin in pin_to_net:
+                errors.append(
+                    f"connections: Pin '{pin}' appears in multiple nets "
+                    f"('{pin_to_net[pin]}' and '{net_name}'). "
+                    f"Each pin must belong to exactly one net."
+                )
+            else:
+                pin_to_net[pin] = net_name
+
+    return errors
+
+
+def auto_fix_duplicate_pins(data: dict) -> tuple[dict, list[str]]:
+    """Last-resort fix for pins appearing in multiple nets.
+
+    When a pin appears in both a power/ground net and a signal net,
+    remove it from the power/ground net (keep the more specific signal
+    assignment). Returns (fixed_data, warnings).
+
+    Only call this after rework attempts are exhausted.
+    """
+    import copy
+
+    warnings: list[str] = []
+    data = copy.deepcopy(data)
+
+    _POWER_CLASSES = {"power", "ground"}
+
+    # Build pin → list of (net_index, net_name, net_class)
+    pin_nets: dict[str, list[tuple[int, str, str]]] = {}
+    for i, conn in enumerate(data.get("connections", [])):
+        net_name = conn.get("net_name", "?")
+        net_class = conn.get("net_class", "signal")
+        for pin in conn.get("pins", []):
+            pin_nets.setdefault(pin, []).append((i, net_name, net_class))
+
+    # Find duplicates and decide which to remove
+    removals: list[tuple[int, str, str]] = []  # (conn_index, pin, net_name)
+    for pin, nets in pin_nets.items():
+        if len(nets) <= 1:
+            continue
+
+        # Separate power/ground nets from signal nets
+        power_entries = [(i, name, cls) for i, name, cls in nets if cls in _POWER_CLASSES]
+        signal_entries = [(i, name, cls) for i, name, cls in nets if cls not in _POWER_CLASSES]
+
+        if power_entries and signal_entries:
+            # Remove from power/ground nets, keep in signal nets
+            for idx, net_name, _ in power_entries:
+                removals.append((idx, pin, net_name))
+                warnings.append(
+                    f"Auto-fix: removed '{pin}' from '{net_name}' net "
+                    f"(kept in signal net)"
+                )
+        elif len(signal_entries) > 1:
+            # Multiple signal nets — keep in the first, remove from rest
+            for idx, net_name, _ in signal_entries[1:]:
+                removals.append((idx, pin, net_name))
+                warnings.append(
+                    f"Auto-fix: removed '{pin}' from '{net_name}' net "
+                    f"(duplicate signal assignment)"
+                )
+
+    # Apply removals
+    for conn_idx, pin, _ in removals:
+        conn = data["connections"][conn_idx]
+        pins = conn.get("pins", [])
+        if pin in pins:
+            pins.remove(pin)
+
+    # Remove connections with fewer than 2 pins (now invalid)
+    data["connections"] = [
+        c for c in data["connections"]
+        if len(c.get("pins", [])) >= 2
+    ]
+
+    return data, warnings

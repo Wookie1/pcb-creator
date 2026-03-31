@@ -171,7 +171,37 @@ def design_pcb(
             timeout=config.llm_timeout,
         )
         _gatherer = RequirementsGatherer(_llm, PromptBuilder(config.base_dir))
+
+        # Translate with validation + rework loop (same pattern as interactive CLI)
+        from orchestrator.gather.schema import validate_requirements, auto_fix_duplicate_pins
         requirements = _gatherer.translate(description)
+        if requirements is not None:
+            for _retry in range(3):
+                errors = validate_requirements(requirements)
+                if not errors:
+                    break
+                print(f"  MCP translate: {len(errors)} validation errors, retrying...")
+                requirements = _gatherer.translate(
+                    description,
+                    feedback="Fix these validation errors:\n" + "\n".join(
+                        f"- {e}" for e in errors
+                    ),
+                    previous_json=json.dumps(requirements, indent=2),
+                )
+                if requirements is None:
+                    break
+
+            # Last resort: auto-fix duplicate pins if rework didn't resolve them
+            if requirements is not None:
+                errors = validate_requirements(requirements)
+                if errors:
+                    requirements, fix_warnings = auto_fix_duplicate_pins(requirements)
+                    for w in fix_warnings:
+                        print(f"  MCP auto-fix: {w}")
+                    remaining = validate_requirements(requirements)
+                    if remaining:
+                        print(f"  MCP auto-fix: {len(remaining)} errors remain")
+
         if requirements is None:
             return {
                 "success": False,

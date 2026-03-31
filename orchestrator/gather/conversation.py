@@ -81,12 +81,32 @@ class RequirementsGatherer:
                 print(f"  Schema validation failed ({len(errors)} errors):")
                 for e in errors:
                     print(f"    - {e}")
-                # Auto-retry with validation errors as feedback
-                feedback = "The requirements JSON had validation errors:\n" + "\n".join(
-                    f"- {e}" for e in errors
-                )
-                previous_json = json.dumps(requirements, indent=2)
-                continue
+
+                # On last attempt, try auto-fix for duplicate pins
+                if attempt == max_attempts:
+                    from orchestrator.gather.schema import auto_fix_duplicate_pins
+                    requirements, fix_warnings = auto_fix_duplicate_pins(requirements)
+                    if fix_warnings:
+                        for w in fix_warnings:
+                            print(f"    {w}")
+                        # Re-validate after auto-fix
+                        errors = validate_requirements(requirements)
+                        if not errors:
+                            print("  Auto-fix resolved all validation errors")
+                            # Fall through to enrichment + approval
+                        else:
+                            print(f"  Auto-fix reduced errors to {len(errors)}")
+                            # Still has errors — fall through to max attempts message
+                            continue
+                    else:
+                        continue
+                else:
+                    # Auto-retry with validation errors as feedback
+                    feedback = "The requirements JSON had validation errors:\n" + "\n".join(
+                        f"- {e}" for e in errors
+                    )
+                    previous_json = json.dumps(requirements, indent=2)
+                    continue
 
             # Step 2.5: Enrich components with missing specs via tiered lookup
             requirements = self._enrich_component_specs(requirements)
@@ -130,8 +150,17 @@ class RequirementsGatherer:
         previous_json: str | None = None,
         plan_context: str | None = None,
     ) -> dict | None:
-        """Public API for programmatic use. Returns validated requirements or None."""
-        return self._translate(user_input, feedback, previous_json, plan_context=plan_context)
+        """Public API for programmatic use. Returns enriched requirements or None.
+
+        Runs spec and footprint enrichment after translation so that IC pinout
+        data is always available for downstream steps. Enrichment is idempotent
+        (skips already-enriched components), so callers that also enrich are safe.
+        """
+        requirements = self._translate(user_input, feedback, previous_json, plan_context=plan_context)
+        if requirements is not None:
+            requirements = self._enrich_component_specs(requirements)
+            requirements = self._enrich_footprints(requirements)
+        return requirements
 
     def summarize(self, requirements: dict) -> str:
         """Public API: generate human-readable summary from requirements JSON."""
