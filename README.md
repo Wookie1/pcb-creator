@@ -17,7 +17,7 @@ Upload to JLCPCB and order your board
 ## Features
 
 - **Web GUI** — Gradio chat interface with live board preview, step progress, and approval flow
-- **Natural language input** — describe your circuit, get a PCB
+- **Natural language input** — describe your circuit, get a PCB (tested end-to-end with Arduino Uno-class complexity on local 27B model)
 - **Multi-turn design planning** — the LLM proposes a design, asks clarifying questions, and looks up real component specs; iterate until the plan is right, then proceed to generation
 - **Tiered component lookup** — resolves footprints and specs from KiCad library, IPC-7351B, EasyEDA/LCSC, and curated tables before falling back to LLM
 - **Parallel LLM enrichment** — remaining spec/footprint lookups run concurrently instead of sequentially

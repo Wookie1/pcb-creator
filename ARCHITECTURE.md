@@ -737,6 +737,9 @@ Produces manufacturer-ready files in `projects/{name}/output/`. All files are st
 - **Assembly drawing PDF** (`exporters/assembly_drawing.py`): Generated in Step 6 alongside Gerbers. Shows component placement with designators, polarity marks, dimensions, and BOM table. Supports polygon outlines.
 - **Netlist block diagram** (`visualizers/netlist_viewer.py`): Schematic-style visualization shown after Step 1 — components as colored boxes with pins, connected by bezier-curved nets that route around boxes.
 - **LLM output robustness** (`gather/schema.py`): Automatic type coercion (string→number) and null stripping before JSON Schema validation. Prevents rework loops caused by LLMs outputting `"2"` instead of `2` or `null` for optional fields.
+- **Gather validation & auto-fix** (`gather/schema.py`): Duplicate-pin validation catches pins assigned to multiple nets. Auto-fix fallback removes pins from power/ground nets when they conflict with signal nets. MCP server path has validation + 3-attempt rework loop matching the interactive CLI.
+- **Functional IC pin names**: Gather prompt enforces functional names (`U1.GND`, `U1.PB3`) instead of physical pin numbers. Includes ICSP/SPI dual-function pin guidance for ATmega boards. IC pinout data auto-enriched via `translate()` for all callers.
+- **Auto-merge shared nets** (`step_1_schematic.py`): When the model creates separate nets for the same physical pin (common with dual-function MCU pins like MOSI/D11), a union-find merge step automatically combines them before counting as a rework attempt.
 
 ### Future Enhancements
 
