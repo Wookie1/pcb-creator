@@ -740,6 +740,7 @@ Produces manufacturer-ready files in `projects/{name}/output/`. All files are st
 - **Gather validation & auto-fix** (`gather/schema.py`): Duplicate-pin validation catches pins assigned to multiple nets. Auto-fix fallback removes pins from power/ground nets when they conflict with signal nets. MCP server path has validation + 3-attempt rework loop matching the interactive CLI.
 - **Functional IC pin names**: Gather prompt enforces functional names (`U1.GND`, `U1.PB3`) instead of physical pin numbers. Includes ICSP/SPI dual-function pin guidance for ATmega boards. IC pinout data auto-enriched via `translate()` for all callers.
 - **Auto-merge shared nets** (`step_1_schematic.py`): When the model creates separate nets for the same physical pin (common with dual-function MCU pins like MOSI/D11), a union-find merge step automatically combines them before counting as a rework attempt.
+- **Netlist structure normalization** (`step_1_schematic.py`): Small models (<20B) often generate netlist JSON with separate `ports[]`, `nets[]`, `components[]` top-level arrays instead of the expected flat `elements[]` array. Auto-normalizes both variants (partial split with `elements` containing only components, and full split with no `elements` key) before validation. Tested with Qwen 9B — raises pass rate from 22% to parity with 27B on simple boards.
 
 ### Future Enhancements
 

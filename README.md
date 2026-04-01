@@ -72,13 +72,14 @@ The pipeline will:
 3. Route the board with Freerouting
 4. Run DRC against your manufacturer's DFM profile
 5. Open an interactive viewer for approval
-6. Generate Gerber files, drill file, BOM CSV, pick-and-place, and STEP model
+6. Generate Gerber files, drill file, BOM CSV, pick-and-place, assembly PDF, and STEP model
 
 ## Requirements
 
 - **Python 3.11+**
 - **Java 17+** (for Freerouting autorouter — falls back to built-in router if unavailable)
 - **LLM API access** — any OpenAI-compatible API (OpenRouter, Ollama, oMLX, OpenAI, etc.)
+- Works with models as small as 9B parameters (tested with Qwen 3.5 9B); 27B+ recommended for complex boards
 
 ## Project Structure
 

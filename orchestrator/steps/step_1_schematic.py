@@ -224,6 +224,50 @@ def extract_json(raw: str) -> str:
     raise ValueError(f"Could not extract valid JSON from LLM response:\n{raw[:200]}...")
 
 
+def _normalize_netlist_structure(netlist_text: str) -> str:
+    """Merge separate ports/nets/components arrays into flat elements array.
+
+    Small models often split elements into separate typed arrays instead of
+    the flat elements array the schema expects. This normalizes both variants:
+    1. elements[] has only components, with ports[] and nets[] as siblings
+    2. No elements[] key, with components[], ports[], nets[] as top-level arrays
+    """
+    try:
+        data = json.loads(netlist_text)
+    except (json.JSONDecodeError, ValueError):
+        return netlist_text  # Can't parse, let downstream handle the error
+
+    if not isinstance(data, dict):
+        return netlist_text
+
+    _EXTRA_KEYS = ("ports", "nets", "components")
+    merged = False
+
+    if "elements" in data and isinstance(data["elements"], list):
+        # Variant 1: elements exists but extra arrays are siblings
+        for key in _EXTRA_KEYS:
+            if key in data and isinstance(data[key], list):
+                data["elements"].extend(data[key])
+                del data[key]
+                merged = True
+    else:
+        # Variant 2: no elements key, build from separate arrays
+        elements: list = []
+        for key in _EXTRA_KEYS:
+            if key in data and isinstance(data[key], list):
+                elements.extend(data[key])
+                del data[key]
+                merged = True
+        if elements:
+            data["elements"] = elements
+
+    if merged:
+        print(f"  Normalized netlist structure (merged separate arrays into elements)")
+        return json.dumps(data, indent=2)
+
+    return netlist_text
+
+
 def _sanitize_net_ids(netlist_text: str) -> str:
     """Replace illegal characters in net_id values with underscores.
 
@@ -488,6 +532,7 @@ class SchematicStep(StepBase):
                 continue
 
             netlist_text = _sanitize_net_ids(netlist_text)
+            netlist_text = _normalize_netlist_structure(netlist_text)
             output_path = self.project.write_output(output_filename, netlist_text)
             print(f"  Saved {output_filename}")
 
