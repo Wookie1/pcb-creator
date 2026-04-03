@@ -56,6 +56,8 @@ class OrchestratorConfig:
     agent_mode: bool = False
     # Skip approval gate entirely (for fully autonomous batch runs)
     skip_approval: bool = False
+    # Skip per-step LLM QA reviews (validators still run; calling agent reviews instead)
+    skip_qa: bool = False
 
     # Vision review settings (used when agent_mode=True)
     vision_model: str = "anthropic/claude-sonnet-4-20250514"
@@ -114,6 +116,9 @@ class OrchestratorConfig:
         config.max_rework_attempts = int(
             os.environ.get("PCB_MAX_REWORK", str(config.max_rework_attempts))
         )
+        config.skip_qa = os.environ.get(
+            "PCB_SKIP_QA", "false"
+        ).lower() in ("true", "1", "yes")
         config.enable_optimizer = os.environ.get(
             "PCB_ENABLE_OPTIMIZER", "true"
         ).lower() in ("true", "1", "yes")

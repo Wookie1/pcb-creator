@@ -608,6 +608,8 @@ Two modes depending on how the pipeline is invoked:
 
 **Skip-approval mode** (`pcb-creator run --skip-approval`): Bypasses all approval gates entirely — no vision review, no browser gate. Intended for batch testing and CI pipelines.
 
+**Skip-QA mode** (`pcb-creator run --skip-qa`, or `PCB_SKIP_QA=true`): Bypasses per-step LLM QA reviews (Steps 1-3) and the post-routing vision review. Python validators still run — only the LLM review calls are skipped. Enabled by default in MCP server mode, where the calling agent reviews results itself via `get_project_status` and `get_board_image`. Roughly halves LLM calls and pipeline time.
+
 **Viewer features:**
 - Routed traces (color-coded by net, layered by copper layer)
 - Copper fills (semi-transparent GND polygons)
@@ -832,6 +834,7 @@ The GUI is a single Gradio Blocks app (`orchestrator/gradio_app.py`) with two co
 | `pcb-creator run --requirements req.json --project name` | Headless pipeline with browser approval |
 | `pcb-creator run ... --agent-mode` | Headless pipeline, vision-based approval (auto-approves on escalation) |
 | `pcb-creator run ... --skip-approval` | Headless pipeline, skip all approval gates (batch/CI) |
+| `pcb-creator run ... --skip-qa` | Skip per-step LLM QA reviews and vision review (validators still run) |
 | `pcb-creator design --project name` | Interactive CLI requirements gathering |
 | `pcb-creator import-kicad --project name --kicad-file board.kicad_pcb` | Re-import edited KiCad file |
 | `pcb-creator validate netlist.json` | Validate an existing netlist |
@@ -854,7 +857,7 @@ The MCP server (`mcp_server.py`) exposes the pipeline as tools for any MCP-compa
 | `export_kicad(project_name)` | Export completed design to KiCad `.kicad_pcb` format. |
 | `get_board_image(project_name, width?)` | Render routed board as base64 PNG image. |
 
-**Configuration:** Same `PCB_*` environment variables as the CLI. The server forces `agent_mode=True` for vision-based autonomous approval.
+**Configuration:** Same `PCB_*` environment variables as the CLI. The server forces `agent_mode=True`, `skip_qa=True` (calling agent reviews results itself), `max_rework_attempts=3`, and `llm_timeout=300` (5 min per LLM call, fail fast). These can be overridden per-call via the `settings` parameter.
 
 ## LLM Provider Support
 

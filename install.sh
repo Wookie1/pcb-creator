@@ -4,6 +4,9 @@
 
 set -e
 
+# Always run from the repo root (where this script lives)
+cd "$(dirname "$0")"
+
 echo "=== PCB-Creator Setup ==="
 echo ""
 

@@ -93,6 +93,12 @@ def main(argv: list[str] | None = None) -> int:
         default=False,
         help="Skip all approval gates entirely (for batch/CI runs)",
     )
+    run_parser.add_argument(
+        "--skip-qa",
+        action="store_true",
+        default=False,
+        help="Skip per-step LLM QA reviews (validators still run)",
+    )
 
     # gui command — Gradio web UI
     gui_parser = subparsers.add_parser("gui", help="Launch the Gradio web GUI")
@@ -177,6 +183,8 @@ def main(argv: list[str] | None = None) -> int:
             config.agent_mode = True
         if getattr(args, "skip_approval", False):
             config.skip_approval = True
+        if getattr(args, "skip_qa", False):
+            config.skip_qa = True
         success = run_workflow(
             args.requirements,
             args.project,

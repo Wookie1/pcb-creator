@@ -66,6 +66,9 @@ def _get_config() -> OrchestratorConfig:
     """Build config from env vars with MCP-appropriate defaults."""
     config = OrchestratorConfig.from_env(base_dir=_repo_root)
     config.agent_mode = True
+    config.skip_qa = True  # Calling agent reviews via get_project_status/get_board_image
+    config.max_rework_attempts = 3  # Limit rework loops in MCP mode (agent can retry)
+    config.llm_timeout = 300  # 5 min per LLM call (fail fast, agent can retry)
     # Point projects_dir to persistent location
     config.projects_dir = str(_get_projects_dir())
     return config
@@ -119,7 +122,8 @@ def design_pcb(
                 "connections": [{"net_name": "VCC", "pins": ["J1.1", "SW1.1"]}, ...]}'
         project_name: Optional project slug. Auto-generated from description if omitted.
         settings: Optional config overrides: {"model": "...", "router_engine": "...",
-            "max_rework_attempts": 5}
+            "max_rework_attempts": 5, "skip_qa": false}. QA reviews are skipped by
+            default in MCP mode; set skip_qa to false to re-enable them.
         attachments: Optional list of file attachments. Each dict has:
             - "filename": Name for the file (e.g., "board_outline.dxf")
             - "content_base64": Base64-encoded file content
@@ -150,6 +154,8 @@ def design_pcb(
             config.router_engine = settings["router_engine"]
         if "max_rework_attempts" in settings:
             config.max_rework_attempts = int(settings["max_rework_attempts"])
+        if "skip_qa" in settings:
+            config.skip_qa = bool(settings["skip_qa"])
 
     # Generate project name if not provided
     if not project_name:

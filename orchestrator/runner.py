@@ -655,17 +655,23 @@ def run_workflow_streaming(
     yield {"event": "viewer_update", "html": html}
 
     # Vision-based autonomous review (agent_mode is always True in Gradio)
-    yield {"event": "vision_review_start"}
-    from orchestrator.vision_review import run_vision_review
+    # Skip vision review when skip_qa is set — calling agent reviews via get_board_image
+    if config.skip_qa:
+        print("[Review] Vision review skipped (skip_qa mode)")
+        yield {"event": "vision_review_start"}
+        yield {"event": "vision_review_done", "result": "approved"}
+    else:
+        yield {"event": "vision_review_start"}
+        from orchestrator.vision_review import run_vision_review
 
-    review_result = run_vision_review(
-        routed, netlist_data, bom_data, drc_report, config, project,
-    )
-    yield {"event": "vision_review_done", "result": review_result}
+        review_result = run_vision_review(
+            routed, netlist_data, bom_data, drc_report, config, project,
+        )
+        yield {"event": "vision_review_done", "result": review_result}
 
-    if review_result != "approved":
-        # Escalate to human — yield approval_needed to pause generator
-        yield {"event": "approval_needed", "html": html}
+        if review_result != "approved":
+            # Escalate to human — yield approval_needed to pause generator
+            yield {"event": "approval_needed", "html": html}
 
     # --- Step 6: Output Generation ---
     yield {"event": "step_start", "step": 6, "name": STEP_NAMES[6]}

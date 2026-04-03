@@ -64,6 +64,9 @@ pcb-creator run --requirements tests/test_switch_led.json --project led_test
 
 # Batch/CI mode — skip approval gate entirely
 pcb-creator run --requirements tests/test_switch_led.json --project led_test --skip-approval
+
+# Fast mode — skip LLM QA reviews (validators still run)
+pcb-creator run --requirements tests/test_switch_led.json --project led_test --skip-qa
 ```
 
 The pipeline will:
@@ -105,6 +108,8 @@ All settings via environment variables or `.env` file:
 | `PCB_ROUTER_ENGINE` | `freerouting` | `freerouting` or `builtin` |
 | `PCB_FREEROUTING_TIMEOUT` | `300` | Freerouting timeout (seconds) |
 | `PCB_MAX_REWORK` | `5` | Max LLM rework attempts per step |
+| `PCB_SKIP_QA` | `false` | Skip per-step LLM QA reviews (validators still run) |
+| `PCB_LLM_TIMEOUT` | `1800` | LLM request timeout in seconds |
 | `PCB_KICAD_LIBRARY_PATH` | *(none)* | KiCad footprint library root (for tiered lookup) |
 | `PCB_COMPONENT_CACHE_PATH` | `~/.pcb-creator/component_cache.json` | Resolved component cache |
 | `PCB_LLM_ENRICHMENT_WORKERS` | `4` | Parallel LLM calls for spec/footprint enrichment |
@@ -153,7 +158,7 @@ Or run directly:
 python mcp_server.py
 ```
 
-The MCP server runs in agent mode with vision-based board approval. Projects are stored in `~/.pcb-creator/projects/` (configurable via `PCB_PROJECTS_DIR`).
+The MCP server runs in agent mode with QA reviews and vision review skipped by default (the calling agent reviews results via `get_project_status` and `get_board_image`). LLM timeout is 5 min per call, max 3 rework attempts. Projects are stored in `~/.pcb-creator/projects/` (configurable via `PCB_PROJECTS_DIR`).
 
 ## Architecture
 

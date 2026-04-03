@@ -580,7 +580,24 @@ class SchematicStep(StepBase):
                 print(f"  Validation failed, will rework...")
                 continue
 
-            # 5. LLM QA review
+            # 5. LLM QA review (skippable when config.skip_qa is set)
+            if self.config.skip_qa:
+                print(f"  QA review skipped (skip_qa mode)")
+                qa_report = {
+                    "step": self.step_number,
+                    "step_name": self.step_name,
+                    "passed": True,
+                    "issues": [],
+                    "summary": "QA skipped (skip_qa mode). Validator passed.",
+                }
+                self.project.write_quality(qa_report)
+                self.project.update_status(self.step_number, "COMPLETE")
+                return StepResult(
+                    success=True,
+                    output_path=str(output_path),
+                    qa_report=qa_report,
+                )
+
             print(f"  Running QA review...")
             self.project.update_status(self.step_number, "AWAITING_QA")
 
