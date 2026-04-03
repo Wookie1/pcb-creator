@@ -38,9 +38,11 @@ from orchestrator.config import OrchestratorConfig
 mcp = FastMCP(
     "pcb-creator",
     instructions=(
-        "PCB design tools. Use design_pcb to create a PCB from a circuit description. "
-        "Optionally attach files (DXF board outlines, datasheets, sketches) via the "
-        "attachments parameter with base64-encoded content. "
+        "PCB design tools. Use design_pcb to create a PCB from a circuit description "
+        "or structured requirements JSON. For best results, call get_requirements_schema "
+        "first, then pass a requirements_json dict to design_pcb — this skips LLM "
+        "translation and is faster and more deterministic. Optionally attach files "
+        "(DXF board outlines, datasheets, sketches) via the attachments parameter. "
         "Use list_projects, get_project_status, get_drc_report, export_kicad, and "
         "get_board_image to inspect and export completed designs."
     ),
@@ -102,25 +104,33 @@ def _read_project_json(project_name: str, suffix: str) -> dict | None:
 def design_pcb(
     description: str,
     project_name: str | None = None,
+    requirements_json: dict | None = None,
     settings: dict | None = None,
     attachments: list[dict] | None = None,
 ) -> dict:
-    """Design a PCB from a natural language circuit description.
+    """Design a PCB from a circuit description or structured requirements.
 
     Runs the full pipeline: requirements → schematic → BOM → placement →
     routing → DRC → output generation. Uses vision-based autonomous review.
 
+    Two input modes:
+    1. **Structured (preferred for agents):** Pass requirements_json directly —
+       skips LLM translation entirely. Call get_requirements_schema() first to
+       get the expected format.
+    2. **Natural language:** Pass a plain-text description — translated to
+       structured requirements via LLM automatically.
+
     Args:
-        description: Circuit description in plain English (recommended) OR a JSON
-            string matching the requirements schema. Plain text is translated to
-            structured requirements automatically via LLM.
+        description: Circuit description in plain English, or a short summary
+            when using requirements_json. Used for project name generation if
+            project_name is omitted.
 
-            Example (plain text): "A green LED controlled by a pushbutton, powered by 3.3V"
-
-            Example (structured JSON): '{"project_name": "led_button", "description": "...",
-                "components": [{"ref": "R1", "type": "resistor", "value": "330ohm"}, ...],
-                "connections": [{"net_name": "VCC", "pins": ["J1.1", "SW1.1"]}, ...]}'
+            Example: "A green LED controlled by a pushbutton, powered by 3.3V"
         project_name: Optional project slug. Auto-generated from description if omitted.
+        requirements_json: Structured requirements dict matching the schema from
+            get_requirements_schema(). When provided, the LLM translation step is
+            skipped entirely — faster, cheaper, and more deterministic. Must include
+            at minimum: components (list) and connections (list).
         settings: Optional config overrides: {"model": "...", "router_engine": "...",
             "max_rework_attempts": 5, "skip_qa": false}. QA reviews are skipped by
             default in MCP mode; set skip_qa to false to re-enable them.
@@ -161,58 +171,74 @@ def design_pcb(
     if not project_name:
         project_name = _slugify(description)
 
-    # Write requirements to a temp file
-    # Try parsing as JSON first; if it fails, use LLM to translate natural language
-    try:
-        requirements = json.loads(description)
-    except (json.JSONDecodeError, TypeError):
-        from orchestrator.gather.conversation import RequirementsGatherer
-        from orchestrator.llm.litellm_client import LiteLLMClient
-        from orchestrator.prompts.builder import PromptBuilder
-        _llm = LiteLLMClient(
-            config.generate_model,
-            api_base=config.api_base,
-            api_key=config.api_key,
-            extra_body=config.llm_extra_body,
-            timeout=config.llm_timeout,
-        )
-        _gatherer = RequirementsGatherer(_llm, PromptBuilder(config.base_dir))
+    # Resolve requirements: structured JSON (fast path) or NL translation
+    from orchestrator.gather.schema import validate_requirements, auto_fix_duplicate_pins
 
-        # Translate with validation + rework loop (same pattern as interactive CLI)
-        from orchestrator.gather.schema import validate_requirements, auto_fix_duplicate_pins
-        requirements = _gatherer.translate(description)
-        if requirements is not None:
-            for _retry in range(3):
-                errors = validate_requirements(requirements)
-                if not errors:
-                    break
-                print(f"  MCP translate: {len(errors)} validation errors, retrying...")
-                requirements = _gatherer.translate(
-                    description,
-                    feedback="Fix these validation errors:\n" + "\n".join(
-                        f"- {e}" for e in errors
-                    ),
-                    previous_json=json.dumps(requirements, indent=2),
-                )
-                if requirements is None:
-                    break
+    if requirements_json is not None:
+        # Fast path: agent provided structured requirements directly
+        requirements = requirements_json
+        errors = validate_requirements(requirements)
+        if errors:
+            requirements, fix_warnings = auto_fix_duplicate_pins(requirements)
+            for w in fix_warnings:
+                print(f"  MCP auto-fix: {w}")
+            remaining = validate_requirements(requirements)
+            if remaining:
+                return {
+                    "success": False,
+                    "errors": [f"Requirements validation failed: {e}" for e in remaining],
+                }
+    else:
+        # Try parsing description as JSON; fall back to LLM translation
+        try:
+            requirements = json.loads(description)
+        except (json.JSONDecodeError, TypeError):
+            from orchestrator.gather.conversation import RequirementsGatherer
+            from orchestrator.llm.litellm_client import LiteLLMClient
+            from orchestrator.prompts.builder import PromptBuilder
+            _llm = LiteLLMClient(
+                config.generate_model,
+                api_base=config.api_base,
+                api_key=config.api_key,
+                extra_body=config.llm_extra_body,
+                timeout=config.llm_timeout,
+            )
+            _gatherer = RequirementsGatherer(_llm, PromptBuilder(config.base_dir))
 
-            # Last resort: auto-fix duplicate pins if rework didn't resolve them
+            # Translate with validation + rework loop
+            requirements = _gatherer.translate(description)
             if requirements is not None:
-                errors = validate_requirements(requirements)
-                if errors:
-                    requirements, fix_warnings = auto_fix_duplicate_pins(requirements)
-                    for w in fix_warnings:
-                        print(f"  MCP auto-fix: {w}")
-                    remaining = validate_requirements(requirements)
-                    if remaining:
-                        print(f"  MCP auto-fix: {len(remaining)} errors remain")
+                for _retry in range(3):
+                    errors = validate_requirements(requirements)
+                    if not errors:
+                        break
+                    print(f"  MCP translate: {len(errors)} validation errors, retrying...")
+                    requirements = _gatherer.translate(
+                        description,
+                        feedback="Fix these validation errors:\n" + "\n".join(
+                            f"- {e}" for e in errors
+                        ),
+                        previous_json=json.dumps(requirements, indent=2),
+                    )
+                    if requirements is None:
+                        break
 
-        if requirements is None:
-            return {
-                "success": False,
-                "errors": ["Failed to translate natural language to requirements JSON"],
-            }
+                # Last resort: auto-fix duplicate pins
+                if requirements is not None:
+                    errors = validate_requirements(requirements)
+                    if errors:
+                        requirements, fix_warnings = auto_fix_duplicate_pins(requirements)
+                        for w in fix_warnings:
+                            print(f"  MCP auto-fix: {w}")
+                        remaining = validate_requirements(requirements)
+                        if remaining:
+                            print(f"  MCP auto-fix: {len(remaining)} errors remain")
+
+            if requirements is None:
+                return {
+                    "success": False,
+                    "errors": ["Failed to translate natural language to requirements JSON"],
+                }
 
     projects_dir = _get_projects_dir()
     project_dir = projects_dir / project_name
@@ -340,6 +366,22 @@ def design_pcb(
         ]
 
     return result
+
+
+@mcp.tool()
+def get_requirements_schema() -> dict:
+    """Get the JSON schema for structured PCB requirements.
+
+    Returns the full JSON Schema (Draft-7) that describes the format expected
+    by design_pcb's requirements_json parameter. Call this once to understand
+    the structure, then pass conforming dicts to design_pcb directly — no LLM
+    translation needed.
+
+    Key top-level fields: project_name, description, power, components,
+    connections, board, manufacturing, placement_hints, calculations.
+    """
+    from orchestrator.gather.schema import REQUIREMENTS_SCHEMA
+    return REQUIREMENTS_SCHEMA
 
 
 @mcp.tool()

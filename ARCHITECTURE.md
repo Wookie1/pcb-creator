@@ -846,11 +846,16 @@ The MCP server (`mcp_server.py`) exposes the pipeline as tools for any MCP-compa
 
 **Projects directory:** `~/.pcb-creator/projects/` (configurable via `PCB_PROJECTS_DIR` env var). Persists across sessions — any agent can resume or inspect previous designs.
 
+**Two input modes for `design_pcb`:**
+- **Structured (preferred for agents):** Pass `requirements_json` dict directly — skips LLM translation entirely. Call `get_requirements_schema()` first to get the expected JSON Schema.
+- **Natural language:** Pass a plain-text `description` — translated to structured requirements via LLM automatically. Useful for simpler circuits or human-driven workflows.
+
 **Tools:**
 
 | Tool | Description |
 |------|-------------|
-| `design_pcb(description, project_name?, settings?)` | Run the full pipeline from a circuit description. Returns routing stats, DRC summary, output file paths. |
+| `design_pcb(description, project_name?, requirements_json?, settings?)` | Run the full pipeline. Pass `requirements_json` to skip LLM translation (preferred for agents), or `description` for NL input. Returns routing stats, DRC summary, output file paths. |
+| `get_requirements_schema()` | Returns the JSON Schema for structured requirements. Call once, then construct `requirements_json` dicts for `design_pcb`. |
 | `list_projects()` | List all projects with status and output availability. |
 | `get_project_status(project_name)` | Detailed status: step progress, routing stats, DRC pass/fail. |
 | `get_drc_report(project_name)` | Full DRC report with per-check violations. |

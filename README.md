@@ -135,7 +135,11 @@ Generated in `projects/<name>/output/`:
 
 PCB-Creator includes an MCP server so AI agents (Claude Desktop, Claude Code, etc.) can design PCBs programmatically.
 
-**Tools exposed:** `design_pcb`, `list_projects`, `get_project_status`, `get_drc_report`, `export_kicad`, `get_board_image`
+**Tools exposed:** `design_pcb`, `get_requirements_schema`, `list_projects`, `get_project_status`, `get_drc_report`, `export_kicad`, `get_board_image`
+
+**Two input modes for `design_pcb`:**
+- **Structured (preferred for agents):** Call `get_requirements_schema()` to get the JSON schema, then pass a `requirements_json` dict to `design_pcb`. Skips LLM translation — faster, cheaper, deterministic.
+- **Natural language:** Pass a plain-text `description` — translated to structured requirements via LLM automatically.
 
 Add to your MCP client config (e.g., `claude_desktop_config.json`):
 
