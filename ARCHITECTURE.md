@@ -832,13 +832,19 @@ The GUI is a single Gradio Blocks app (`orchestrator/gradio_app.py`) with two co
 | `pcb-creator gui` | Launch Gradio web GUI (port 7860) |
 | `pcb-creator gui --port 8080 --share` | Custom port + public Gradio URL |
 | `pcb-creator run --requirements req.json --project name` | Headless pipeline with browser approval |
+| `pcb-creator run --requirements req.json --agent-mode --skip-qa --json-output` | Agent-optimized: auto project name, structured JSON result to stdout |
 | `pcb-creator run ... --agent-mode` | Headless pipeline, vision-based approval (auto-approves on escalation) |
 | `pcb-creator run ... --skip-approval` | Headless pipeline, skip all approval gates (batch/CI) |
 | `pcb-creator run ... --skip-qa` | Skip per-step LLM QA reviews and vision review (validators still run) |
+| `pcb-creator schema` | Print requirements JSON schema to stdout (for agents to learn the format) |
 | `pcb-creator design --project name` | Interactive CLI requirements gathering |
 | `pcb-creator import-kicad --project name --kicad-file board.kicad_pcb` | Re-import edited KiCad file |
 | `pcb-creator validate netlist.json` | Validate an existing netlist |
 | `pcb-creator mcp` | Launch MCP server (stdio transport) for AI agent integration |
+
+### Agent Integration
+
+**CLI (recommended for shell-based agents like Agent Zero):** Agents write a requirements JSON file to disk (avoiding MCP transport encoding issues with large payloads), then run `pcb-creator run --requirements file.json --agent-mode --skip-qa --json-output`. Use `pcb-creator schema` to get the expected format. The `--project` flag is optional — auto-generated from the requirements JSON. The `--json-output` flag prints structured results (success, routing stats, DRC, output files) to stdout.
 
 ### MCP Server
 

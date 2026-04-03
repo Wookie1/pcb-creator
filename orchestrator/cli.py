@@ -33,8 +33,8 @@ def main(argv: list[str] | None = None) -> int:
     run_parser.add_argument(
         "--project",
         type=str,
-        required=True,
-        help="Project name (lowercase_with_underscores)",
+        default=None,
+        help="Project name (lowercase_with_underscores). Auto-generated from requirements if omitted.",
     )
     run_parser.add_argument(
         "--base-dir",
@@ -98,6 +98,12 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         default=False,
         help="Skip per-step LLM QA reviews (validators still run)",
+    )
+    run_parser.add_argument(
+        "--json-output",
+        action="store_true",
+        default=False,
+        help="Print structured JSON result to stdout (for agent/script consumption)",
     )
 
     # gui command — Gradio web UI
@@ -166,6 +172,11 @@ def main(argv: list[str] | None = None) -> int:
         "netlist", type=Path, help="Path to netlist JSON file"
     )
 
+    # schema command — print the requirements JSON schema
+    subparsers.add_parser(
+        "schema", help="Print the requirements JSON schema to stdout"
+    )
+
     # mcp command — launch MCP server
     subparsers.add_parser(
         "mcp", help="Launch MCP server (stdio transport) for AI agent integration"
@@ -174,24 +185,9 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     if args.command == "run":
-        from .runner import run_workflow
-
-        config = _make_config(args)
-        if getattr(args, "export_kicad", None):
-            config.export_kicad = args.export_kicad
-        if getattr(args, "agent_mode", False):
-            config.agent_mode = True
-        if getattr(args, "skip_approval", False):
-            config.skip_approval = True
-        if getattr(args, "skip_qa", False):
-            config.skip_qa = True
-        success = run_workflow(
-            args.requirements,
-            args.project,
-            config,
-            attach_files=getattr(args, "attach", []) or None,
-        )
-        return 0 if success else 1
+        return _run_pipeline(args)
+    elif args.command == "schema":
+        return _print_schema()
 
     elif args.command == "gui":
         return _launch_gui(args)
@@ -228,6 +224,123 @@ def _make_config(args) -> OrchestratorConfig:
     if getattr(args, "no_thinking", False):
         config.llm_extra_body["thinking"] = False
     return config
+
+
+def _run_pipeline(args) -> int:
+    """Run the full pipeline from a requirements JSON file.
+
+    When --json-output is set, prints a structured JSON result to stdout
+    with success status, routing stats, DRC summary, and output file paths.
+    """
+    import re
+
+    from .runner import run_workflow
+
+    config = _make_config(args)
+    if getattr(args, "export_kicad", None):
+        config.export_kicad = args.export_kicad
+    if getattr(args, "agent_mode", False):
+        config.agent_mode = True
+    if getattr(args, "skip_approval", False):
+        config.skip_approval = True
+    if getattr(args, "skip_qa", False):
+        config.skip_qa = True
+
+    # Auto-generate project name from requirements if not provided
+    project_name = args.project
+    if not project_name:
+        try:
+            req_data = json.loads(args.requirements.read_text())
+            raw = req_data.get("project_name") or req_data.get("description", "pcb_project")
+        except (json.JSONDecodeError, OSError):
+            raw = args.requirements.stem
+        project_name = re.sub(r"[^a-z0-9]+", "_", raw.lower().strip()).strip("_")[:60] or "pcb_project"
+
+    json_output = getattr(args, "json_output", False)
+
+    if json_output:
+        # Use streaming runner to collect structured results
+        from .runner import run_workflow_streaming
+
+        req_path = args.requirements
+        projects_dir = config.resolve(config.projects_dir)
+        project_dir = projects_dir / project_name
+
+        steps_completed = []
+        errors = []
+        last_event = None
+
+        try:
+            for event in run_workflow_streaming(req_path, project_name, config):
+                ev = event.get("event", "")
+                if ev == "step_done":
+                    steps_completed.append({
+                        "step": event.get("step"),
+                        "name": event.get("name"),
+                        "success": event.get("success", False),
+                    })
+                elif ev == "error":
+                    errors.append(event.get("message", "Unknown error"))
+                last_event = event
+        except Exception as exc:
+            errors.append(f"Pipeline crashed: {exc}")
+
+        success = last_event and last_event.get("event") == "complete" and last_event.get("success", False)
+
+        result = {
+            "success": success,
+            "project_name": project_name,
+            "project_dir": str(project_dir),
+            "steps_completed": steps_completed,
+            "errors": errors,
+        }
+
+        # Add routing stats
+        routed_path = project_dir / f"{project_name}_routed.json"
+        if routed_path.exists():
+            routed = json.loads(routed_path.read_text())
+            stats = routed.get("statistics", {})
+            result["routing_stats"] = {
+                "completion_pct": stats.get("completion_pct", 0),
+                "total_nets": stats.get("total_nets", 0),
+                "routed_nets": stats.get("routed_nets", 0),
+                "via_count": stats.get("via_count", 0),
+            }
+
+        # Add DRC summary
+        drc_path = project_dir / f"{project_name}_drc_report.json"
+        if drc_path.exists():
+            drc = json.loads(drc_path.read_text())
+            result["drc_summary"] = {
+                "passed": drc.get("passed", False),
+                "errors": drc.get("statistics", {}).get("errors", 0),
+                "warnings": drc.get("statistics", {}).get("warnings", 0),
+            }
+
+        # List output files
+        output_dir = project_dir / "output"
+        if output_dir.exists():
+            result["output_files"] = [
+                str(f) for f in sorted(output_dir.iterdir()) if f.is_file()
+            ]
+
+        print(json.dumps(result, indent=2))
+        return 0 if success else 1
+    else:
+        success = run_workflow(
+            args.requirements,
+            project_name,
+            config,
+            attach_files=getattr(args, "attach", []) or None,
+        )
+        return 0 if success else 1
+
+
+def _print_schema() -> int:
+    """Print the requirements JSON schema to stdout."""
+    from .gather.schema import REQUIREMENTS_SCHEMA
+    print(json.dumps(REQUIREMENTS_SCHEMA, indent=2))
+    return 0
 
 
 def _launch_gui(args) -> int:

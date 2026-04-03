@@ -131,14 +131,33 @@ Generated in `projects/<name>/output/`:
 | `*_assembly.pdf` | PDF | Assembly drawing (component placement + BOM) |
 | `*_gerbers.zip` | ZIP | All Gerbers + drill for upload |
 
-## MCP Server
+## Agent / Programmatic Usage
 
-PCB-Creator includes an MCP server so AI agents (Claude Desktop, Claude Code, etc.) can design PCBs programmatically.
+PCB-Creator can be driven by AI agents or scripts in two ways: **CLI** (recommended for shell-based agents) or **MCP server** (for MCP-compatible clients).
+
+### CLI (recommended for agents)
+
+Agents write a requirements JSON file, then run the pipeline:
+
+```bash
+# 1. Get the schema to understand the expected format
+pcb-creator schema > schema.json
+
+# 2. Write requirements to a file (agent constructs this JSON)
+# 3. Run the pipeline with structured JSON output
+pcb-creator run --requirements requirements.json --agent-mode --skip-qa --json-output
+```
+
+The `--json-output` flag prints a structured result to stdout with success status, routing stats, DRC summary, and output file paths. `--project` is optional (auto-generated from the requirements JSON).
+
+### MCP Server
+
+For MCP-compatible clients (Claude Desktop, Claude Code, etc.):
 
 **Tools exposed:** `design_pcb`, `get_requirements_schema`, `list_projects`, `get_project_status`, `get_drc_report`, `export_kicad`, `get_board_image`
 
 **Two input modes for `design_pcb`:**
-- **Structured (preferred for agents):** Call `get_requirements_schema()` to get the JSON schema, then pass a `requirements_json` dict to `design_pcb`. Skips LLM translation — faster, cheaper, deterministic.
+- **Structured (preferred):** Call `get_requirements_schema()` to get the JSON schema, then pass a `requirements_json` dict to `design_pcb`. Skips LLM translation — faster, cheaper, deterministic.
 - **Natural language:** Pass a plain-text `description` — translated to structured requirements via LLM automatically.
 
 Add to your MCP client config (e.g., `claude_desktop_config.json`):
