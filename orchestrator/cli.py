@@ -270,8 +270,10 @@ def _run_pipeline(args) -> int:
         errors = []
         last_event = None
 
+        attach_files = getattr(args, "attach", []) or None
+
         try:
-            for event in run_workflow_streaming(req_path, project_name, config):
+            for event in run_workflow_streaming(req_path, project_name, config, attach_files=attach_files):
                 ev = event.get("event", "")
                 if ev == "step_done":
                     steps_completed.append({

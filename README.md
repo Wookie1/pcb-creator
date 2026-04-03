@@ -146,9 +146,12 @@ pcb-creator schema > schema.json
 # 2. Write requirements to a file (agent constructs this JSON)
 # 3. Run the pipeline with structured JSON output
 pcb-creator run --requirements requirements.json --agent-mode --skip-qa --json-output
+
+# With a DXF board outline (or other attachments like datasheets, sketches):
+pcb-creator run --requirements requirements.json --attach board_outline.dxf --agent-mode --skip-qa --json-output
 ```
 
-The `--json-output` flag prints a structured result to stdout with success status, routing stats, DRC summary, and output file paths. `--project` is optional (auto-generated from the requirements JSON).
+`--json-output` prints a structured result to stdout with success status, routing stats, DRC summary, and output file paths. `--project` is optional (auto-generated from the requirements JSON). `--attach` can be repeated for multiple files.
 
 ### MCP Server
 

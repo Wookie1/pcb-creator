@@ -844,7 +844,7 @@ The GUI is a single Gradio Blocks app (`orchestrator/gradio_app.py`) with two co
 
 ### Agent Integration
 
-**CLI (recommended for shell-based agents like Agent Zero):** Agents write a requirements JSON file to disk (avoiding MCP transport encoding issues with large payloads), then run `pcb-creator run --requirements file.json --agent-mode --skip-qa --json-output`. Use `pcb-creator schema` to get the expected format. The `--project` flag is optional — auto-generated from the requirements JSON. The `--json-output` flag prints structured results (success, routing stats, DRC, output files) to stdout.
+**CLI (recommended for shell-based agents like Agent Zero):** Agents write a requirements JSON file to disk (avoiding MCP transport encoding issues with large payloads), then run `pcb-creator run --requirements file.json --agent-mode --skip-qa --json-output`. Use `pcb-creator schema` to get the expected format. The `--project` flag is optional — auto-generated from the requirements JSON. The `--json-output` flag prints structured results (success, routing stats, DRC, output files) to stdout. Attach DXF board outlines or other files with `--attach file.dxf` (repeatable).
 
 ### MCP Server
 
