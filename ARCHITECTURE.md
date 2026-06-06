@@ -547,11 +547,13 @@ Pure Python, zero LLM calls. Two modes:
 
 Move types: translate (70%), swap same-package (15%), rotate (15%). Pinned components (user-placed, connectors, fiducials) excluded from moves.
 
+**Incremental cost evaluation (`ratsnest.IncrementalCost`):** An SA move perturbs only a few components, so the cost is evaluated *incrementally* rather than recomputed globally each iteration. The evaluator caches per-net MST geometry and a flat segment list; a move recomputes only the nets touching the moved component(s) and re-tests crossings via a spatial grid (`evaluate`/`commit`/`revert`). Power/ground nets are treated as **plane nets** (`_PLANE_NET_CLASSES`) — delivered by copper pours, not point-to-point traces — so they keep a cheap wirelength term but are excluded from the crossing metric and the spatial grid. This removes the board-spanning hub segments that previously dominated cost. Net effect: roughly O(n × E²) per full run → near-linear, ~5–19× faster on 40–150-component boards, which is what keeps large boards from timing out.
+
 **Board auto-sizing:** Before the first LLM attempt, board dimensions are checked against total component footprint area × 2.5. Default board sizes are auto-expanded if too small; user-specified sizes are warned but respected.
 
 **Fallback chain** (after all LLM rework attempts exhausted):
 1. Grow board 20%, re-run SA repair on last LLM placement
-2. Generate deterministic grid-based placement on 30%-larger board (connectors on edges, largest components first), then SA repair
+2. Generate deterministic grid-based placement on 30%-larger board (connectors on edges, largest components first), then SA repair. The grid placer lives in `optimizers/initial_placement.py` (`generate_grid_placement`) and is shared with the granular placement stage (see MCP Server).
 
 ### Fiducials
 
@@ -681,6 +683,15 @@ Parses `.kicad_pcb` files back into the pipeline's routed JSON format. Enables t
 
 **Parsed elements:** Net declarations, footprint positions/pads, segments (traces), vias, zones. Components matched back to netlist by designator and pin net assignments.
 
+### Netlist Import (`exporters/kicad_netlist_importer.py`)
+
+Lets a **mid-stream KiCad project** (schematic already drawn by another tool/agent) continue inside pcb-creator without starting over. Converts a KiCad netlist export (`.net`) or schematic (`.kicad_sch`) into the pipeline's `circuit_schema` netlist JSON:
+
+- **`.net`** (KiCad: File → Export → Netlist) — the reliable input, carries full connectivity + component metadata.
+- **`.kicad_sch`** — used for component metadata; connectivity is read from a sibling `.net` of the same stem (a `.kicad_sch` alone has no wire connectivity in agent-generated files).
+
+Inference fills the metadata KiCad doesn't carry: `component_type` from reference-designator prefix, `net_class` (power/ground/signal) from net name, `electrical_type` per pin from net class + component type. Footprint library prefixes are stripped, IDs are normalized to the schema patterns, single-node nets are dropped with warnings. Exposed to agents via the `import_kicad_netlist` MCP tool, which writes `<project>_netlist.json` ready for the placement stage.
+
 ### HTML Visualizer Export Button
 
 The interactive HTML visualizer includes a "Download KiCad PCB" button that triggers client-side `.kicad_pcb` generation via JavaScript `Blob` + `saveAs`. Filename defaults to `{project_name}.kicad_pcb`.
@@ -746,6 +757,7 @@ Produces manufacturer-ready files in `projects/{name}/output/`. All files are st
 
 ### Future Enhancements
 
+- **Dedupe the autonomous runner onto `stages.py`**: The granular MCP flow introduced `orchestrator/stages.py` as the single deterministic implementation of routing/DRC/output (`run_routing` / `run_drc` / `run_export`). `orchestrator/runner.py` (`run_workflow` / `run_workflow_streaming`) still has its own **inline copies** of those blocks — the routing logic in particular is duplicated. Refactor the runner to call the stage functions so there is one implementation. Deliberately deferred: the autonomous path interleaves the approval gate / vision review / `--export-kicad` flag and needs the full LLM + Java (Freerouting) path to exercise, so it shouldn't be refactored without that coverage. When doing this, have the runner re-read `<project>_routed.json` (written by the stage) for the steps that follow routing, and keep `router_engine="builtin"` + `pytest tests/` green as the cheap regression check.
 - **Manufacturer quoting (Step 7)**: Auto-submit BOM, Gerbers, assembly files to manufacturer APIs (JLCPCB, PCBWay, OSH Park) for fabrication + assembly quotes. Present comparison to user. Steps 5-6 produce submission-ready files in manufacturer-expected formats. Blocked on: vendor API availability or TOS review for agent accounts + Playwright.
 - **build123d for richer 3D models**: Replace hand-written STEP BREP boxes with build123d parametric shapes (rounded IC bodies, pin legs, LED domes, etc.). Blocked on: build123d/cadquery adding Python 3.14 support (requires OpenCascade `cadquery-ocp` wheels).
 
@@ -848,27 +860,40 @@ The GUI is a single Gradio Blocks app (`orchestrator/gradio_app.py`) with two co
 
 ### MCP Server
 
-The MCP server (`mcp_server.py`) exposes the pipeline as tools for any MCP-compatible AI agent (Claude Code, Agent SDK, OpenClaw, Agent Zero). Uses FastMCP with stdio transport, runs headless with vision-based approval.
+The MCP server (`mcp_server.py`) exposes the pipeline as tools for any MCP-compatible AI agent (Claude Code, Agent SDK, OpenClaw, Agent Zero, Hermes). Uses FastMCP with stdio transport, runs headless.
 
 **Projects directory:** `~/.pcb-creator/projects/` (configurable via `PCB_PROJECTS_DIR` env var). Persists across sessions — any agent can resume or inspect previous designs.
 
-**Two input modes for `design_pcb`:**
-- **Structured (preferred for agents):** Pass `requirements_json` dict directly — skips LLM translation entirely. Call `get_requirements_schema()` first to get the expected JSON Schema.
-- **Natural language:** Pass a plain-text `description` — translated to structured requirements via LLM automatically. Useful for simpler circuits or human-driven workflows.
+The server supports **two usage modes**:
+
+**1. Autonomous (one shot) — `design_pcb`.** Runs the whole LLM-driven pipeline (requirements → schematic → BOM → placement → routing → DRC → output). Best when you want pcb-creator to do everything. Two input modes:
+- **Structured (preferred for agents):** Pass `requirements_json` dict directly — skips LLM translation. Call `get_requirements_schema()` first.
+- **Natural language:** Pass a plain-text `description` — translated to structured requirements via LLM.
+
+**2. Granular (agent-driven, recommended when the *caller* is already an agent).** When an external agent already does circuit design and its own critic/QA, running `design_pcb` nests two autonomous loops — an opaque inner LLM + vision-critic rework loop that can blow the MCP timeout. The granular tools avoid this: each is **deterministic (no LLM, no vision critic)**, returns quickly, and never hides a rework loop, so the calling agent owns the loop. Backed by `orchestrator/stages.py` (`run_placement` / `run_routing` / `run_drc` / `run_export`), the single deterministic implementation of those stages.
+
+Flow: `import_kicad_netlist` → `optimize_placement` → `route_board` → poll `get_project_status` → `run_drc` → `export_outputs`. The agent evaluates DRC violations itself and decides on rework; it reviews the board with `get_board_image` instead of an internal vision critic.
 
 **Tools:**
 
 | Tool | Description |
 |------|-------------|
-| `design_pcb(description, project_name?, requirements_json?, settings?)` | Run the full pipeline. Pass `requirements_json` to skip LLM translation (preferred for agents), or `description` for NL input. Returns routing stats, DRC summary, output file paths. |
-| `get_requirements_schema()` | Returns the JSON Schema for structured requirements. Call once, then construct `requirements_json` dicts for `design_pcb`. |
+| `design_pcb(description, project_name?, requirements_json?, settings?, attachments?)` | **Autonomous.** Run the full LLM pipeline. Returns routing stats, DRC summary, output file paths. |
+| `get_requirements_schema()` | Returns the JSON Schema for structured requirements. |
+| `import_kicad_netlist(project_name, file_path, description?)` | **Granular.** Convert a KiCad `.net`/`.kicad_sch` into the project netlist (mid-stream handoff). No LLM. |
+| `optimize_placement(project_name, board_width_mm?, board_height_mm?, seed?)` | **Granular.** Deterministic grid placement → repair → fast SA. Synchronous. Board dims required on first placement (a netlist carries no outline); reused on re-runs. `seed` makes it reproducible. |
+| `route_board(project_name)` | **Granular.** Starts routing on a background thread and **returns immediately** (`state: "running"`). Avoids MCP timeouts on slow boards. |
+| `run_drc(project_name)` | **Granular.** The 13 deterministic design-rule checks; returns structured violations for the agent to evaluate. |
+| `export_outputs(project_name)` | **Granular.** Gerbers/drill/BOM-CSV/CPL/STEP/ZIP into the project `output/` dir. |
 | `list_projects()` | List all projects with status and output availability. |
-| `get_project_status(project_name)` | Detailed status: step progress, routing stats, DRC pass/fail. |
+| `get_project_status(project_name)` | Detailed status: step progress, routing stats, DRC pass/fail. Includes `routing_state` (`running`/`complete`/`failed`) + `routing_result` — **poll this after `route_board`**. |
 | `get_drc_report(project_name)` | Full DRC report with per-check violations. |
 | `export_kicad(project_name)` | Export completed design to KiCad `.kicad_pcb` format. |
-| `get_board_image(project_name, width?)` | Render routed board as base64 PNG image. |
+| `get_board_image(project_name, width?)` | Render routed board as base64 PNG image (for the agent's own visual review). |
 
-**Configuration:** Same `PCB_*` environment variables as the CLI. The server forces `agent_mode=True`, `skip_qa=True` (calling agent reviews results itself), `max_rework_attempts=3`, and `llm_timeout=300` (5 min per LLM call, fail fast). These can be overridden per-call via the `settings` parameter.
+**Async routing:** `route_board` runs `stages.run_routing` on a daemon thread and records state in an in-memory job registry keyed by project; `get_project_status` reports `routing_state` and reconciles with the on-disk `_routed.json` so state survives an empty registry (e.g. server restart). With Freerouting (a subprocess) the GIL is released, so status polls stay responsive.
+
+**Configuration:** Same `PCB_*` environment variables as the CLI. The server forces `agent_mode=True`, `skip_qa=True` (calling agent reviews results itself), `max_rework_attempts=3`, and `llm_timeout=300`. The granular tools ignore the LLM settings entirely (they make no model calls). `design_pcb` overrides can be passed per-call via `settings`.
 
 ## LLM Provider Support
 
@@ -891,7 +916,7 @@ Environment variables: `PCB_LLM_API_KEY`, `PCB_LLM_API_BASE`, `PCB_GENERATE_MODE
 
 2. **Output token limits matter.** A 21-component Arduino Uno netlist is ~30KB / ~8K tokens. Free-tier models with 8K output limits truncate. The continuation mechanism handles this, but choosing a model with adequate output capacity (Qwen3.5-27B at 32K+) avoids the issue entirely.
 
-3. **Deterministic validation catches most errors.** The 9 DRC checks catch the same classes of errors that ECAD tools flag (KiCad DRC, Altium). The LLM QA adds value for requirements compliance but is not the primary safety net.
+3. **Deterministic validation catches most errors.** The 13 DRC checks catch the same classes of errors that ECAD tools flag (KiCad DRC, Altium). The LLM QA adds value for requirements compliance but is not the primary safety net. This is also why the granular agent-driven MCP flow keeps DRC as a first-class deterministic stage while dropping the vision critic.
 
 4. **Resistor power needs circuit-aware calculation.** Using a LED's max rated current (20mA) instead of the actual operating current (V_supply - Vf) / R produces false positives. The DRC traces the circuit topology to compute real power dissipation.
 
