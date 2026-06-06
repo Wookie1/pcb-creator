@@ -9,6 +9,9 @@ dependencies = [
     "jsonschema>=4.0",
     "gerber-writer>=0.4",
     "cairosvg>=2.7",
+    # platformio (common on Pi) caps at click<8.4; litellm allows <9.0.
+    # Pin to the intersection so both coexist in the same environment.
+    "click>=8.0.4,<8.4",
 ]
 
 [project.optional-dependencies]
