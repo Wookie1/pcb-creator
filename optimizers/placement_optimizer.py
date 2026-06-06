@@ -25,9 +25,9 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .ratsnest import (
-    NetInfo, build_connectivity, compute_cost, total_wire_length,
+    NetInfo, build_connectivity, total_wire_length,
     find_decoupling_associations, find_crystal_associations,
-    DecouplingAssociation, CrystalAssociation,
+    DecouplingAssociation, CrystalAssociation, IncrementalCost,
 )
 
 
@@ -202,26 +202,26 @@ def _build_grouping_pairs(nets: list[NetInfo]) -> list[tuple[str, str]]:
     return [(a, b) for (a, b), count in shared_count.items() if count >= 2]
 
 
-def _compute_full_cost(
+def _quality_cost(
     positions: dict[str, tuple[float, float]],
-    nets: list[NetInfo],
     config: SAConfig,
     decoupling: list[DecouplingAssociation],
     crystals: list[CrystalAssociation],
     grouping_pairs: list[tuple[str, str]],
 ) -> float:
-    """Compute total weighted SA cost including all terms."""
-    result = compute_cost(nets, positions, config.wire_weight, config.crossing_weight)
-    cost = (config.wire_weight * result.total_wire_length +
-            config.crossing_weight * result.crossing_count)
+    """Weighted sum of the placement-quality terms (proximity/crystal/grouping).
 
+    These operate on small fixed association lists, so they stay full-recompute
+    even in the SA hot loop — the expensive wire/crossing terms are handled
+    incrementally by IncrementalCost.
+    """
+    cost = 0.0
     if decoupling and config.proximity_weight > 0:
         cost += config.proximity_weight * _proximity_cost(positions, decoupling)
     if crystals and config.crystal_weight > 0:
         cost += config.crystal_weight * _crystal_cost(positions, crystals)
     if grouping_pairs and config.grouping_weight > 0:
         cost += config.grouping_weight * _grouping_cost(positions, grouping_pairs)
-
     return cost
 
 
@@ -322,10 +322,17 @@ def optimize_placement(
     # Compute iteration count
     iterations = _compute_iterations(len(movable), config.max_iterations)
 
-    # Initial cost
-    initial_result = compute_cost(nets, positions, config.wire_weight, config.crossing_weight)
-    initial_cost = _compute_full_cost(
-        positions, nets, config, decoupling, crystal_assocs, grouping_pairs
+    # Initial cost — incremental evaluator caches MST/crossing state so the SA
+    # loop can update only the nets touched by each move.  Crossings exclude
+    # plane (power/ground) nets, so metrics are sourced from the evaluator
+    # rather than the full compute_cost to stay consistent with what SA sees.
+    evaluator = IncrementalCost(nets, positions)
+    initial_wire = evaluator.total_wire
+    initial_cross = evaluator.total_cross
+    initial_cost = (
+        config.wire_weight * initial_wire
+        + config.crossing_weight * initial_cross
+        + _quality_cost(positions, config, decoupling, crystal_assocs, grouping_pairs)
     )
 
     # SA state
@@ -369,14 +376,19 @@ def optimize_placement(
                 break
             continue
 
-        # Compute new cost (includes all terms)
-        new_cost = _compute_full_cost(
-            new_pos, nets, config, decoupling, crystal_assocs, grouping_pairs
+        # Incremental cost: only nets touching moved components are recomputed.
+        changed = [d for d in movable if new_pos[d] != current_pos[d]]
+        ev_wire, ev_cross = evaluator.evaluate(new_pos, changed)
+        new_cost = (
+            config.wire_weight * ev_wire
+            + config.crossing_weight * ev_cross
+            + _quality_cost(new_pos, config, decoupling, crystal_assocs, grouping_pairs)
         )
 
         # Accept or reject
         delta = new_cost - current_cost
         if delta < 0 or rng.random() < math.exp(-delta / max(T, 1e-10)):
+            evaluator.commit()
             current_pos = new_pos
             current_rot = new_rot
             current_cost = new_cost
@@ -390,6 +402,7 @@ def optimize_placement(
             else:
                 since_improvement += 1
         else:
+            evaluator.revert()
             since_improvement += 1
 
         if since_improvement >= config.stagnation_limit:
@@ -417,13 +430,13 @@ def optimize_placement(
         if old_pos != new_p or old_rot != new_r:
             item["placement_source"] = "optimizer"
 
-    # Compute final metrics for logging
-    final_result = compute_cost(nets, best_pos, config.wire_weight, config.crossing_weight)
+    # Compute final metrics for logging (signal-net crossings, plane-aware)
+    final_eval = IncrementalCost(nets, best_pos)
     improvement = (1 - best_cost / initial_cost) * 100 if initial_cost > 0 else 0
 
     print(f"  SA Optimizer: {iteration + 1} iterations, {accepted} accepted moves")
-    print(f"  Wire length : {initial_result.total_wire_length:.1f}mm → {final_result.total_wire_length:.1f}mm")
-    print(f"  Crossings   : {initial_result.crossing_count} → {final_result.crossing_count}")
+    print(f"  Wire length : {initial_wire:.1f}mm → {final_eval.total_wire:.1f}mm")
+    print(f"  Crossings   : {initial_cross} → {final_eval.total_cross} (signal nets)")
     if decoupling:
         init_prox = _proximity_cost(positions, decoupling)
         final_prox = _proximity_cost(best_pos, decoupling)

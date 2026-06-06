@@ -575,6 +575,117 @@ def get_board_image(project_name: str, width: int = 2048) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# KiCad import
+# ---------------------------------------------------------------------------
+
+@mcp.tool()
+def import_kicad_netlist(
+    project_name: str,
+    file_path: str,
+    description: str = "",
+) -> dict:
+    """Import a KiCad schematic netlist into pcb-creator to continue a mid-stream project.
+
+    Converts a KiCad netlist export (.net) or schematic (.kicad_sch) into
+    pcb-creator's internal circuit_schema format and saves it as the project
+    netlist.  After this call succeeds the project is ready for placement and
+    routing — call design_pcb with skip_to="routing" or use get_project_status
+    to confirm, then export_kicad / get_board_image when done.
+
+    Accepted file types
+    -------------------
+    .net        KiCad netlist export.  Export from KiCad Schematic Editor:
+                File → Export → Netlist → KiCad format.  This is the most
+                reliable input.
+    .kicad_sch  KiCad schematic file.  A sibling .net file with the same stem
+                must exist in the same directory (pcb-creator uses it for
+                connectivity; the schematic is used only for component metadata).
+
+    Args:
+        project_name: Slug for the project (lowercase, underscores).
+                      Must be unique — a new project directory is created.
+        file_path:    Absolute path to the .net or .kicad_sch file.
+        description:  Optional human-readable description written into the netlist.
+
+    Returns:
+        On success:
+            {
+                "success": True,
+                "project_name": str,
+                "netlist_path": str,      # where the netlist JSON was written
+                "component_count": int,
+                "net_count": int,
+                "warnings": [str, ...],   # non-fatal issues (empty list = clean)
+                "next_step": str,         # human-readable hint
+            }
+        On failure:
+            {"success": False, "error": str}
+    """
+    from exporters.kicad_netlist_importer import convert_kicad_netlist
+
+    # Validate project name
+    if not re.match(r"^[a-z][a-z0-9_]*$", project_name):
+        return {
+            "success": False,
+            "error": (
+                f"Invalid project_name '{project_name}'. "
+                "Use lowercase letters, digits, and underscores only (must start with a letter)."
+            ),
+        }
+
+    # Refuse to overwrite an existing project
+    pdir = _project_dir(project_name)
+    if pdir.exists() and any(pdir.iterdir()):
+        return {
+            "success": False,
+            "error": (
+                f"Project '{project_name}' already exists at {pdir}. "
+                "Choose a different project_name or delete the existing project first."
+            ),
+        }
+
+    try:
+        result = convert_kicad_netlist(
+            source_path=file_path,
+            project_name=project_name,
+            description=description,
+        )
+    except (FileNotFoundError, ValueError) as exc:
+        return {"success": False, "error": str(exc)}
+    except Exception as exc:
+        return {"success": False, "error": f"Unexpected error during import: {exc}"}
+
+    netlist = result["netlist"]
+    warnings = result["warnings"]
+
+    # Write netlist JSON into the project directory
+    pdir.mkdir(parents=True, exist_ok=True)
+    netlist_path = pdir / f"{project_name}_netlist.json"
+    netlist_path.write_text(json.dumps(netlist, indent=2), encoding="utf-8")
+
+    # Count elements for the summary
+    elements = netlist.get("elements", [])
+    n_comp = sum(1 for e in elements if e["element_type"] == "component")
+    n_net  = sum(1 for e in elements if e["element_type"] == "net")
+
+    return {
+        "success":         True,
+        "project_name":    project_name,
+        "netlist_path":    str(netlist_path),
+        "component_count": n_comp,
+        "net_count":       n_net,
+        "warnings":        warnings,
+        "next_step": (
+            f"Netlist imported ({n_comp} components, {n_net} nets). "
+            f"Call design_pcb with requirements_json={{\"project_name\": \"{project_name}\", "
+            f"\"description\": \"{description or project_name}\"}} to run placement → "
+            f"routing → DRC → export, or call get_project_status(\"{project_name}\") "
+            f"to check the current state."
+        ),
+    }
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 

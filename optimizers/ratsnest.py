@@ -44,6 +44,10 @@ _IC_TYPES = {"ic", "microcontroller", "mcu", "voltage_regulator"}
 _CAP_TYPES = {"capacitor"}
 _CRYSTAL_TYPES = {"crystal", "oscillator"}
 
+# Net classes delivered by copper pours/planes rather than point-to-point
+# traces — excluded from the SA crossing metric (see IncrementalCost).
+_PLANE_NET_CLASSES = frozenset({"power", "ground"})
+
 
 def _build_element_lookups(netlist: dict) -> tuple[
     dict[str, dict],          # components: component_id -> element
@@ -304,19 +308,29 @@ def _segments_intersect(
     Uses the cross-product orientation test. Excludes collinear overlap and
     endpoint touching — we only want true crossings.
     """
-    def cross(o: tuple[float, float], a: tuple[float, float], b: tuple[float, float]) -> float:
-        return (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0])
+    x1, y1 = p1
+    x2, y2 = p2
+    x3, y3 = p3
+    x4, y4 = p4
 
-    d1 = cross(p3, p4, p1)
-    d2 = cross(p3, p4, p2)
-    d3 = cross(p1, p2, p3)
-    d4 = cross(p1, p2, p4)
+    # Bounding-box reject: if the segments' AABBs don't overlap they can't cross.
+    # Cheap test that eliminates the vast majority of pairs before the products.
+    if min(x1, x2) > max(x3, x4) or max(x1, x2) < min(x3, x4):
+        return False
+    if min(y1, y2) > max(y3, y4) or max(y1, y2) < min(y3, y4):
+        return False
 
-    if ((d1 > 0 and d2 < 0) or (d1 < 0 and d2 > 0)) and \
-       ((d3 > 0 and d4 < 0) or (d3 < 0 and d4 > 0)):
-        return True
+    # Inlined orientation cross-products (avoids per-call closure overhead):
+    # d1,d2 = orientation of p1,p2 about segment p3p4; d3,d4 vice versa.
+    dx34, dy34 = x4 - x3, y4 - y3
+    d1 = dx34 * (y1 - y3) - dy34 * (x1 - x3)
+    d2 = dx34 * (y2 - y3) - dy34 * (x2 - x3)
+    dx12, dy12 = x2 - x1, y2 - y1
+    d3 = dx12 * (y3 - y1) - dy12 * (x3 - x1)
+    d4 = dx12 * (y4 - y1) - dy12 * (x4 - x1)
 
-    return False
+    return (((d1 > 0) != (d2 > 0)) and (d1 != 0) and (d2 != 0)
+            and ((d3 > 0) != (d4 > 0)) and (d3 != 0) and (d4 != 0))
 
 
 def count_crossings(
@@ -389,3 +403,240 @@ def compute_cost(
         crossing_count=cx,
         mst_edges=mst_edges,
     )
+
+
+class IncrementalCost:
+    """Delta-evaluation engine for SA placement cost (wire length + crossings).
+
+    A simulated-annealing move perturbs only a few components, yet the naive
+    cost function recomputes every net's MST and an O(E^2) all-pairs crossing
+    scan on every iteration.  This class caches per-net MST geometry and the
+    flat segment list so a move only recomputes the nets touching the moved
+    components and only re-tests crossings involving those segments —
+    O(|affected| * E) instead of O(E^2).
+
+    Usage per SA iteration:
+        wire, cross = ev.evaluate(new_positions, changed_designators)
+        if accept: ev.commit()
+        else:      ev.revert()
+
+    `evaluate` mutates internal state to the candidate; `revert` restores the
+    pre-move state exactly, `commit` keeps it.  Totals stay drift-free because
+    unaffected segments are never touched and affected nets are fully recomputed.
+    """
+
+    def __init__(
+        self,
+        nets: list[NetInfo],
+        positions: dict[str, tuple[float, float]],
+    ) -> None:
+        self._net_designators: list[list[str]] = []  # filtered to present positions
+        self._net_seg_start: list[int] = []
+        self._net_seg_count: list[int] = []
+        self._net_wire: list[float] = []
+        # Power/ground nets are delivered by copper pours, not point-to-point
+        # traces, so their MST "crossings" are meaningless.  Plane nets keep a
+        # (cheap) wirelength term for loose clustering but are excluded from the
+        # crossing metric and never enter the spatial grid — which also removes
+        # the board-spanning hub segments that otherwise dominate the cost.
+        self._net_is_plane: list[bool] = []
+        self._segments: list[tuple[tuple[float, float], tuple[float, float]]] = []
+        self._seg_net: list[int] = []
+        self._des_to_nets: dict[str, set[int]] = {}
+
+        for i, net in enumerate(nets):
+            self._net_is_plane.append(net.net_class in _PLANE_NET_CLASSES)
+            ds = [d for d in net.designators if d in positions]
+            self._net_designators.append(ds)
+            start = len(self._segments)
+            self._net_seg_start.append(start)
+            if len(ds) < 2:
+                self._net_seg_count.append(0)
+                self._net_wire.append(0.0)
+                continue
+            pts = [positions[d] for d in ds]
+            mst = compute_mst_edges(pts)
+            wl = 0.0
+            for ia, ib, length in mst:
+                self._segments.append((pts[ia], pts[ib]))
+                self._seg_net.append(i)
+                wl += length
+            self._net_seg_count.append(len(mst))
+            self._net_wire.append(wl)
+            for d in ds:
+                self._des_to_nets.setdefault(d, set()).add(i)
+
+        # Uniform spatial grid over segments so a crossing query only tests
+        # segments sharing a cell, not all E.  Cell size ~ mean segment span
+        # keeps a typical segment in ~1 cell.
+        spans = [max(abs(p1[0] - p2[0]), abs(p1[1] - p2[1]))
+                 for p1, p2 in self._segments]
+        self._cell: float = max(1.0, (sum(spans) / len(spans)) if spans else 1.0)
+        self._grid: dict[tuple[int, int], set[int]] = {}
+        self._seg_cells: list[list[tuple[int, int]]] = [[] for _ in self._segments]
+        for i in range(len(self._segments)):
+            self._grid_insert(i)
+
+        self.total_wire: float = sum(self._net_wire)
+        self.total_cross: int = self._crossings_involving(range(len(self._segments)))
+
+        # Pending-move backup (set by evaluate, consumed by commit/revert)
+        self._bk_active = False
+        self._bk_segs: dict[int, tuple[tuple[float, float], tuple[float, float]]] = {}
+        self._bk_wire: dict[int, float] = {}
+        self._bk_total_wire = 0.0
+        self._bk_total_cross = 0
+
+    def _cells_for(
+        self, seg: tuple[tuple[float, float], tuple[float, float]]
+    ) -> list[tuple[int, int]]:
+        """Grid cells covered by a segment's bounding box."""
+        (x1, y1), (x2, y2) = seg
+        cs = self._cell
+        cx0 = int(math.floor(min(x1, x2) / cs))
+        cx1 = int(math.floor(max(x1, x2) / cs))
+        cy0 = int(math.floor(min(y1, y2) / cs))
+        cy1 = int(math.floor(max(y1, y2) / cs))
+        return [(cx, cy) for cx in range(cx0, cx1 + 1)
+                for cy in range(cy0, cy1 + 1)]
+
+    def _grid_insert(self, i: int) -> None:
+        if self._net_is_plane[self._seg_net[i]]:
+            return  # plane-net segments never participate in crossing tests
+        cells = self._cells_for(self._segments[i])
+        self._seg_cells[i] = cells
+        g = self._grid
+        for c in cells:
+            bucket = g.get(c)
+            if bucket is None:
+                g[c] = {i}
+            else:
+                bucket.add(i)
+
+    def _grid_remove(self, i: int) -> None:
+        g = self._grid
+        for c in self._seg_cells[i]:
+            bucket = g.get(c)
+            if bucket is not None:
+                bucket.discard(i)
+                if not bucket:
+                    del g[c]
+        self._seg_cells[i] = []
+
+    def _crossings_involving(self, seg_indices) -> int:
+        """Count crossings where at least one segment is in seg_indices.
+
+        Each qualifying pair is counted once: for an affected-affected pair the
+        skip rule `b in S and b <= a` ensures it's tallied only when `a` is the
+        smaller index.  Passing the full index range yields the exact total.
+        """
+        segments = self._segments
+        seg_net = self._seg_net
+        is_plane = self._net_is_plane
+        grid = self._grid
+        seg_cells = self._seg_cells
+        S = set(seg_indices)
+        cnt = 0
+        for a in S:
+            na = seg_net[a]
+            if is_plane[na]:
+                continue  # plane segments contribute no crossings
+            (ax1, ay1), (ax2, ay2) = segments[a]
+            cand: set[int] = set()
+            for c in seg_cells[a]:
+                cand.update(grid.get(c, ()))
+            for b in cand:
+                if b == a:
+                    continue
+                if b <= a and b in S:
+                    continue
+                if seg_net[b] == na:
+                    continue
+                sb = segments[b]
+                if _segments_intersect((ax1, ay1), (ax2, ay2), sb[0], sb[1]):
+                    cnt += 1
+        return cnt
+
+    def _recompute_net(
+        self, net_idx: int, positions: dict[str, tuple[float, float]]
+    ) -> float:
+        """Rewrite a net's segment slice in place at new positions; return wire length."""
+        count = self._net_seg_count[net_idx]
+        if count == 0:
+            return 0.0
+        ds = self._net_designators[net_idx]
+        start = self._net_seg_start[net_idx]
+        pts = [positions[d] for d in ds]
+        mst = compute_mst_edges(pts)
+        wl = 0.0
+        for k, (ia, ib, length) in enumerate(mst):
+            self._segments[start + k] = (pts[ia], pts[ib])
+            wl += length
+        return wl
+
+    def evaluate(
+        self,
+        positions: dict[str, tuple[float, float]],
+        changed_designators,
+    ) -> tuple[float, int]:
+        """Apply a candidate move and return (total_wire, total_cross).
+
+        Mutates internal state to the candidate. Caller must then call commit()
+        (keep) or revert() (undo) before the next evaluate().
+        """
+        affected_nets: set[int] = set()
+        for d in changed_designators:
+            affected_nets.update(self._des_to_nets.get(d, ()))
+
+        affected_segs: list[int] = []
+        for ni in affected_nets:
+            s = self._net_seg_start[ni]
+            affected_segs.extend(range(s, s + self._net_seg_count[ni]))
+
+        # Backup for potential revert
+        self._bk_segs = {i: self._segments[i] for i in affected_segs}
+        self._bk_wire = {ni: self._net_wire[ni] for ni in affected_nets}
+        self._bk_total_wire = self.total_wire
+        self._bk_total_cross = self.total_cross
+        self._bk_active = True
+
+        if not affected_nets:
+            return self.total_wire, self.total_cross
+
+        old_cross_local = self._crossings_involving(affected_segs)
+        for i in affected_segs:
+            self._grid_remove(i)
+        for ni in affected_nets:
+            new_wl = self._recompute_net(ni, positions)
+            self.total_wire += new_wl - self._net_wire[ni]
+            self._net_wire[ni] = new_wl
+        for i in affected_segs:
+            self._grid_insert(i)
+        new_cross_local = self._crossings_involving(affected_segs)
+        self.total_cross += new_cross_local - old_cross_local
+        return self.total_wire, self.total_cross
+
+    def commit(self) -> None:
+        """Keep the last evaluated move."""
+        self._bk_active = False
+        self._bk_segs = {}
+        self._bk_wire = {}
+
+    def revert(self) -> None:
+        """Undo the last evaluated move, restoring exact pre-move state."""
+        if not self._bk_active:
+            return
+        affected = list(self._bk_segs.keys())
+        for i in affected:
+            self._grid_remove(i)               # drop new-geometry cells
+        for i, seg in self._bk_segs.items():
+            self._segments[i] = seg            # restore old geometry
+        for i in affected:
+            self._grid_insert(i)               # re-add at old-geometry cells
+        for ni, wl in self._bk_wire.items():
+            self._net_wire[ni] = wl
+        self.total_wire = self._bk_total_wire
+        self.total_cross = self._bk_total_cross
+        self._bk_active = False
+        self._bk_segs = {}
+        self._bk_wire = {}
