@@ -24,6 +24,7 @@ import json
 import os
 import re
 import sys
+import threading
 from pathlib import Path
 
 from fastmcp import FastMCP
@@ -38,15 +39,28 @@ from orchestrator.config import OrchestratorConfig
 mcp = FastMCP(
     "pcb-creator",
     instructions=(
-        "PCB design tools. Use design_pcb to create a PCB from a circuit description "
-        "or structured requirements JSON. For best results, call get_requirements_schema "
-        "first, then pass a requirements_json dict to design_pcb — this skips LLM "
-        "translation and is faster and more deterministic. Optionally attach files "
-        "(DXF board outlines, datasheets, sketches) via the attachments parameter. "
-        "Use list_projects, get_project_status, get_drc_report, export_kicad, and "
-        "get_board_image to inspect and export completed designs."
+        "PCB design tools, usable two ways.\n\n"
+        "1) Autonomous (one shot): design_pcb runs the whole LLM-driven pipeline "
+        "(requirements → schematic → BOM → placement → routing → DRC → output). "
+        "Best when you want pcb-creator to do everything.\n\n"
+        "2) Granular (agent-driven, recommended when YOU are already an agent): "
+        "drive the deterministic stages yourself and run your own QA between them. "
+        "These tools use no LLM, return quickly, and never hide a rework loop:\n"
+        "  import_kicad_netlist → optimize_placement → route_board → run_drc → export_outputs.\n"
+        "route_board returns immediately and routes on a background thread; poll "
+        "get_project_status and read its 'routing_state' (running/complete/failed). "
+        "run_drc returns the deterministic design-rule violations as structured data "
+        "for you to evaluate and decide on rework. Use get_board_image to review "
+        "the board visually yourself instead of an internal vision critic."
     ),
 )
+
+# In-memory routing job registry (project_name -> job dict).  route_board runs
+# routing on a background thread so the MCP call returns immediately; clients
+# poll get_project_status for routing_state.  Reconciled with the on-disk
+# _routed.json so state survives even if this registry is empty (e.g. restart).
+_ROUTE_JOBS: dict[str, dict] = {}
+_ROUTE_LOCK = threading.Lock()
 
 
 # ---------------------------------------------------------------------------
@@ -460,6 +474,10 @@ def get_project_status(project_name: str) -> dict:
         except json.JSONDecodeError:
             result["status"] = {}
 
+    # Routing job state (for the async route_board flow), reconciled with disk.
+    with _ROUTE_LOCK:
+        job = dict(_ROUTE_JOBS.get(project_name)) if project_name in _ROUTE_JOBS else None
+
     # Routing stats
     routed = _read_project_json(project_name, "_routed.json")
     if routed:
@@ -472,6 +490,16 @@ def get_project_status(project_name: str) -> dict:
             "trace_length_mm": stats.get("total_trace_length_mm", 0),
             "unrouted_nets": stats.get("unrouted_nets", []),
         }
+
+    # routing_state: in-memory job wins; else infer from on-disk artifact.
+    if job is not None:
+        result["routing_state"] = job["state"]
+        if job["state"] == "complete" and job.get("result"):
+            result["routing_result"] = job["result"]
+        elif job["state"] == "failed":
+            result["routing_error"] = job.get("error")
+    else:
+        result["routing_state"] = "complete" if routed else "none"
 
     # DRC summary
     drc = _read_project_json(project_name, "_drc_report.json")
@@ -683,6 +711,170 @@ def import_kicad_netlist(
             f"to check the current state."
         ),
     }
+
+
+# ---------------------------------------------------------------------------
+# Granular deterministic stages (agent-driven flow — no LLM, no vision critic)
+# ---------------------------------------------------------------------------
+
+@mcp.tool()
+def optimize_placement(
+    project_name: str,
+    board_width_mm: float | None = None,
+    board_height_mm: float | None = None,
+    seed: int | None = None,
+) -> dict:
+    """Place components deterministically and optimize the layout (no LLM).
+
+    Runs deterministic grid placement → overlap repair → simulated-annealing
+    optimization (wirelength + signal-net crossings). Reads the project netlist,
+    writes the project placement. Returns quickly.
+
+    Call this after import_kicad_netlist (or after design_pcb has produced a
+    netlist). On the first placement you must supply board dimensions — a KiCad
+    netlist carries no board outline. On a re-run, dimensions are reused from the
+    existing placement if omitted.
+
+    Args:
+        project_name:    Project slug (must already have a netlist).
+        board_width_mm:  Board width in mm (required on first placement).
+        board_height_mm: Board height in mm (required on first placement).
+        seed:            Optional RNG seed for reproducible placement.
+
+    Returns:
+        {success, component_count, wire_length_mm, crossings,
+         board_width_mm, board_height_mm, placement_path}  or  {success: False, error}
+    """
+    from orchestrator import stages
+
+    pdir = _project_dir(project_name)
+    if not pdir.exists():
+        return {"success": False, "error": f"Project '{project_name}' not found. Import a netlist first."}
+
+    try:
+        return stages.run_placement(
+            pdir, project_name, _get_config(),
+            board_width_mm=board_width_mm,
+            board_height_mm=board_height_mm,
+            seed=seed,
+        )
+    except Exception as exc:
+        return {"success": False, "error": f"Placement failed: {exc}"}
+
+
+@mcp.tool()
+def route_board(project_name: str) -> dict:
+    """Start routing the placed board (deterministic). Returns immediately.
+
+    Routing can take seconds to minutes, so it runs on a background thread to
+    avoid blocking/timeouts. This call returns right away with state "running".
+    Poll get_project_status(project_name) and read 'routing_state'
+    (running → complete | failed); when complete, 'routing_result' holds the
+    stats (completion_pct, routed_nets, via_count, unrouted_nets, valid).
+
+    Uses the configured engine (Freerouting by default, built-in fallback).
+    Requires a placement — call optimize_placement first.
+
+    Args:
+        project_name: Project slug (must already have a placement).
+
+    Returns:
+        {success, state: "running", project_name}  or  {success: False, error}
+    """
+    from orchestrator import stages
+
+    pdir = _project_dir(project_name)
+    if not pdir.exists():
+        return {"success": False, "error": f"Project '{project_name}' not found."}
+    if not (pdir / f"{project_name}_placement.json").exists():
+        return {"success": False, "error": "No placement found — call optimize_placement first."}
+
+    with _ROUTE_LOCK:
+        current = _ROUTE_JOBS.get(project_name)
+        if current and current["state"] == "running":
+            return {"success": True, "state": "running", "project_name": project_name,
+                    "message": "Routing already in progress; poll get_project_status."}
+        _ROUTE_JOBS[project_name] = {"state": "running", "result": None, "error": None}
+
+    config = _get_config()
+
+    def _worker() -> None:
+        try:
+            result = stages.run_routing(pdir, project_name, config)
+            state = "complete" if result.get("success") else "failed"
+            with _ROUTE_LOCK:
+                _ROUTE_JOBS[project_name] = {
+                    "state": state, "result": result, "error": result.get("error"),
+                }
+        except Exception as exc:  # noqa: BLE001 — surface any failure to the poller
+            with _ROUTE_LOCK:
+                _ROUTE_JOBS[project_name] = {"state": "failed", "result": None, "error": str(exc)}
+
+    threading.Thread(target=_worker, daemon=True).start()
+
+    return {
+        "success": True,
+        "state": "running",
+        "project_name": project_name,
+        "poll": "Call get_project_status and read 'routing_state'.",
+    }
+
+
+@mcp.tool()
+def run_drc(project_name: str) -> dict:
+    """Run deterministic design-rule checks on the routed board (no LLM).
+
+    13 manufacturability/electrical checks (clearances, trace widths, annular
+    rings, copper slivers, acid traps, unrouted nets, IPC-2221, etc.). Returns
+    the full report so you can decide on rework yourself.
+
+    Requires a routed board — call route_board and wait for routing_state
+    "complete" first.
+
+    Args:
+        project_name: Project slug.
+
+    Returns:
+        Full DRC report dict {success, passed, summary, checks: [...],
+        statistics: {errors, warnings}}  or  {success: False, error}
+    """
+    from orchestrator import stages
+
+    pdir = _project_dir(project_name)
+    if not pdir.exists():
+        return {"success": False, "error": f"Project '{project_name}' not found."}
+
+    try:
+        return stages.run_drc(pdir, project_name, _get_config())
+    except Exception as exc:
+        return {"success": False, "error": f"DRC failed: {exc}"}
+
+
+@mcp.tool()
+def export_outputs(project_name: str) -> dict:
+    """Generate manufacturing outputs from the routed board (no LLM).
+
+    Produces Gerbers, Excellon drill, BOM CSV, pick-and-place (CPL), populated
+    STEP model, and a ZIP package — all written into the project's output/ dir.
+
+    Requires a routed board.
+
+    Args:
+        project_name: Project slug.
+
+    Returns:
+        {success, output_dir, files: [...], package: <zip path>}  or  {success: False, error}
+    """
+    from orchestrator import stages
+
+    pdir = _project_dir(project_name)
+    if not pdir.exists():
+        return {"success": False, "error": f"Project '{project_name}' not found."}
+
+    try:
+        return stages.run_export(pdir, project_name, _get_config())
+    except Exception as exc:
+        return {"success": False, "error": f"Export failed: {exc}"}
 
 
 # ---------------------------------------------------------------------------
