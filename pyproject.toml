@@ -9,6 +9,7 @@ dependencies = [
     "jsonschema>=4.0",
     "gerber-writer>=0.4",
     "cairosvg>=2.7",
+    "fastmcp>=2.0",
     # platformio (common on Pi) caps at click<8.4; litellm allows <9.0.
     # Pin to the intersection so both coexist in the same environment.
     "click>=8.0.4,<8.4",
@@ -16,7 +17,6 @@ dependencies = [
 
 [project.optional-dependencies]
 dxf = ["ezdxf>=1.0"]
-mcp = ["fastmcp>=2.0"]
 3d = ["easyeda2kicad>=0.8"]
 
 [project.scripts]
