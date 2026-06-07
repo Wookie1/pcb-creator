@@ -171,7 +171,7 @@ def _build_router_kwargs(project_dir: Path, project_name: str, log=None) -> dict
 
 def run_routing(project_dir: Path, project_name: str, config,
                 progress_callback=None, log=None) -> dict:
-    """Route the board: Freerouting (if configured) with built-in fallback.
+    """Route the board: Freerouting (if configured) or built-in A* (2-layer only).
 
     Reads <project>_placement.json + <project>_netlist.json, writes
     <project>_routed.json.
@@ -257,27 +257,17 @@ def run_routing(project_dir: Path, project_name: str, config,
             if completion < 100:
                 unrouted = routed.get("routing", {}).get("unrouted_nets", [])
                 _log(f"  Freerouting incomplete ({completion:.0f}%): {len(unrouted)} nets unrouted")
-                if num_layers > 2:
-                    # No built-in fallback for multi-layer — return partial result
-                    _log("  No built-in fallback for multi-layer boards; returning partial result")
-                else:
-                    _log("  Falling back to built-in router...")
-                    routed = None  # fall back to built-in for 2-layer incomplete boards
-            if routed is not None:
-                from optimizers.router import apply_copper_fills, RouterConfig
-                routed = apply_copper_fills(routed, netlist_data, RouterConfig(**router_kwargs))
+                _log("  Continuing with partial result (no fallback when Freerouting is the engine)")
+            from optimizers.router import apply_copper_fills, RouterConfig
+            routed = apply_copper_fills(routed, netlist_data, RouterConfig(**router_kwargs))
         except Exception as exc:
             _log(f"  Freerouting FAILED: {exc}")
-            if num_layers > 2:
-                return {"success": False, "error": f"Freerouting failed for {num_layers}-layer board: {exc}"}
-            _log("  Falling back to built-in router...")
-            routed = None
-            engine = "builtin"
+            return {"success": False, "error": f"Freerouting failed: {exc}"}
 
     if routed is None:
         from optimizers.router import route_board, RouterConfig
-        engine = "builtin" if config.router_engine != "freerouting" else "builtin (fallback)"
-        _log("  Engine: Built-in (fallback)" if engine == "builtin (fallback)" else "  Engine: Built-in")
+        engine = "builtin"
+        _log("  Engine: Built-in")
         rc = RouterConfig(**router_kwargs)
         rc.ncr_progress_callback = progress_callback
         routed = route_board(placement_data, netlist_data, rc)

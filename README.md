@@ -21,10 +21,11 @@ Upload to JLCPCB and order your board
 - **Multi-turn design planning** — the LLM proposes a design, asks clarifying questions, and looks up real component specs; iterate until the plan is right, then proceed to generation
 - **Tiered component lookup** — resolves footprints and specs from KiCad library, IPC-7351B, EasyEDA/LCSC, and curated tables before falling back to LLM
 - **Parallel LLM enrichment** — remaining spec/footprint lookups run concurrently instead of sequentially
-- **Freerouting autorouter** — production-quality push-and-shove routing via headless mode (auto-downloads, requires Java 17+)
-- **Built-in A\* router** — fallback with API-level retry and exponential backoff
+- **4-layer PCB support** — GND and power planes on inner layers (In1.Cu/In2.Cu), antipad cutouts, power stitching vias; Freerouting routes signals on outer layers only
+- **Freerouting autorouter** — production-quality push-and-shove routing via headless mode (auto-downloads, requires Java 17+); required for 4-layer boards
+- **Built-in A\* router** — fallback for 2-layer boards
 - **IPC-2221 trace sizing** — automatic trace width calculation for current capacity
-- **DRC with DFM profiles** — checks against JLCPCB, PCBWay, OSH Park manufacturing rules
+- **DRC with DFM profiles** — checks against JLCPCB standard, JLCPCB 4-layer, PCBWay, OSH Park manufacturing rules
 - **DXF board outline** — attach a DXF file to define non-rectangular board shapes
 - **Assembly drawing PDF** — print-friendly component placement reference with BOM table for manufacturing
 - **Manufacturer-ready output** — Gerber RS-274X, Excellon drill, BOM CSV, pick-and-place CSV, assembly PDF, STEP 3D model
@@ -120,7 +121,8 @@ Generated in `projects/<name>/output/`:
 
 | File | Format | Purpose |
 |------|--------|---------|
-| `*-F_Cu.gbr`, `*-B_Cu.gbr` | Gerber | Copper layers |
+| `*-F_Cu.gbr`, `*-B_Cu.gbr` | Gerber | Outer copper layers |
+| `*-In1_Cu.gbr`, `*-In2_Cu.gbr` | Gerber | Inner copper planes (4-layer boards only: GND and power) |
 | `*-F_SilkS.gbr` | Gerber | Silkscreen (stroke font) |
 | `*-F_Mask.gbr`, `*-B_Mask.gbr` | Gerber | Solder mask |
 | `*-Edge_Cuts.gbr` | Gerber | Board outline |

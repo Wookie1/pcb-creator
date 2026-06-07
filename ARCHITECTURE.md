@@ -79,9 +79,11 @@ User Input (natural language or JSON)
        ▼
 ┌─────────────────────────────────┐
 │  Step 4: Routing (no LLM)      │
-│  Freerouting (default) or A*   │
+│  Freerouting (required for 4L) │
+│  or built-in A* (2-layer only) │
 │  → IPC-2221 trace widths       │
 │  → Copper fill + stitching     │
+│  → Inner planes (4-layer)      │
 │  → Silkscreen generation       │
 └─────────────────────────────────┘
        │ routed.json
@@ -189,6 +191,8 @@ pcb-creator/
 │       └── output/                    # Step 6: manufacturer files
 │           ├── {name}-F_Cu.gbr        #   front copper
 │           ├── {name}-B_Cu.gbr        #   back copper
+│           ├── {name}-In1_Cu.gbr      #   inner GND plane (4-layer only)
+│           ├── {name}-In2_Cu.gbr      #   inner power plane (4-layer only)
 │           ├── {name}-F_SilkS.gbr     #   front silkscreen
 │           ├── {name}-F_Mask.gbr      #   front solder mask
 │           ├── {name}-B_Mask.gbr      #   back solder mask
@@ -240,6 +244,7 @@ Requirements use a simpler format with component refs and pin-name connections:
 {
   "project_name": "led_blink",
   "power": { "voltage": "5V", "source": "2-pin header" },
+  "board": { "layers": 2 },
   "components": [
     { "ref": "R1", "type": "resistor", "value": "220ohm", "package": "0805" }
   ],
@@ -247,6 +252,11 @@ Requirements use a simpler format with component refs and pin-name connections:
     { "net_name": "VCC", "net_class": "power", "pins": ["J1.1", "R1.1"] }
   ]
 }
+```
+
+Set `"board": { "layers": 4 }` to request a 4-layer board (F.Cu signal → In1.Cu GND plane → In2.Cu power plane → B.Cu signal). **4-layer boards require Freerouting** (`PCB_ROUTER_ENGINE=freerouting`, the default). The most-connected non-GND power net is automatically chosen as the inner2 plane (e.g. VCC3V3 over VCC5 if VCC3V3 connects more components).
+
+```json
 ```
 
 The LLM's job in Step 1 is to expand this into the full netlist with explicit ports and proper IDs.
@@ -575,10 +585,10 @@ External autorouter via Specctra DSN/SES format exchange. Uses the Freerouting J
 
 **Workflow:** `placement.json + netlist.json` → DSN export → Freerouting JAR (headless) → SES import → copper fills → silkscreen → `routed.json`
 
-- **DSN export** (`exporters/dsn_exporter.py`): Converts placement + netlist to Specctra DSN format. Board outline, component footprints with physical pad definitions (from `pad_geometry.py` tiered lookup), net connectivity, and design rules. GND excluded from routing (handled by copper fill).
+- **DSN export** (`exporters/dsn_exporter.py`): Converts placement + netlist to Specctra DSN format. Board outline, component footprints with physical pad definitions (from `pad_geometry.py` tiered lookup), net connectivity, and design rules. Plane nets (GND, and the chosen power net on 4-layer boards) are excluded from the DSN so Freerouting never routes them — they're delivered by copper pours. For 4-layer boards, `In1.Cu` and `In2.Cu` are omitted from the DSN `structure` routing layer list so Freerouting only places traces on F.Cu and B.Cu; via padstacks still span all 4 layers so through-vias connect all copper.
 - **SES import** (`exporters/ses_importer.py`): Parses Freerouting's session output. Extracts wire paths (traces) and vias, maps net names back to internal net_ids. Reuses S-expression parser from `kicad_importer.py`.
-- **Orchestration** (`optimizers/freerouter.py`): Auto-downloads JAR to `~/.cache/pcb-creator/` on first use. Runs headlessly with `-mp 20` (max optimization passes). Falls back to built-in router on failure. Configurable timeout (default 300s).
-- **Copper fills** (`router.py:apply_copper_fills()`): Standalone function that rebuilds a routing grid from the Freerouting output, marks existing traces/vias, then runs the standard fill algorithm. Removes the fill net (GND) from unrouted list and updates completion stats to 100%.
+- **Orchestration** (`optimizers/freerouter.py`): Auto-downloads JAR to `~/.cache/pcb-creator/` on first use. Runs headlessly with `-mp 20 -mt 1` (max optimization passes, single-threaded to avoid clearance bugs). If Freerouting fails (exception or JAR unavailable), the pipeline returns an error — no fallback. Configurable timeout (default 300s).
+- **Copper fills** (`router.py:apply_copper_fills()`): Standalone function that rebuilds a routing grid from the Freerouting output, marks existing traces/vias, then runs the standard fill algorithm. Removes plane nets (GND on 2-layer; GND + power net on 4-layer) from the unrouted list and updates completion stats to 100%.
 
 ### Built-in Router (fallback)
 
@@ -647,6 +657,18 @@ Copper fill floods unused board area with GND copper on **both layers**. Runs af
 **Output:** `copper_fills` array in routed.json with layer, net_id, net_name, and polygon vertex arrays. Stitching vias appear in the `vias` array alongside routing vias.
 
 **Validator:** Connectivity check recognizes fill-connected pads as connected (no traces needed for fill net).
+
+### 4-Layer Inner Planes
+
+On 4-layer boards, two additional copper regions are generated after the outer fills:
+
+**Inner1 (GND plane):** Board-outline polygon with circular cutouts (antipads) around every through-hole pad and via whose net is not GND. Cutout radius = pad radius + 0.25mm clearance.
+
+**Inner2 (power plane):** Same structure, net = the most-connected non-GND power net in the design (selected by `connected_port_ids` count — e.g. VCC3V3 wins over VCC5 if more components connect to it). For SMD pads on this power net that have no physical connection to the inner2 plane (SMD pads don't penetrate to inner layers), **power stitching vias** are placed 1mm away from each pad on a candidate cardinal-direction offset and connected to the power net. These vias then get antipad cutouts in the inner1 GND plane.
+
+**Ordering requirement:** Power stitching vias must be computed *before* generating the inner planes so their positions are included in the antipad cutout pass. `apply_copper_fills()` enforces this order: (1) compute GND stitching vias, (2) compute power stitching vias, (3) generate inner1 plane with all via positions, (4) generate inner2 plane.
+
+**DRC:** `check_inner_plane_antipad` verifies that every TH pad and via has a proper antipad clearance in each inner plane. The pass formula is `cutout_radius − (distance_to_cutout_center + pad_radius) ≥ 0` (positive = clearance exists).
 
 ## KiCad Export / Import
 
@@ -717,7 +739,17 @@ Consolidates all validation into a structured report checked against the manufac
 - **Mechanical** (from `drc_checks_dfm.py`): hole-to-hole spacing, copper-to-board-edge distance
 - **Current** (from `drc_checks_dfm.py`): IPC-2221 trace current capacity — verifies each trace width can carry its net's estimated current
 
-**DFM profile resolution:** Loads from `requirements.manufacturing.manufacturer` (e.g., "jlcpcb_standard"), falls back to `generic`. Explicit values in `requirements.manufacturing` override profile defaults.
+**DFM profile resolution:** Loads from `requirements.manufacturing.manufacturer` (LLM-generated format) or top-level `requirements.manufacturer` (hand-written test format), falls back to `generic`. Explicit values in `requirements.manufacturing` override profile defaults.
+
+**Available DFM profiles** (in `validators/engineering_constants.py`):
+
+| Profile key | Description | Min trace | Min clearance | Min via drill |
+|-------------|-------------|-----------|---------------|---------------|
+| `jlcpcb_standard` | JLCPCB 2-layer standard | 0.127mm | 0.127mm | 0.3mm |
+| `jlcpcb_4layer` | JLCPCB 4-layer (JLC7628 stackup, 1oz outer / 0.5oz inner, 1.6mm) | 0.127mm | 0.127mm | 0.3mm |
+| `pcbway_standard` | PCBWay standard 2-layer | 0.127mm | 0.127mm | 0.3mm |
+| `oshpark_2layer` | OSH Park 2-layer (ENIG, purple soldermask) | 0.152mm | 0.152mm | 0.254mm |
+| `generic` | Conservative fallback | 0.200mm | 0.200mm | 0.3mm |
 
 **Report format:** `{project}_drc_report.json` with per-check pass/fail, violation details (location, measured value, required value, net), and aggregate statistics.
 
@@ -728,7 +760,7 @@ Consolidates all validation into a structured report checked against the manufac
 Produces manufacturer-ready files in `projects/{name}/output/`. All files are structured for direct upload to JLCPCB, PCBWay, or similar manufacturers.
 
 **Output files:**
-- **Gerber RS-274X** (`gerber_exporter.py`): F_Cu, B_Cu, F_SilkS, B_SilkS, F_Mask, B_Mask, F_Paste, Edge_Cuts — generated using the `gerber-writer` library (100% spec compliant). Board outline supports both rectangular and arbitrary polygon shapes (from DXF). Silkscreen uses a stroke vector font (`stroke_font.py`) for text rendering (A-Z, 0-9, symbols). Fiducials are 1mm copper dots with 3mm solder mask openings.
+- **Gerber RS-274X** (`gerber_exporter.py`): F_Cu, B_Cu, F_SilkS, B_SilkS, F_Mask, B_Mask, F_Paste, Edge_Cuts — plus In1_Cu and In2_Cu for 4-layer boards — generated using the `gerber-writer` library (100% spec compliant). Board outline supports both rectangular and arbitrary polygon shapes (from DXF). Silkscreen uses a stroke vector font (`stroke_font.py`) for text rendering (A-Z, 0-9, symbols). Fiducials are 1mm copper dots with 3mm solder mask openings.
 - **Excellon drill** (`gerber_exporter.py`): NC drill file with tool table, grouped by drill size. Sources: via holes + through-hole pad holes.
 - **BOM CSV** (`bom_csv_exporter.py`): JLCPCB-compatible columns (Designator, Value, Package, Quantity, Description, Specs, Notes).
 - **Pick-and-place CSV** (`bom_csv_exporter.py`): JLCPCB CPL format (Designator, Val, Package, Mid X, Mid Y, Rotation, Layer). Includes fiducials for machine vision alignment.
