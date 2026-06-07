@@ -222,12 +222,20 @@ def route_with_freerouting(
 
         print(f"  SES output: {ses_path.stat().st_size} bytes")
 
-        # 4. Import SES
+        # 4. Import SES — pass excluded net IDs so completion % is computed correctly
         from exporters.ses_importer import import_ses
+        exclude_net_names = set(exclude_nets or [])
+        exclude_net_ids: set[str] = set()
+        for elem in netlist.get("elements", []):
+            if elem.get("element_type") == "net":
+                name = elem.get("name", elem.get("net_id", ""))
+                if name in exclude_net_names:
+                    exclude_net_ids.add(elem["net_id"])
         routed = import_ses(
             ses_path, placement, netlist,
             via_drill_mm=via_drill,
             via_diameter_mm=via_dia,
+            exclude_net_ids=exclude_net_ids,
         )
 
         stats = routed.get("routing", {}).get("statistics", {})

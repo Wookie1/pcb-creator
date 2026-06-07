@@ -202,6 +202,7 @@ def import_ses(
     netlist: dict,
     via_drill_mm: float = 0.3,
     via_diameter_mm: float = 0.6,
+    exclude_net_ids: set[str] | None = None,
 ) -> dict:
     """Import Freerouting SES output and merge with placement data.
 
@@ -238,10 +239,14 @@ def import_ses(
         via_drill_mm, via_diameter_mm,
     )
 
-    # Compute statistics
-    total_nets = len(all_net_ids)
-    routed_count = len(routed_net_ids)
-    unrouted = sorted(all_net_ids - routed_net_ids)
+    # Excluded nets (e.g. GND handled by copper fill) don't count against completion
+    excluded = exclude_net_ids or set()
+    routable_net_ids = all_net_ids - excluded
+    routed_routable = routed_net_ids & routable_net_ids
+
+    total_nets = len(routable_net_ids)
+    routed_count = len(routed_routable)
+    unrouted = sorted(routable_net_ids - routed_routable)
 
     total_trace_length = 0.0
     for t in traces:
