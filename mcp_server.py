@@ -42,13 +42,19 @@ mcp = FastMCP(
         "PCB design tools, usable two ways.\n\n"
         "1) Autonomous (one shot): design_pcb runs the whole LLM-driven pipeline "
         "(requirements → schematic → BOM → placement → routing → DRC → output). "
-        "Best when you want pcb-creator to do everything.\n\n"
+        "It is ASYNC — it returns immediately with state 'running' and works on a "
+        "background thread; poll get_project_status and read 'design_state' "
+        "(running/complete/failed), 'design_progress' for the live step, then "
+        "'design_result' when complete. Best when you want pcb-creator to do "
+        "everything, but note it runs its own nested LLM + review loop you cannot "
+        "see into.\n\n"
         "2) Granular (agent-driven, recommended when YOU are already an agent): "
         "drive the deterministic stages yourself and run your own QA between them. "
         "These tools use no LLM, return quickly, and never hide a rework loop:\n"
         "  import_kicad_netlist → optimize_placement → route_board → run_drc → export_outputs.\n"
         "route_board returns immediately and routes on a background thread; poll "
-        "get_project_status and read its 'routing_state' (running/complete/failed). "
+        "get_project_status and read its 'routing_state' (running/complete/failed), "
+        "plus 'routing_progress' and 'routing_elapsed_s' for live progress. "
         "run_drc returns the deterministic design-rule violations as structured data "
         "for you to evaluate and decide on rework. Use get_board_image to review "
         "the board visually yourself instead of an internal vision critic."
@@ -588,15 +594,25 @@ def get_project_status(project_name: str) -> dict:
         rjob = dict(_ROUTE_JOBS.get(project_name)) if project_name in _ROUTE_JOBS else None
 
     if not pdir.exists():
-        # No directory on disk — still report in-memory job state if any.
+        # No directory on disk yet — a background design_pcb thread may not have
+        # created it (or crashed before mkdir). Report in-memory job state instead
+        # of a misleading "not found".
         if djob or rjob:
+            import time as _time
             result: dict = {"project_name": project_name}
             if djob is not None:
                 result["design_state"] = djob["state"]
-                if djob["state"] == "failed":
-                    result["design_error"] = djob.get("error")
-                if djob.get("progress"):
+                dstarted = djob.get("started_at")
+                if djob["state"] == "running" and dstarted is not None:
+                    result["design_elapsed_s"] = round(_time.monotonic() - dstarted, 1)
+                elif djob.get("elapsed_s") is not None:
+                    result["design_elapsed_s"] = djob["elapsed_s"]
+                if djob["state"] == "running" and djob.get("progress") is not None:
                     result["design_progress"] = djob["progress"]
+                if djob["state"] == "complete" and djob.get("result"):
+                    result["design_result"] = djob["result"]
+                elif djob["state"] == "failed":
+                    result["design_error"] = djob.get("error")
             if rjob is not None:
                 result["routing_state"] = rjob["state"]
                 if rjob["state"] == "failed":

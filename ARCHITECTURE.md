@@ -866,7 +866,7 @@ The MCP server (`mcp_server.py`) exposes the pipeline as tools for any MCP-compa
 
 The server supports **two usage modes**:
 
-**1. Autonomous (one shot) — `design_pcb`.** Runs the whole LLM-driven pipeline (requirements → schematic → BOM → placement → routing → DRC → output). Best when you want pcb-creator to do everything. Two input modes:
+**1. Autonomous (one shot) — `design_pcb`.** Runs the whole LLM-driven pipeline (requirements → schematic → BOM → placement → routing → DRC → output). **Async:** returns immediately with `state: "running"` and works on a daemon thread; poll `get_project_status` for `design_state` (`running`/`complete`/`failed`), `design_progress` (live step), and `design_result` when complete. Single-flight: re-invoking for a project already running returns the in-progress job. Best when you want pcb-creator to do everything, but note it runs its own nested LLM + vision-critic loop you cannot see into. Two input modes:
 - **Structured (preferred for agents):** Pass `requirements_json` dict directly — skips LLM translation. Call `get_requirements_schema()` first.
 - **Natural language:** Pass a plain-text `description` — translated to structured requirements via LLM.
 
@@ -878,7 +878,7 @@ Flow: `import_kicad_netlist` → `optimize_placement` → `route_board` → poll
 
 | Tool | Description |
 |------|-------------|
-| `design_pcb(description, project_name?, requirements_json?, settings?, attachments?)` | **Autonomous.** Run the full LLM pipeline. Returns routing stats, DRC summary, output file paths. |
+| `design_pcb(description, project_name?, requirements_json?, settings?, attachments?)` | **Autonomous, async.** Starts the full LLM pipeline on a background thread and **returns immediately** (`state: "running"`). Poll `get_project_status` for `design_state`/`design_progress`; the final `design_result` carries routing stats, DRC summary, output file paths. Single-flight per project. |
 | `get_requirements_schema()` | Returns the JSON Schema for structured requirements. |
 | `import_kicad_netlist(project_name, file_path, description?)` | **Granular.** Convert a KiCad `.net`/`.kicad_sch` into the project netlist (mid-stream handoff). No LLM. |
 | `optimize_placement(project_name, board_width_mm?, board_height_mm?, seed?)` | **Granular.** Deterministic grid placement → repair → fast SA. Synchronous. Board dims required on first placement (a netlist carries no outline); reused on re-runs. `seed` makes it reproducible. |
@@ -886,12 +886,14 @@ Flow: `import_kicad_netlist` → `optimize_placement` → `route_board` → poll
 | `run_drc(project_name)` | **Granular.** The 13 deterministic design-rule checks; returns structured violations for the agent to evaluate. |
 | `export_outputs(project_name)` | **Granular.** Gerbers/drill/BOM-CSV/CPL/STEP/ZIP into the project `output/` dir. |
 | `list_projects()` | List all projects with status and output availability. |
-| `get_project_status(project_name)` | Detailed status: step progress, routing stats, DRC pass/fail. Includes `routing_state` (`running`/`complete`/`failed`) + `routing_result` — **poll this after `route_board`**. |
+| `get_project_status(project_name)` | Detailed status: step progress, routing stats, DRC pass/fail. Includes `routing_state` + `routing_progress` + `routing_elapsed_s` (poll after `route_board`) and `design_state` + `design_progress` + `design_elapsed_s` + `design_result`/`design_error` (poll after `design_pcb`). |
 | `get_drc_report(project_name)` | Full DRC report with per-check violations. |
 | `export_kicad(project_name)` | Export completed design to KiCad `.kicad_pcb` format. |
 | `get_board_image(project_name, width?)` | Render routed board as base64 PNG image (for the agent's own visual review). |
 
-**Async routing:** `route_board` runs `stages.run_routing` on a daemon thread and records state in an in-memory job registry keyed by project; `get_project_status` reports `routing_state` and reconciles with the on-disk `_routed.json` so state survives an empty registry (e.g. server restart). With Freerouting (a subprocess) the GIL is released, so status polls stay responsive.
+**Async routing:** `route_board` runs `stages.run_routing` on a daemon thread and records state in an in-memory job registry (`_ROUTE_JOBS`) keyed by project; `get_project_status` reports `routing_state` and reconciles with the on-disk `_routed.json` so state survives an empty registry (e.g. server restart). With Freerouting (a subprocess) the GIL is released, so status polls stay responsive. The built-in NCR router fires a per-iteration progress callback that surfaces as `routing_progress` (`{iteration, max_iterations, legal_nets, total_nets, overused_cells, elapsed_s}`); `routing_elapsed_s` is reported live for both engines.
+
+**Async design:** `design_pcb` uses the same pattern — a daemon worker runs the full pipeline and records state in `_DESIGN_JOBS`; `get_project_status` reports `design_state`/`design_progress`/`design_result`/`design_error`/`design_elapsed_s`, and reconciles with on-disk `STATUS.json` so a respawned server can still report design state. Because the project dir may not exist yet during the early (pre-mkdir) phase, the status tool consults the design registry *before* its "project not found" check, so an in-flight or early-failed design is never reported as missing. This decouples the long autonomous pipeline from the MCP transport timeout, but the nested LLM + vision-critic loop remains opaque to the caller — agents with their own QA should prefer the granular tools.
 
 **Configuration:** Same `PCB_*` environment variables as the CLI. The server forces `agent_mode=True`, `skip_qa=True` (calling agent reviews results itself), `max_rework_attempts=3`, and `llm_timeout=300`. The granular tools ignore the LLM settings entirely (they make no model calls). `design_pcb` overrides can be passed per-call via `settings`.
 
