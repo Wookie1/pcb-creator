@@ -66,6 +66,25 @@ def run_placement(
         return {"success": False, "error": f"No netlist found at {netlist_path.name}"}
     netlist = _load(netlist_path)
 
+    # Footprint resolution gate — refuse to place if any component would fall
+    # back to a placeholder.  This is the deterministic equivalent of the
+    # LLM-flow's footprint verification: the agent gets a structured list of
+    # unresolved components to fix (correct the package name, set
+    # PCB_KICAD_LIBRARY_PATH, or call provide_footprint) before retrying.
+    from validators.verify_footprints import verify_footprints
+    unresolved = verify_footprints(netlist)
+    if unresolved:
+        return {
+            "success": False,
+            "error": (
+                f"{len(unresolved)} component(s) have unresolved footprints and "
+                "would become 3mm placeholders. Fix each one (correct the package "
+                "name, set PCB_KICAD_LIBRARY_PATH, or call provide_footprint), then "
+                "re-run placement."
+            ),
+            "unresolved_footprints": unresolved,
+        }
+
     placement_path = _p(project_dir, project_name, "placement")
 
     # Resolve board dimensions

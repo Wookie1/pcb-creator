@@ -39,6 +39,11 @@ def configure_lookup(
     _default_cache = cache
 
 
+def get_default_cache() -> Any | None:
+    """Return the component cache installed by ``configure_lookup`` (or None)."""
+    return _default_cache
+
+
 @dataclass
 class PadInfo:
     """Absolute pad position on the board."""
@@ -321,6 +326,54 @@ def get_footprint_def(
     fp = _builtin_footprint_def(package, pin_count)
     if fp is not None:
         return fp
+
+    # --- Tier 5: retry with a normalized package name ---
+    # Verbose KiCad names (R_0805_2012Metric, LED_0603_1608Metric_HandSolder,
+    # SOIC-8_3.9x4.9mm_P1.27mm) often miss the bare-keyed built-in/IPC tiers.
+    # Reduce them to a recognized code and retry once.  KiCad library / cache
+    # tiers above already had a shot at the exact verbose name.
+    norm = _normalize_package(package)
+    if norm and norm != package:
+        fp = get_footprint_def(norm, pin_count, kicad_index=kicad_index, cache=cache)
+        if fp is not None:
+            return fp
+
+    return None
+
+
+# Verbose-KiCad → bare-code normalization.  Order matters: most specific first.
+_NORM_PASSIVE_RE = re.compile(
+    r"^(?:LED|FID|MOV|RV|FB|CP|R|C|L|D|F)_(\d{4})(?=_|$)", re.IGNORECASE)
+
+
+def _normalize_package(package: str) -> str | None:
+    """Reduce a verbose KiCad footprint name to a bare code the local tiers know.
+
+    Examples:
+        ``R_0805_2012Metric``                       → ``0805``
+        ``LED_0603_1608Metric_HandSolder``          → ``0603``
+        ``SOIC-8_3.9x4.9mm_P1.27mm``                → ``SOIC-8``
+        ``Crystal_HC49-4H_Vertical``                → ``HC49``
+
+    Returns ``None`` when no simplification applies (caller keeps the original).
+    """
+    if not package:
+        return None
+
+    # Imperial 2/3/4-digit passive / LED size code (the most common miss).
+    m = _NORM_PASSIVE_RE.match(package)
+    if m:
+        return m.group(1)
+
+    # Named-part special cases that don't live in the head token.
+    if "HC49" in package.upper():
+        return "HC49"
+
+    # Head token before the first geometry/handsolder suffix, e.g.
+    # "SOIC-8_3.9x4.9mm_P1.27mm" → "SOIC-8", "DIP-8_W7.62mm" → "DIP-8".
+    head = package.split("_", 1)[0]
+    if head and head != package:
+        return head
 
     return None
 

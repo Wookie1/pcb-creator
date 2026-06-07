@@ -107,6 +107,42 @@ def _get_config() -> OrchestratorConfig:
     return config
 
 
+_LOOKUP_CONFIGURED = False
+_LOOKUP_LOCK = threading.Lock()
+
+
+def _ensure_lookup_configured() -> None:
+    """Install the tiered footprint lookup (KiCad library + component cache).
+
+    The CLI and Gradio entry points call ``configure_lookup`` at startup, but the
+    MCP server is a separate process — without this, the KiCad-library tier and
+    the component cache are disabled and verbose KiCad footprint names fall back
+    to placeholders.  Idempotent and thread-safe.
+    """
+    global _LOOKUP_CONFIGURED
+    if _LOOKUP_CONFIGURED:
+        return
+    with _LOOKUP_LOCK:
+        if _LOOKUP_CONFIGURED:
+            return
+        from optimizers.pad_geometry import configure_lookup
+        from orchestrator.cache import ComponentCache
+
+        config = _get_config()
+        cache = ComponentCache(config.component_cache_path)
+
+        kicad_index = None
+        if config.kicad_library_path:
+            try:
+                from exporters.kicad_mod_parser import KiCadLibraryIndex
+                kicad_index = KiCadLibraryIndex(config.kicad_library_path)
+            except Exception:
+                kicad_index = None
+
+        configure_lookup(kicad_index=kicad_index, cache=cache)
+        _LOOKUP_CONFIGURED = True
+
+
 def _slugify(text: str) -> str:
     """Convert description to a filesystem-safe project name."""
     slug = re.sub(r"[^a-z0-9]+", "_", text.lower().strip())
@@ -904,21 +940,173 @@ def import_kicad_netlist(
     n_comp = sum(1 for e in elements if e["element_type"] == "component")
     n_net  = sum(1 for e in elements if e["element_type"] == "net")
 
+    # Verify every footprint resolves now, so the agent can fix packages
+    # immediately instead of discovering placeholders after placement.
+    _ensure_lookup_configured()
+    from validators.verify_footprints import verify_footprints
+    unresolved = verify_footprints(netlist)
+
+    if unresolved:
+        names = ", ".join(f"{u['designator']} ({u['package'] or 'no package'})"
+                          for u in unresolved)
+        next_step = (
+            f"{len(unresolved)} component(s) have unresolved footprints: {names}. "
+            "Placement will be BLOCKED until every footprint resolves. Fix each one "
+            "by correcting its package name in the netlist, setting "
+            "PCB_KICAD_LIBRARY_PATH, or calling provide_footprint(...), then call "
+            f"verify_footprints(\"{project_name}\") to confirm."
+        )
+    else:
+        next_step = (
+            f"Netlist imported ({n_comp} components, {n_net} nets), all footprints "
+            f"resolved. Call optimize_placement(\"{project_name}\", board_width_mm, "
+            "board_height_mm) to continue."
+        )
+
     return {
-        "success":         True,
-        "project_name":    project_name,
-        "netlist_path":    str(netlist_path),
-        "component_count": n_comp,
-        "net_count":       n_net,
-        "warnings":        warnings,
-        "next_step": (
-            f"Netlist imported ({n_comp} components, {n_net} nets). "
-            f"Call design_pcb with requirements_json={{\"project_name\": \"{project_name}\", "
-            f"\"description\": \"{description or project_name}\"}} to run placement → "
-            f"routing → DRC → export, or call get_project_status(\"{project_name}\") "
-            f"to check the current state."
-        ),
+        "success":               True,
+        "project_name":          project_name,
+        "netlist_path":          str(netlist_path),
+        "component_count":       n_comp,
+        "net_count":             n_net,
+        "warnings":              warnings,
+        "unresolved_footprints": unresolved,
+        "next_step":             next_step,
     }
+
+
+# ---------------------------------------------------------------------------
+# Footprint verification + remediation (agent-driven footprint review)
+# ---------------------------------------------------------------------------
+
+@mcp.tool()
+def verify_footprints(project_name: str) -> dict:
+    """Check that every component's footprint resolves to real pad geometry.
+
+    This is the deterministic gate that placement enforces. A component whose
+    package cannot be resolved through any library tier (KiCad library →
+    IPC-7351 → cache → built-in → normalized name) would silently become a 3mm
+    placeholder — so placement refuses to run until this returns clean.
+
+    Call after import_kicad_netlist, and again after each provide_footprint /
+    package-name fix, until ``unresolved`` is empty.
+
+    Args:
+        project_name: Project slug (must already have a netlist).
+
+    Returns:
+        {
+            "success": True,
+            "resolved": bool,                 # True when nothing is unresolved
+            "component_count": int,
+            "unresolved_count": int,
+            "unresolved_footprints": [        # empty when resolved
+                {"designator", "package", "pin_count", "reason"}, ...
+            ],
+        }  or  {"success": False, "error": str}
+    """
+    pdir = _project_dir(project_name)
+    netlist = _read_project_json(project_name, "_netlist.json")
+    if netlist is None:
+        return {"success": False,
+                "error": f"No netlist for '{project_name}'. Import one first."}
+
+    _ensure_lookup_configured()
+    from validators.verify_footprints import verify_footprints as _verify
+
+    unresolved = _verify(netlist)
+    n_comp = sum(1 for e in netlist.get("elements", [])
+                 if e.get("element_type") == "component")
+    return {
+        "success": True,
+        "resolved": not unresolved,
+        "component_count": n_comp,
+        "unresolved_count": len(unresolved),
+        "unresolved_footprints": unresolved,
+    }
+
+
+@mcp.tool()
+def provide_footprint(
+    project_name: str,
+    package: str,
+    like_package: str | None = None,
+    pin_offsets: dict | None = None,
+    pad_size: list | None = None,
+) -> dict:
+    """Supply footprint geometry for a package the libraries don't know.
+
+    Two ways to resolve an unresolved footprint (use exactly one):
+
+    1. ``like_package`` — alias an unknown package to a recognized one. The
+       geometry of ``like_package`` is resolved and cached under ``package``.
+       Use this when the KiCad name is just verbose, e.g.
+       provide_footprint(pn, "R_0805_2012Metric_Pad1.05x1.40mm", like_package="0805").
+
+    2. ``pin_offsets`` + ``pad_size`` — give explicit geometry for a genuinely
+       custom part. ``pin_offsets`` maps pin number → [dx_mm, dy_mm] from the
+       component center at rotation 0; ``pad_size`` is [width_mm, height_mm].
+       Pull these from the part's datasheet or .kicad_mod.
+
+    The entry is written to the shared component cache (source ``agent``,
+    needs_review=true) so it persists and applies to every later run. After
+    calling this, run verify_footprints to confirm the gate is clear.
+
+    Args:
+        project_name: Project slug (used only to validate context).
+        package:      The exact package string from the netlist to resolve.
+        like_package: Recognized package whose geometry to reuse (mode 1).
+        pin_offsets:  {pin_number: [dx_mm, dy_mm]} (mode 2).
+        pad_size:     [width_mm, height_mm] (mode 2).
+
+    Returns:
+        {"success": True, "package": str, "source": str, "pin_count": int}
+        or {"success": False, "error": str}
+    """
+    _ensure_lookup_configured()
+    from optimizers.pad_geometry import get_footprint_def, get_default_cache
+
+    cache = get_default_cache()
+    if cache is None:
+        return {"success": False,
+                "error": "Component cache is not configured; cannot persist footprint."}
+
+    if not package:
+        return {"success": False, "error": "package must be a non-empty string."}
+
+    # Mode 1: alias to a recognized package.
+    if like_package:
+        ref = get_footprint_def(like_package, 0)
+        if ref is None:
+            return {"success": False,
+                    "error": (f"like_package '{like_package}' is itself unresolved. "
+                              "Choose a recognized package (e.g. 0805, SOIC-8, "
+                              "SOT-23, DIP-8) or use pin_offsets + pad_size.")}
+        offsets = {str(k): [float(v[0]), float(v[1])]
+                   for k, v in ref.pin_offsets.items()}
+        cache.put_footprint(package, offsets, list(ref.pad_size),
+                            source="agent", needs_review=True)
+        return {"success": True, "package": package,
+                "source": f"agent (alias of {like_package})",
+                "pin_count": len(offsets)}
+
+    # Mode 2: explicit geometry.
+    if pin_offsets and pad_size:
+        try:
+            offsets = {str(k): [float(v[0]), float(v[1])]
+                       for k, v in pin_offsets.items()}
+            psize = [float(pad_size[0]), float(pad_size[1])]
+        except (TypeError, ValueError, IndexError, KeyError) as exc:
+            return {"success": False,
+                    "error": f"Malformed pin_offsets/pad_size: {exc}. "
+                             "pin_offsets={pin:[dx,dy]}, pad_size=[w,h]."}
+        cache.put_footprint(package, offsets, psize,
+                            source="agent", needs_review=True)
+        return {"success": True, "package": package, "source": "agent",
+                "pin_count": len(offsets)}
+
+    return {"success": False,
+            "error": "Provide either like_package, or pin_offsets + pad_size."}
 
 
 # ---------------------------------------------------------------------------
@@ -959,6 +1147,7 @@ def optimize_placement(
     if not pdir.exists():
         return {"success": False, "error": f"Project '{project_name}' not found. Import a netlist first."}
 
+    _ensure_lookup_configured()
     try:
         return stages.run_placement(
             pdir, project_name, _get_config(),
@@ -1118,6 +1307,7 @@ def main():
         os.getcwd()
     except FileNotFoundError:
         os.chdir("/tmp")
+    _ensure_lookup_configured()
     mcp.run()
 
 
