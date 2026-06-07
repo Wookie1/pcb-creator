@@ -62,6 +62,17 @@ mcp = FastMCP(
 _ROUTE_JOBS: dict[str, dict] = {}
 _ROUTE_LOCK = threading.Lock()
 
+# In-memory design job registry (project_name -> job dict).  design_pcb runs the
+# full pipeline (requirements → schematic → BOM → placement → routing → DRC →
+# outputs) on a background thread so the MCP call returns immediately and never
+# hits the client timeout.  Clients poll get_project_status and read
+# 'design_state' (running → complete | failed).  Single-flight: a second
+# design_pcb for a project already running returns the in-progress job instead of
+# launching a duplicate pipeline.  Reconciled with on-disk STATUS.json so a
+# respawned server can still report design state.
+_DESIGN_JOBS: dict[str, dict] = {}
+_DESIGN_LOCK = threading.Lock()
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -123,6 +134,117 @@ def design_pcb(
     attachments: list[dict] | None = None,
 ) -> dict:
     """Design a PCB from a circuit description or structured requirements.
+
+    Starts the full pipeline (requirements → schematic → BOM → placement →
+    routing → DRC → outputs) on a BACKGROUND THREAD and returns immediately,
+    so long designs never hit the MCP client timeout. Poll
+    get_project_status(project_name) and read 'design_state'
+    (running → complete | failed); 'design_progress' shows the live step while
+    running, and 'design_result' holds the full result (steps, routing stats,
+    DRC summary, output files) when complete.
+
+    Single-flight: calling design_pcb again for a project that is already
+    running returns the in-progress job instead of launching a duplicate
+    pipeline. Before re-designing after a disconnect, call get_project_status
+    first — if 'design_state' is 'running' the prior run is still going.
+
+    Two input modes (see get_requirements_schema() for the structured format,
+    preferred for agents — it skips LLM translation):
+      - requirements_json: structured requirements dict.
+      - description: plain-English circuit description (translated via LLM).
+
+    Args:
+        description: Circuit description in plain English, or a short summary
+            when using requirements_json. Used to auto-generate project_name if
+            omitted.
+        project_name: Optional project slug. Auto-generated from description if omitted.
+        requirements_json: Structured requirements dict (schema from
+            get_requirements_schema()). When provided, LLM translation is skipped.
+        settings: Optional overrides: {"model","router_engine","max_rework_attempts","skip_qa"}.
+        attachments: Optional file attachments (e.g. a "board_outline" DXF used by
+            step 3); see get_requirements_schema() notes.
+
+    Returns:
+        {success: True, state: "running", project_name, poll}  immediately —
+        or {success: False, ...} only on an immediate launch error.
+    """
+    import time as _time
+
+    if not project_name:
+        project_name = _slugify(description)
+
+    # Single-flight: don't launch a duplicate pipeline for a project that is
+    # already running. A second call returns the in-progress job to poll.
+    with _DESIGN_LOCK:
+        current = _DESIGN_JOBS.get(project_name)
+        if current and current["state"] == "running":
+            return {
+                "success": True,
+                "state": "running",
+                "project_name": project_name,
+                "message": "Design already in progress for this project; poll "
+                           "get_project_status and read 'design_state'.",
+            }
+        _DESIGN_JOBS[project_name] = {
+            "state": "running", "result": None, "error": None,
+            "started_at": _time.monotonic(), "progress": None,
+        }
+
+    def _on_progress(p: dict) -> None:
+        with _DESIGN_LOCK:
+            job = _DESIGN_JOBS.get(project_name)
+            if job and job["state"] == "running":
+                job["progress"] = p
+
+    def _worker() -> None:
+        try:
+            result = _design_pcb_sync(
+                description, project_name, requirements_json, settings,
+                attachments, progress_cb=_on_progress,
+            )
+            state = "complete" if result.get("success") else "failed"
+            err = None if result.get("success") else (
+                "; ".join(result.get("errors", [])) or "pipeline did not complete"
+            )
+            with _DESIGN_LOCK:
+                started = _DESIGN_JOBS.get(project_name, {}).get("started_at")
+                _DESIGN_JOBS[project_name] = {
+                    "state": state, "result": result, "error": err,
+                    "started_at": started, "progress": None,
+                    "elapsed_s": round(_time.monotonic() - started, 1) if started else None,
+                }
+        except Exception as exc:  # noqa: BLE001 — surface any failure to the poller
+            with _DESIGN_LOCK:
+                started = _DESIGN_JOBS.get(project_name, {}).get("started_at")
+                _DESIGN_JOBS[project_name] = {
+                    "state": "failed", "result": None, "error": str(exc),
+                    "started_at": started, "progress": None,
+                    "elapsed_s": round(_time.monotonic() - started, 1) if started else None,
+                }
+
+    threading.Thread(target=_worker, daemon=True).start()
+
+    return {
+        "success": True,
+        "state": "running",
+        "project_name": project_name,
+        "poll": "Call get_project_status(project_name); read 'design_state' "
+                "(running → complete | failed). 'design_result' holds the full "
+                "result when complete; 'design_progress' shows the live step.",
+    }
+
+
+def _design_pcb_sync(
+    description: str,
+    project_name: str | None = None,
+    requirements_json: dict | None = None,
+    settings: dict | None = None,
+    attachments: list[dict] | None = None,
+    progress_cb=None,
+) -> dict:
+    """Synchronous design pipeline worker (run on a background thread by design_pcb).
+
+    Design a PCB from a circuit description or structured requirements.
 
     Runs the full pipeline: requirements → schematic → BOM → placement →
     routing → DRC → output generation. Uses vision-based autonomous review.
@@ -303,6 +425,13 @@ def design_pcb(
                     "name": event.get("name"),
                     "success": event.get("success", False),
                 })
+                if progress_cb is not None:
+                    progress_cb({
+                        "phase": "pipeline",
+                        "step": event.get("step"),
+                        "name": event.get("name"),
+                        "steps_done": len(steps_completed),
+                    })
             elif ev == "error":
                 errors.append(event.get("message", "Unknown error"))
             elif ev == "approval_needed":
@@ -510,6 +639,39 @@ def get_project_status(project_name: str) -> dict:
             result["routing_error"] = job.get("error")
     else:
         result["routing_state"] = "complete" if routed else "none"
+
+    # Design job state (async design_pcb flow), reconciled with disk.
+    with _DESIGN_LOCK:
+        djob = dict(_DESIGN_JOBS.get(project_name)) if project_name in _DESIGN_JOBS else None
+    if djob is not None:
+        result["design_state"] = djob["state"]
+        dstarted = djob.get("started_at")
+        if djob["state"] == "running" and dstarted is not None:
+            result["design_elapsed_s"] = round(_time.monotonic() - dstarted, 1)
+        elif djob.get("elapsed_s") is not None:
+            result["design_elapsed_s"] = djob["elapsed_s"]
+        if djob["state"] == "running" and djob.get("progress") is not None:
+            result["design_progress"] = djob["progress"]
+        if djob["state"] == "complete" and djob.get("result"):
+            result["design_result"] = djob["result"]
+        elif djob["state"] == "failed":
+            result["design_error"] = djob.get("error")
+    else:
+        # No in-memory job (e.g. server restarted). Infer from disk.
+        st = result.get("status") or {}
+        overall = str(
+            st.get("overall_status") or st.get("overall") or st.get("state") or ""
+        ).upper()
+        if overall in ("COMPLETE", "DONE", "SUCCESS", "OK"):
+            result["design_state"] = "complete"
+        elif overall in ("ERROR", "FAILED", "FAIL"):
+            result["design_state"] = "failed"
+        elif (pdir / "output").exists() and any((pdir / "output").iterdir()):
+            result["design_state"] = "complete"
+        elif status_path.exists():
+            result["design_state"] = "unknown"
+        else:
+            result["design_state"] = "none"
 
     # DRC summary
     drc = _read_project_json(project_name, "_drc_report.json")
