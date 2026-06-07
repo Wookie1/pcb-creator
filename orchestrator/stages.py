@@ -125,8 +125,13 @@ def run_placement(
 # Routing (lifted from runner.run_workflow so there is one implementation)
 # ---------------------------------------------------------------------------
 
-def _build_router_kwargs(project_dir: Path, project_name: str) -> dict:
-    """Derive router design rules from the requirements/DFM profile (if any)."""
+def _build_router_kwargs(project_dir: Path, project_name: str, log=None) -> dict:
+    """Derive router design rules from the requirements/DFM profile (if any).
+
+    log: optional callable(str) — when provided, emits the DFM-profile line the
+    CLI runner used to print.  None (default) keeps this silent for MCP callers.
+    """
+    _log = log or (lambda *_a: None)
     copper_oz = 0.5
     mfg_rules: dict = {}
     req_path = _p(project_dir, project_name, "requirements")
@@ -140,6 +145,7 @@ def _build_router_kwargs(project_dir: Path, project_name: str) -> dict:
                 if manufacturer:
                     from validators.engineering_constants import get_dfm_profile
                     mfg_rules = get_dfm_profile(manufacturer)
+                    _log(f"  DFM profile: {mfg_rules.get('description', manufacturer)}")
                 for key in ("trace_width_min_mm", "clearance_min_mm",
                             "via_drill_min_mm", "via_diameter_min_mm"):
                     if key in mfg:
@@ -164,7 +170,7 @@ def _build_router_kwargs(project_dir: Path, project_name: str) -> dict:
 
 
 def run_routing(project_dir: Path, project_name: str, config,
-                progress_callback=None) -> dict:
+                progress_callback=None, log=None) -> dict:
     """Route the board: Freerouting (if configured) with built-in fallback.
 
     Reads <project>_placement.json + <project>_netlist.json, writes
@@ -173,11 +179,16 @@ def run_routing(project_dir: Path, project_name: str, config,
     progress_callback: optional callable({iteration, max_iterations,
         legal_nets, total_nets, overused_cells, elapsed_s}) fired by the
         built-in NCR router each iteration.  Ignored for Freerouting.
+    log: optional callable(str) — when provided (e.g. the CLI runner passes
+        print), emits the engine/fallback/stats/validation diagnostic lines.
+        None (default) keeps this silent for MCP callers.
 
     Returns:
-        {success, engine, completion_pct, routed_nets, total_nets,
-         via_count, trace_length_mm, unrouted_nets, valid, routed_path}
+        {success, engine, completion_pct, routed_nets, total_nets, via_count,
+         trace_length_mm, unrouted_nets, valid, validation_errors,
+         validation_warnings, routed_path}
     """
+    _log = log or (lambda *_a: None)
     if str(config.base_dir) not in sys.path:
         sys.path.insert(0, str(config.base_dir))
     from validators.validate_routing import validate_routing as run_routing_validation
@@ -191,7 +202,7 @@ def run_routing(project_dir: Path, project_name: str, config,
 
     placement_data = _load(placement_path)
     netlist_data = _load(netlist_path)
-    router_kwargs = _build_router_kwargs(project_dir, project_name)
+    router_kwargs = _build_router_kwargs(project_dir, project_name, log=log)
 
     routed = None
     engine = "builtin"
@@ -200,6 +211,7 @@ def run_routing(project_dir: Path, project_name: str, config,
         try:
             from optimizers.freerouter import route_with_freerouting
             engine = "freerouting"
+            _log("  Engine: Freerouting")
             dsn_config = {
                 "trace_width_mm": router_kwargs.get("trace_width_signal_mm", 0.25),
                 "clearance_mm": router_kwargs.get("clearance_mm", 0.2),
@@ -215,18 +227,23 @@ def run_routing(project_dir: Path, project_name: str, config,
             )
             completion = routed.get("routing", {}).get("statistics", {}).get("completion_pct", 0)
             if completion < 100:
+                unrouted = routed.get("routing", {}).get("unrouted_nets", [])
+                _log(f"  Freerouting incomplete ({completion:.0f}%): {len(unrouted)} nets unrouted")
+                _log("  Falling back to built-in router...")
                 routed = None  # fall back to built-in for incomplete boards
             else:
                 from optimizers.router import apply_copper_fills, RouterConfig
                 routed = apply_copper_fills(routed, netlist_data, RouterConfig(**router_kwargs))
         except Exception as exc:
+            _log(f"  Freerouting FAILED: {exc}")
+            _log("  Falling back to built-in router...")
             routed = None
             engine = "builtin"
-            _ = exc
 
     if routed is None:
         from optimizers.router import route_board, RouterConfig
         engine = "builtin" if config.router_engine != "freerouting" else "builtin (fallback)"
+        _log("  Engine: Built-in (fallback)" if engine == "builtin (fallback)" else "  Engine: Built-in")
         rc = RouterConfig(**router_kwargs)
         rc.ncr_progress_callback = progress_callback
         routed = route_board(placement_data, netlist_data, rc)
@@ -238,11 +255,28 @@ def run_routing(project_dir: Path, project_name: str, config,
     stats = routed.get("routing", {}).get("statistics", {})
     unrouted = routed.get("routing", {}).get("unrouted_nets", [])
 
+    # Diagnostic summary (mirrors the CLI runner's inline block)
+    if not val_result["valid"]:
+        _log("  Routing validation FAILED")
+        for err in val_result.get("errors", [])[:5]:
+            _log(f"    - {err}")
+    else:
+        _log(f"  Routed: {stats.get('routed_nets', 0)}/{stats.get('total_nets', 0)} nets "
+             f"({stats.get('completion_pct', 0)}%)")
+        _log(f"  Trace length: {stats.get('total_trace_length_mm', 0):.1f}mm  "
+             f"Vias: {stats.get('via_count', 0)}")
+        if unrouted:
+            _log(f"  WARNING: {len(unrouted)} nets unrouted: {', '.join(unrouted)}")
+    overrides = routed.get("routing", {}).get("trace_width_overrides", {})
+    if overrides:
+        _log(f"  IPC-2221 trace upsizes: {len(overrides)} nets")
+
     return {
         "success": True,
         "engine": engine,
         "valid": val_result["valid"],
-        "validation_errors": val_result.get("errors", [])[:10],
+        "validation_errors": val_result.get("errors", []) or [],
+        "validation_warnings": val_result.get("warnings", []) or [],
         "completion_pct": stats.get("completion_pct", 0),
         "routed_nets": stats.get("routed_nets", 0),
         "total_nets": stats.get("total_nets", 0),
@@ -257,14 +291,18 @@ def run_routing(project_dir: Path, project_name: str, config,
 # DRC (deterministic — kept as a first-class stage)
 # ---------------------------------------------------------------------------
 
-def run_drc(project_dir: Path, project_name: str, config) -> dict:
+def run_drc(project_dir: Path, project_name: str, config, log=None) -> dict:
     """Run the deterministic DRC checks on the routed board.
 
     Reads <project>_routed.json + <project>_netlist.json, writes
     <project>_drc_report.json.
 
+    log: optional callable(str) — when provided, emits the DRC pass/fail summary
+        and per-check violation lines the CLI runner printed.  None = silent.
+
     Returns the full DRC report dict (passed, summary, checks, statistics).
     """
+    _log = log or (lambda *_a: None)
     if str(config.base_dir) not in sys.path:
         sys.path.insert(0, str(config.base_dir))
     from validators.drc_report import run_drc as _run_drc
@@ -287,6 +325,19 @@ def run_drc(project_dir: Path, project_name: str, config) -> dict:
 
     report = _run_drc(routed, netlist_data, req_data)
     _p(project_dir, project_name, "drc_report").write_text(json.dumps(report, indent=2))
+
+    if report.get("passed"):
+        _log(f"  DRC: PASSED — {report.get('summary', '')}")
+    else:
+        _log(f"  DRC: FAILED — {report.get('summary', '')}")
+        for check in report.get("checks", []):
+            if not check.get("passed", True):
+                for v in check.get("violations", [])[:3]:
+                    _log(f"    {v.get('severity', '').upper()}: {v.get('message', '')}")
+                remaining = len(check.get("violations", [])) - 3
+                if remaining > 0:
+                    _log(f"    ... and {remaining} more {check.get('rule', '')} violations")
+
     report["success"] = True
     return report
 
@@ -295,15 +346,20 @@ def run_drc(project_dir: Path, project_name: str, config) -> dict:
 # Output generation (Gerbers, drill, BOM CSV, CPL, STEP, ZIP)
 # ---------------------------------------------------------------------------
 
-def run_export(project_dir: Path, project_name: str, config) -> dict:
+def run_export(project_dir: Path, project_name: str, config, log=None) -> dict:
     """Generate manufacturing outputs from the routed board.
 
     Reads <project>_routed.json (+ optional _netlist/_bom), writes into
-    <project_dir>/output/ and produces a ZIP package.
+    <project_dir>/output/ and produces a ZIP package.  Gerbers, drill, BOM CSV,
+    pick-and-place, STEP, and assembly drawing PDF (the last two best-effort).
+
+    log: optional callable(str) — when provided, emits the per-artifact lines the
+        CLI runner printed.  None (default) keeps this silent for MCP callers.
 
     Returns:
         {success, output_dir, files: [...], package: <zip path>}
     """
+    _log = log or (lambda *_a: None)
     if str(config.base_dir) not in sys.path:
         sys.path.insert(0, str(config.base_dir))
     from exporters.gerber_exporter import export_gerbers, export_drill, create_output_package
@@ -326,28 +382,47 @@ def run_export(project_dir: Path, project_name: str, config) -> dict:
 
     gerber_files = export_gerbers(routed, netlist_data, output_dir)
     produced.extend(str(f) for f in gerber_files)
+    _log(f"  Gerber layers: {len(gerber_files)} files")
 
     drill_path = export_drill(routed, netlist_data, output_dir / f"{project_name}.drl")
     produced.append(str(drill_path))
+    _log(f"  Drill file: {drill_path.name}")
 
     if bom_data is not None:
         bom_csv = export_bom_csv(bom_data, output_dir / f"{project_name}_bom.csv")
         produced.append(str(bom_csv))
+        _log(f"  BOM: {bom_csv.name}")
 
     cpl_path = export_pick_and_place(
         routed, output_dir / f"{project_name}_cpl.csv", bom=bom_data
     )
     produced.append(str(cpl_path))
+    _log(f"  Pick-and-place: {cpl_path.name}")
 
     try:
         step_path = export_step_populated(
             routed, netlist_data, bom_data, output_dir / f"{project_name}_board.step"
         )
         produced.append(str(step_path))
+        _log(f"  STEP model: {step_path.name} (populated)")
     except Exception as exc:
-        _ = exc  # STEP is best-effort; don't fail the export over it
+        _log(f"  STEP model: skipped ({exc})")  # best-effort; don't fail export
+
+    # Assembly drawing PDF (best-effort, matches the CLI runner)
+    try:
+        from exporters.assembly_drawing import export_assembly_drawing
+        assy_path = export_assembly_drawing(
+            routed, netlist_data, bom_data,
+            output_dir / f"{project_name}_assembly.pdf",
+            project_name=project_name,
+        )
+        produced.append(str(assy_path))
+        _log(f"  Assembly drawing: {assy_path.name}")
+    except Exception as exc:
+        _log(f"  Assembly drawing: skipped ({exc})")
 
     zip_path = create_output_package(output_dir, project_name)
+    _log(f"  Package: {zip_path.name}")
 
     return {
         "success": True,

@@ -140,158 +140,28 @@ def run_workflow(
     print(f"[Step 4: Routing]")
     import sys as _sys
     _sys.path.insert(0, str(config.base_dir))
-    from validators.validate_routing import validate_routing as run_routing_validation
+    from . import stages
 
-    placement_path = project.get_output_path(f"{project_name}_placement.json")
     netlist_path = project.get_output_path(f"{project_name}_netlist.json")
-
-    placement_data = json.loads(placement_path.read_text())
     netlist_data = json.loads(netlist_path.read_text())
 
-    # Load manufacturing/DFM rules from requirements
-    copper_oz = 0.5  # default
-    mfg_rules: dict = {}
-    req_json_path = project.get_output_path(f"{project_name}_requirements.json")
-    if req_json_path.exists():
-        try:
-            req_data = json.loads(req_json_path.read_text())
-            copper_oz = req_data.get("board", {}).get("copper_weight_oz", 0.5)
-            mfg = req_data.get("manufacturing", {})
-            if mfg:
-                # If a manufacturer profile is specified, load it as base
-                manufacturer = mfg.get("manufacturer", "")
-                if manufacturer:
-                    from validators.engineering_constants import get_dfm_profile
-                    mfg_rules = get_dfm_profile(manufacturer)
-                    print(f"  DFM profile: {mfg_rules.get('description', manufacturer)}")
-                # Override with any explicit values from requirements
-                for key in ("trace_width_min_mm", "clearance_min_mm",
-                            "via_drill_min_mm", "via_diameter_min_mm"):
-                    if key in mfg:
-                        mfg_rules[key] = mfg[key]
-        except Exception:
-            pass
+    route_result = stages.run_routing(
+        project.project_dir, project_name, config, log=print
+    )
+    if not route_result.get("success"):
+        print(f"  Routing FAILED: {route_result.get('error')}")
+        return False
 
-    # Build common design rules from DFM
-    router_kwargs: dict = {"copper_weight_oz": copper_oz}
-    if mfg_rules:
-        # DFM minimums override defaults only if they're more restrictive
-        # (i.e., we use whichever is LARGER: DFM minimum or electrical requirement)
-        if "trace_width_min_mm" in mfg_rules:
-            tw_min = mfg_rules["trace_width_min_mm"]
-            router_kwargs["trace_width_signal_mm"] = max(0.25, tw_min)
-            router_kwargs["trace_width_power_mm"] = max(0.5, tw_min)
-            router_kwargs["trace_width_ground_mm"] = max(0.5, tw_min)
-        if "clearance_min_mm" in mfg_rules:
-            router_kwargs["clearance_mm"] = max(0.2, mfg_rules["clearance_min_mm"])
-        if "via_drill_min_mm" in mfg_rules:
-            router_kwargs["via_drill_mm"] = max(0.3, mfg_rules["via_drill_min_mm"])
-        if "via_diameter_min_mm" in mfg_rules:
-            router_kwargs["via_diameter_mm"] = max(0.6, mfg_rules["via_diameter_min_mm"])
-
-    routed = None
-
-    # Try Freerouting engine first (if configured)
-    if config.router_engine == "freerouting":
-        try:
-            from optimizers.freerouter import route_with_freerouting
-            print("  Engine: Freerouting")
-
-            dsn_config = {
-                "trace_width_mm": router_kwargs.get("trace_width_signal_mm", 0.25),
-                "clearance_mm": router_kwargs.get("clearance_mm", 0.2),
-                "via_drill_mm": router_kwargs.get("via_drill_mm", 0.3),
-                "via_diameter_mm": router_kwargs.get("via_diameter_mm", 0.6),
-            }
-
-            routed = route_with_freerouting(
-                placement_data, netlist_data,
-                jar_path=config.freerouting_jar_path,
-                timeout_s=config.freerouting_timeout_s,
-                exclude_nets=["GND"],
-                dsn_config=dsn_config,
-            )
-
-            # Discard partial results — fall back to SA router for incomplete boards
-            completion = routed.get("routing", {}).get("statistics", {}).get("completion_pct", 0)
-            if completion < 100:
-                unrouted = routed.get("routing", {}).get("unrouted_nets", [])
-                print(f"  Freerouting incomplete ({completion:.0f}%): {len(unrouted)} nets unrouted")
-                print(f"  Falling back to built-in router...")
-                routed = None
-            else:
-                # Apply copper fills and silkscreen
-                from optimizers.router import apply_copper_fills, RouterConfig
-                fill_config = RouterConfig(**router_kwargs)
-                routed = apply_copper_fills(routed, netlist_data, fill_config)
-        except Exception as e:
-            print(f"  Freerouting FAILED: {e}")
-            print(f"  Falling back to built-in router...")
-            routed = None
-
-    # Fallback to built-in router
-    if routed is None:
-        from optimizers.router import route_board, RouterConfig
-        if config.router_engine == "freerouting":
-            print("  Engine: Built-in (fallback)")
-        else:
-            print("  Engine: Built-in")
-        router_config = RouterConfig(**router_kwargs)
-        routed = route_board(placement_data, netlist_data, router_config)
-
+    # Re-read the routed board: the approval gate, vision review, KiCad export,
+    # and output generation below all need it in memory.
     routed_path = project.get_output_path(f"{project_name}_routed.json")
-    routed_path.write_text(json.dumps(routed, indent=2))
-
-    # Validate routing
-    val_result = run_routing_validation(str(routed_path), str(netlist_path))
-    stats = routed.get("routing", {}).get("statistics", {})
-
-    if not val_result["valid"]:
-        print(f"  Routing validation FAILED")
-        for err in val_result["errors"][:5]:
-            print(f"    - {err}")
-    else:
-        print(f"  Routed: {stats.get('routed_nets', 0)}/{stats.get('total_nets', 0)} nets "
-              f"({stats.get('completion_pct', 0)}%)")
-        print(f"  Trace length: {stats.get('total_trace_length_mm', 0):.1f}mm  "
-              f"Vias: {stats.get('via_count', 0)}")
-        if stats.get("unrouted_nets", 0) > 0:
-            unrouted = routed.get("routing", {}).get("unrouted_nets", [])
-            print(f"  WARNING: {len(unrouted)} nets unrouted: {', '.join(unrouted)}")
-
-    overrides = routed.get("routing", {}).get("trace_width_overrides", {})
-    if overrides:
-        print(f"  IPC-2221 trace upsizes: {len(overrides)} nets")
+    routed = json.loads(routed_path.read_text())
 
     print()
 
     # Step 5: DRC
     print(f"[Step 5: DRC]")
-    from validators.drc_report import run_drc
-
-    req_data = None
-    req_json_path = project.get_output_path(f"{project_name}_requirements.json")
-    if req_json_path.exists():
-        try:
-            req_data = json.loads(req_json_path.read_text())
-        except Exception:
-            pass
-
-    drc_report = run_drc(routed, netlist_data, req_data)
-    drc_path = project.get_output_path(f"{project_name}_drc_report.json")
-    drc_path.write_text(json.dumps(drc_report, indent=2))
-
-    if drc_report["passed"]:
-        print(f"  DRC: PASSED — {drc_report['summary']}")
-    else:
-        print(f"  DRC: FAILED — {drc_report['summary']}")
-        for check in drc_report["checks"]:
-            if not check["passed"]:
-                for v in check["violations"][:3]:
-                    print(f"    {v['severity'].upper()}: {v['message']}")
-                remaining = len(check["violations"]) - 3
-                if remaining > 0:
-                    print(f"    ... and {remaining} more {check['rule']} violations")
+    drc_report = stages.run_drc(project.project_dir, project_name, config, log=print)
 
     print()
 
@@ -346,50 +216,7 @@ def run_workflow(
 
     # Step 6: Output Generation
     print(f"[Step 6: Output Generation]")
-    from exporters.gerber_exporter import export_gerbers, export_drill, create_output_package
-    from exporters.bom_csv_exporter import export_bom_csv, export_pick_and_place
-    from exporters.step_exporter import export_step, export_step_populated
-
-    output_dir = project.project_dir / "output"
-    output_dir.mkdir(exist_ok=True)
-
-    # Gerber layers
-    gerber_files = export_gerbers(routed, netlist_data, output_dir)
-    print(f"  Gerber layers: {len(gerber_files)} files")
-
-    # Excellon drill
-    drill_path = export_drill(routed, netlist_data, output_dir / f"{project_name}.drl")
-    print(f"  Drill file: {drill_path.name}")
-
-    # BOM CSV
-    bom_path = project.get_output_path(f"{project_name}_bom.json")
-    bom_for_csv = json.loads(bom_path.read_text()) if bom_path.exists() else bom_data
-    bom_csv_path = export_bom_csv(bom_for_csv, output_dir / f"{project_name}_bom.csv")
-    print(f"  BOM: {bom_csv_path.name}")
-
-    # Pick-and-place (CPL)
-    cpl_path = export_pick_and_place(routed, output_dir / f"{project_name}_cpl.csv", bom=bom_for_csv)
-    print(f"  Pick-and-place: {cpl_path.name}")
-
-    # STEP 3D model (populated with component models)
-    step_path = export_step_populated(routed, netlist_data, bom_data, output_dir / f"{project_name}_board.step")
-    print(f"  STEP model: {step_path.name} (populated)")
-
-    # Assembly drawing PDF
-    try:
-        from exporters.assembly_drawing import export_assembly_drawing
-        assy_path = export_assembly_drawing(
-            routed, netlist_data, bom_data,
-            output_dir / f"{project_name}_assembly.pdf",
-            project_name=project_name,
-        )
-        print(f"  Assembly drawing: {assy_path.name}")
-    except Exception as e:
-        print(f"  Assembly drawing: skipped ({e})")
-
-    # Zip package
-    zip_path = create_output_package(output_dir, project_name)
-    print(f"  Package: {zip_path.name}")
+    stages.run_export(project.project_dir, project_name, config, log=print)
 
     print()
 
@@ -537,83 +364,22 @@ def run_workflow_streaming(
 
     # --- Step 4: Routing ---
     yield {"event": "step_start", "step": 4, "name": STEP_NAMES[4]}
-    from validators.validate_routing import validate_routing as run_routing_validation
+    from . import stages
 
-    # Load manufacturing/DFM rules
-    copper_oz = 0.5
-    mfg_rules: dict = {}
-    req_json_path = project.get_output_path(f"{project_name}_requirements.json")
-    if req_json_path.exists():
-        try:
-            req_data = json.loads(req_json_path.read_text())
-            copper_oz = req_data.get("board", {}).get("copper_weight_oz", 0.5)
-            mfg = req_data.get("manufacturing", {})
-            if mfg:
-                manufacturer = mfg.get("manufacturer", "")
-                if manufacturer:
-                    from validators.engineering_constants import get_dfm_profile
-                    mfg_rules = get_dfm_profile(manufacturer)
-                for key in ("trace_width_min_mm", "clearance_min_mm",
-                            "via_drill_min_mm", "via_diameter_min_mm"):
-                    if key in mfg:
-                        mfg_rules[key] = mfg[key]
-        except Exception:
-            pass
+    route_result = stages.run_routing(project.project_dir, project_name, config)
+    if not route_result.get("success"):
+        yield {"event": "step_done", "step": 4, "name": STEP_NAMES[4], "success": False}
+        yield {"event": "error", "step": 4, "message": route_result.get("error") or "Routing failed"}
+        return
 
-    router_kwargs: dict = {"copper_weight_oz": copper_oz}
-    if mfg_rules:
-        if "trace_width_min_mm" in mfg_rules:
-            tw_min = mfg_rules["trace_width_min_mm"]
-            router_kwargs["trace_width_signal_mm"] = max(0.25, tw_min)
-            router_kwargs["trace_width_power_mm"] = max(0.5, tw_min)
-            router_kwargs["trace_width_ground_mm"] = max(0.5, tw_min)
-        if "clearance_min_mm" in mfg_rules:
-            router_kwargs["clearance_mm"] = max(0.2, mfg_rules["clearance_min_mm"])
-        if "via_drill_min_mm" in mfg_rules:
-            router_kwargs["via_drill_mm"] = max(0.3, mfg_rules["via_drill_min_mm"])
-        if "via_diameter_min_mm" in mfg_rules:
-            router_kwargs["via_diameter_mm"] = max(0.6, mfg_rules["via_diameter_min_mm"])
-
-    routed = None
-    if config.router_engine == "freerouting":
-        try:
-            from optimizers.freerouter import route_with_freerouting
-            dsn_config = {
-                "trace_width_mm": router_kwargs.get("trace_width_signal_mm", 0.25),
-                "clearance_mm": router_kwargs.get("clearance_mm", 0.2),
-                "via_drill_mm": router_kwargs.get("via_drill_mm", 0.3),
-                "via_diameter_mm": router_kwargs.get("via_diameter_mm", 0.6),
-            }
-            routed = route_with_freerouting(
-                placement_data, netlist_data,
-                jar_path=config.freerouting_jar_path,
-                timeout_s=config.freerouting_timeout_s,
-                exclude_nets=["GND"],
-                dsn_config=dsn_config,
-            )
-            completion = routed.get("routing", {}).get("statistics", {}).get("completion_pct", 0)
-            if completion < 100:
-                routed = None
-            else:
-                from optimizers.router import apply_copper_fills, RouterConfig
-                fill_config = RouterConfig(**router_kwargs)
-                routed = apply_copper_fills(routed, netlist_data, fill_config)
-        except Exception:
-            routed = None
-
-    if routed is None:
-        from optimizers.router import route_board, RouterConfig
-        router_config = RouterConfig(**router_kwargs)
-        routed = route_board(placement_data, netlist_data, router_config)
-
+    # Re-read the routed board for the viewer, DRC, vision review and exports below.
     routed_path = project.get_output_path(f"{project_name}_routed.json")
-    routed_path.write_text(json.dumps(routed, indent=2))
+    routed = json.loads(routed_path.read_text())
 
-    val_result = run_routing_validation(str(routed_path), str(netlist_path))
     project.update_status(
         4, "COMPLETE",
-        validator_errors=val_result.get("errors") or None,
-        validator_warnings=val_result.get("warnings") or None,
+        validator_errors=route_result.get("validation_errors") or None,
+        validator_warnings=route_result.get("validation_warnings") or None,
     )
     yield {"event": "step_done", "step": 4, "name": STEP_NAMES[4], "success": True}
 
@@ -623,18 +389,7 @@ def run_workflow_streaming(
 
     # --- Step 5: DRC ---
     yield {"event": "step_start", "step": 5, "name": STEP_NAMES[5]}
-    from validators.drc_report import run_drc
-
-    req_data = None
-    if req_json_path.exists():
-        try:
-            req_data = json.loads(req_json_path.read_text())
-        except Exception:
-            pass
-
-    drc_report = run_drc(routed, netlist_data, req_data)
-    drc_path = project.get_output_path(f"{project_name}_drc_report.json")
-    drc_path.write_text(json.dumps(drc_report, indent=2))
+    drc_report = stages.run_drc(project.project_dir, project_name, config)
     _drc_errors, _drc_warnings = [], []
     for _check in drc_report.get("checks", []):
         for _v in _check.get("violations", []):
@@ -675,20 +430,7 @@ def run_workflow_streaming(
 
     # --- Step 6: Output Generation ---
     yield {"event": "step_start", "step": 6, "name": STEP_NAMES[6]}
-    from exporters.gerber_exporter import export_gerbers, export_drill, create_output_package
-    from exporters.bom_csv_exporter import export_bom_csv, export_pick_and_place
-    from exporters.step_exporter import export_step, export_step_populated
-
-    output_dir = project.project_dir / "output"
-    output_dir.mkdir(exist_ok=True)
-
-    export_gerbers(routed, netlist_data, output_dir)
-    export_drill(routed, netlist_data, output_dir / f"{project_name}.drl")
-    bom_for_csv = json.loads(bom_path.read_text()) if bom_path.exists() else bom_data
-    export_bom_csv(bom_for_csv, output_dir / f"{project_name}_bom.csv")
-    export_pick_and_place(routed, output_dir / f"{project_name}_cpl.csv", bom=bom_for_csv)
-    export_step_populated(routed, netlist_data, bom_data, output_dir / f"{project_name}_board.step")
-    create_output_package(output_dir, project_name)
+    stages.run_export(project.project_dir, project_name, config)
 
     if config.export_kicad:
         from exporters.kicad_exporter import export_kicad_pcb
