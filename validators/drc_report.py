@@ -23,6 +23,7 @@ from .drc_checks_dfm import (
     check_copper_to_edge,
     check_silkscreen,
     check_trace_current_capacity,
+    check_inner_plane_antipad,
 )
 from .engineering_constants import get_dfm_profile
 
@@ -158,6 +159,7 @@ def _run_dfm_checks(routed: dict, netlist: dict, dfm: dict) -> list[dict]:
         ("clearance_min", "dfm", check_clearance_min, (routed, dfm)),
         ("hole_to_hole", "mechanical", check_hole_to_hole, (routed, netlist, dfm)),
         ("copper_to_edge", "mechanical", check_copper_to_edge, (routed, netlist, dfm)),
+        ("inner_plane_antipad", "dfm", check_inner_plane_antipad, (routed, netlist, dfm)),
     ]
 
     for rule, category, check_fn, args in checks:
@@ -200,6 +202,8 @@ def _count_checked(routed: dict, rule: str) -> int:
         return len(routed.get("silkscreen", []))
     elif rule in ("hole_to_hole", "copper_to_edge"):
         return len(routing.get("vias", [])) + len(routed.get("placements", []))
+    elif rule == "inner_plane_antipad":
+        return sum(1 for f in routing.get("copper_fills", []) if f.get("is_plane"))
     return 0
 
 

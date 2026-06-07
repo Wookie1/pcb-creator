@@ -286,7 +286,7 @@ def _kicad_export_html(routed: dict | None, netlist: dict | None) -> str:
           return (c === 'x' ? r : (r & 0x3 | 0x8)).toString(16);
         }});
 
-      const layerMap = {{'top': 'F.Cu', 'bottom': 'B.Cu', 'top_silk': 'F.SilkS', 'bottom_silk': 'B.SilkS'}};
+      const layerMap = {{'top': 'F.Cu', 'inner1': 'In1.Cu', 'inner2': 'In2.Cu', 'bottom': 'B.Cu', 'top_silk': 'F.SilkS', 'bottom_silk': 'B.SilkS'}};
 
       // Build net list
       const nets = netlist.elements.filter(e => e.element_type === 'net');
@@ -303,7 +303,9 @@ def _kicad_export_html(routed: dict | None, netlist: dict | None) -> str:
       out += `  (general (thickness 1.6) (legacy_teardrops no))\\n  (paper "A4")\\n`;
 
       // Layers
-      out += `  (layers\\n    (0 "F.Cu" signal)\\n    (31 "B.Cu" signal)\\n`;
+      const numLayers = (routed.board || {}).layers || 2;
+      const innerLayersSexpr = numLayers >= 4 ? `    (1 "In1.Cu" signal)\\n    (2 "In2.Cu" signal)\\n` : '';
+      out += `  (layers\\n    (0 "F.Cu" signal)\\n${{innerLayersSexpr}}    (31 "B.Cu" signal)\\n`;
       out += `    (36 "B.SilkS" user "B.Silkscreen")\\n    (37 "F.SilkS" user "F.Silkscreen")\\n`;
       out += `    (38 "B.Mask" user "B.Mask")\\n    (39 "F.Mask" user "F.Mask")\\n`;
       out += `    (44 "Edge.Cuts" user)\\n    (47 "F.CrtYd" user "F.Courtyard")\\n`;
@@ -519,10 +521,13 @@ def generate_svg(
         copper_fills = routing.get("copper_fills", [])
         for fill_region in copper_fills:
             fill_layer = fill_region.get("layer", "top")
-            fill_opacity = "0.12" if fill_layer == "top" else "0.06"
+            fill_opacity = {"top": "0.12", "inner1": "0.08", "inner2": "0.08", "bottom": "0.06"}.get(fill_layer, "0.06")
+            # For inner planes, only draw the outer boundary polygon (index 0);
+            # cutout circles are not rendered in the viewer (too small to be useful)
+            plane_polygons = fill_region.get("polygons", [])[:1] if fill_region.get("is_plane") else fill_region.get("polygons", [])
             fill_nid = fill_region.get("net_id", "")
             fill_color = trace_colors.get(fill_nid, "#3b82f6")
-            for polygon in fill_region.get("polygons", []):
+            for polygon in plane_polygons:
                 if len(polygon) < 3:
                     continue
                 points_str = " ".join(
@@ -547,14 +552,18 @@ def generate_svg(
                         "net_class": elem.get("net_class", "signal"),
                     }
 
-        # Draw traces (bottom layer first, then top for proper z-order)
-        for layer_name in ["bottom", "top"]:
-            layer_opacity = "0.5" if layer_name == "bottom" else "0.85"
+        # Layer colours for inner signal layers
+        _INNER_LAYER_COLORS = {"inner1": "#a855f7", "inner2": "#06b6d4"}  # purple, cyan
+
+        # Draw traces (back to front: bottom → inner2 → inner1 → top)
+        for layer_name in ["bottom", "inner2", "inner1", "top"]:
+            layer_opacity = {"bottom": "0.5", "inner2": "0.55", "inner1": "0.6", "top": "0.85"}.get(layer_name, "0.7")
             for trace in traces:
                 if trace.get("layer") != layer_name:
                     continue
                 nid = trace.get("net_id", "")
-                color = trace_colors.get(nid, "#a3a3a3")
+                # Inner layers use a fixed colour to distinguish from signal net colours
+                color = _INNER_LAYER_COLORS.get(layer_name, trace_colors.get(nid, "#a3a3a3"))
                 tw_mm = trace.get("width_mm", 0.25)
                 tw = tw_mm * scale
                 x1 = margin + trace["start_x_mm"] * scale

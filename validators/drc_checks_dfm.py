@@ -365,3 +365,95 @@ def _segment_distance(ax1: float, ay1: float, ax2: float, ay2: float,
     d3 = _point_to_segment_dist(bx1, by1, ax1, ay1, ax2, ay2)
     d4 = _point_to_segment_dist(bx2, by2, ax1, ay1, ax2, ay2)
     return min(d1, d2, d3, d4)
+
+
+# ---------------------------------------------------------------------------
+# Inner plane antipad check (4-layer boards)
+# ---------------------------------------------------------------------------
+
+def check_inner_plane_antipad(routed: dict, netlist: dict, dfm: dict) -> list[DRCViolation]:
+    """Verify inner-layer plane regions contain antipad cutouts for all
+    foreign through-hole pads and vias (is_plane fill regions only).
+
+    Each cutout must provide at least clearance_min_mm between the pad edge
+    and the plane copper edge. Missing cutouts indicate the plane generator
+    failed or a pad landed outside the board outline.
+    """
+    violations: list[DRCViolation] = []
+    routing = routed.get("routing", {})
+    copper_fills = routing.get("copper_fills", [])
+
+    # Only relevant for is_plane fills (inner planes)
+    plane_fills = [f for f in copper_fills if f.get("is_plane")]
+    if not plane_fills:
+        return violations
+
+    min_clearance = dfm.get("clearance_min_mm", 0.127)
+
+    # Build through-hole pad positions from netlist
+    from optimizers.pad_geometry import build_pad_map
+    pad_map = build_pad_map(routed, netlist)
+    th_pads = [(p.x_mm, p.y_mm, max(p.pad_width_mm, p.pad_height_mm) / 2, p.net_id)
+               for p in pad_map.values() if p.layer == "all"]
+    vias = [(v["x_mm"], v["y_mm"], v.get("diameter_mm", 0.6) / 2, v.get("net_id", ""))
+            for v in routing.get("vias", [])]
+
+    for plane in plane_fills:
+        plane_layer = plane.get("layer", "")
+        plane_net = plane.get("net_id", "")
+        polygons = plane.get("polygons", [])
+        if len(polygons) < 2:
+            # No cutouts at all — flag if there are foreign through-holes
+            for x, y, r, net_id in th_pads + vias:
+                if net_id != plane_net:
+                    violations.append(DRCViolation(
+                        rule="inner_plane_antipad",
+                        severity="error",
+                        message=(
+                            f"Inner plane {plane_layer} ({plane.get('net_name','')}) "
+                            f"has no antipad cutouts but contains foreign through-hole features"
+                        ),
+                        location={"x_mm": round(x, 2), "y_mm": round(y, 2), "layer": plane_layer},
+                    ))
+                    break
+            continue
+
+        # Cutout discs are stored as circle-polygon approximations; measure
+        # their effective radius as the mean distance from centroid to vertices.
+        def _cutout_radius(poly: list) -> tuple[float, float, float]:
+            if len(poly) < 3:
+                return 0.0, 0.0, 0.0
+            cx = sum(p[0] for p in poly) / len(poly)
+            cy = sum(p[1] for p in poly) / len(poly)
+            r = sum(math.hypot(p[0] - cx, p[1] - cy) for p in poly) / len(poly)
+            return cx, cy, r
+
+        cutout_circles = [_cutout_radius(p) for p in polygons[1:]]
+
+        def _nearest_cutout(px: float, py: float) -> float:
+            """Edge-to-edge distance between (px,py) and closest cutout disc."""
+            best = math.inf
+            for cx, cy, cr in cutout_circles:
+                centre_dist = math.hypot(px - cx, py - cy)
+                best = min(best, centre_dist - cr)
+            return best
+
+        for x, y, r, net_id in th_pads + vias:
+            if net_id == plane_net:
+                continue  # same-net: thermal relief is acceptable
+            clearance_actual = _nearest_cutout(x, y) - r
+            if clearance_actual < min_clearance - 0.01:
+                violations.append(DRCViolation(
+                    rule="inner_plane_antipad",
+                    severity="error",
+                    message=(
+                        f"Insufficient antipad clearance on {plane_layer} "
+                        f"({plane.get('net_name','')}): "
+                        f"{clearance_actual:.3f}mm < {min_clearance:.3f}mm"
+                    ),
+                    location={"x_mm": round(x, 2), "y_mm": round(y, 2), "layer": plane_layer},
+                    value=round(clearance_actual, 4),
+                    required=min_clearance,
+                ))
+
+    return violations
