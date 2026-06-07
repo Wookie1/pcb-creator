@@ -430,18 +430,23 @@ def check_inner_plane_antipad(routed: dict, netlist: dict, dfm: dict) -> list[DR
 
         cutout_circles = [_cutout_radius(p) for p in polygons[1:]]
 
-        def _nearest_cutout(px: float, py: float) -> float:
-            """Edge-to-edge distance between (px,py) and closest cutout disc."""
-            best = math.inf
+        def _antipad_clearance(px: float, py: float, pad_r: float) -> float:
+            """Clearance from pad edge to nearest antipad cutout edge.
+
+            Positive means the pad is inside the cutout with room to spare.
+            Formula: cutout_radius - (distance_to_cutout_centre + pad_radius).
+            """
+            best = -math.inf
             for cx, cy, cr in cutout_circles:
                 centre_dist = math.hypot(px - cx, py - cy)
-                best = min(best, centre_dist - cr)
+                clr = cr - (centre_dist + pad_r)
+                best = max(best, clr)
             return best
 
         for x, y, r, net_id in th_pads + vias:
             if net_id == plane_net:
                 continue  # same-net: thermal relief is acceptable
-            clearance_actual = _nearest_cutout(x, y) - r
+            clearance_actual = _antipad_clearance(x, y, r)
             if clearance_actual < min_clearance - 0.01:
                 violations.append(DRCViolation(
                     rule="inner_plane_antipad",

@@ -112,8 +112,15 @@ def _dsn_structure(board: dict, config: dict) -> str:
 
     copper_layers = _COPPER_LAYERS_BY_COUNT.get(num_layers, _COPPER_LAYERS_BY_COUNT[2])
 
+    # For 4-layer boards, inner layers are solid copper planes — Freerouting should
+    # only route signal traces on the outer layers. List only outer layers as
+    # signal layers; inner layers are omitted from structure (but kept in via padstacks
+    # so through-vias still connect all layers).
+    _INNER_LAYERS = {"In1.Cu", "In2.Cu"}
+    routing_layers = [l for l in copper_layers if l not in _INNER_LAYERS]
+
     lines = ["  (structure"]
-    for lname in copper_layers:
+    for lname in routing_layers:
         lines.append(f'    (layer "{lname}" (type signal))')
     lines += [
         "    (boundary",
@@ -322,12 +329,24 @@ def _dsn_network(
 
     exclude_names = set(exclude_nets or [])
 
-    # Build port_id -> (designator, pin_number) lookup
+    # Build port_id -> (designator, pin_number) lookup.
+    # Ensure uniqueness per component: if multiple ports share pin_number 0
+    # (unknown pin), assign sequential integers so DSN refs don't collide.
     port_to_pin: dict[str, tuple[str, int]] = {}
     for cid, comp in components.items():
         des = comp["designator"]
+        used_pins: set[int] = set()
+        auto_idx = 1
         for port in ports_by_comp.get(cid, []):
-            port_to_pin[port["port_id"]] = (des, port["pin_number"])
+            pnum = port["pin_number"]
+            if pnum == 0 or pnum in used_pins:
+                # Assign a unique sequential pin number
+                while auto_idx in used_pins:
+                    auto_idx += 1
+                pnum = auto_idx
+                auto_idx += 1
+            used_pins.add(pnum)
+            port_to_pin[port["port_id"]] = (des, pnum)
 
     lines = ["  (network"]
 

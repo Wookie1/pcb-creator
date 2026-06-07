@@ -172,11 +172,12 @@ def route_with_freerouting(
         print(f"  DSN exported: {dsn_path}")
 
         # 2. Build command
+        # Excluded nets are already omitted from the DSN, so Freerouting routes
+        # all nets present in the file. The -inc flag would RESTRICT routing to
+        # only those nets — the opposite of what we want.
         cmd = [java_bin, "-Djava.awt.headless=true",
                "-jar", str(jar), "-de", str(dsn_path), "-do", str(ses_path),
-               "-mp", "20"]  # max 20 optimization passes to prevent infinite loop
-        if exclude_nets:
-            cmd.extend(["-inc", ",".join(exclude_nets)])
+               "-mp", "20", "-mt", "1"]  # -mt 1: single-thread optimization (avoids clearance bugs)
 
         print(f"  Running Freerouting (timeout={timeout_s}s)...")
 

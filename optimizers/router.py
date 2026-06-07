@@ -5202,10 +5202,79 @@ def apply_copper_fills(
     # PWR plane requires a designated power net; fall back to GND if not found.
     num_layers = board.get("layers", 2)
     if num_layers >= 4:
-        all_vias = routing.get("vias", []) + [v.to_dict() for v in stitch_vias]
         placements_list = routed.get("placements", [])
 
-        # Inner layer 1 → GND plane (same net as the outer fill)
+        # Identify inner2 power net first (most-connected non-GND power net)
+        pwr_net_name = fill_net_name
+        best_count = 0
+        for net in all_nets:
+            if net.get("net_class") == "power" and net.get("net_id") != fill_net_id:
+                cnt = len(net.get("connected_port_ids", []))
+                if cnt > best_count:
+                    best_count = cnt
+                    pwr_net_id = net["net_id"]
+                    pwr_net_name = net.get("name", pwr_net_id)
+
+        # Compute power stitching vias BEFORE generating inner planes so their
+        # positions are known and can be included as via obstacles in the cutouts.
+        via_r = config.via_diameter_mm / 2
+        clearance = config.clearance_mm
+        base_vias = routing.get("vias", []) + [v.to_dict() for v in stitch_vias]
+
+        existing_via_positions: set[tuple[float, float]] = {
+            (round(v.x_mm, 2), round(v.y_mm, 2)) for v in stitch_vias
+        }
+        # Build foreign-obstacle list (non-pwr pads + all routed/stitch vias)
+        obstacles: list[tuple[float, float, float]] = []
+        for fref, fpi in pad_map.items():
+            if fpi.net_id == pwr_net_id:
+                continue
+            obstacles.append((fpi.x_mm, fpi.y_mm, max(fpi.pad_width_mm, fpi.pad_height_mm) / 2))
+        for ev in base_vias:
+            if ev.get("net_id") == pwr_net_id:
+                continue
+            obstacles.append((ev["x_mm"], ev["y_mm"], ev.get("diameter_mm", config.via_diameter_mm) / 2))
+        for sv in stitch_vias:
+            obstacles.append((sv.x_mm, sv.y_mm, config.via_diameter_mm / 2))
+
+        for ref, pi in pad_map.items():
+            if pi.net_id != pwr_net_id:
+                continue
+            if pi.layer == "all":
+                continue  # through-hole: already penetrates inner2
+            placed = False
+            for dx, dy in [(0.0, 1.0), (0.0, -1.0), (1.0, 0.0), (-1.0, 0.0), (0.0, 0.0)]:
+                vx = round(pi.x_mm + dx, 4)
+                vy = round(pi.y_mm + dy, 4)
+                pos_key = (round(vx, 2), round(vy, 2))
+                if pos_key in existing_via_positions:
+                    continue
+                ok = True
+                for fx, fy, fr in obstacles:
+                    dist = math.sqrt((vx - fx) ** 2 + (vy - fy) ** 2)
+                    if dist < via_r + fr + clearance:
+                        ok = False
+                        break
+                if ok:
+                    existing_via_positions.add(pos_key)
+                    pwr_stitch_vias.append({
+                        "x_mm": vx,
+                        "y_mm": vy,
+                        "drill_mm": config.via_drill_mm,
+                        "diameter_mm": config.via_diameter_mm,
+                        "net_id": pwr_net_id,
+                        "net_name": pwr_net_name,
+                    })
+                    placed = True
+                    break
+
+        if pwr_stitch_vias:
+            print(f"  Power via stitching: {len(pwr_stitch_vias)} vias for {pwr_net_name}")
+
+        # Now generate inner planes with the complete via list (routing + pwr stitching)
+        all_vias = base_vias + pwr_stitch_vias
+
+        # Inner layer 1 → GND plane
         gnd_plane = generate_inner_plane(
             board, placements_list, pad_map, all_vias,
             layer="inner1",
@@ -5215,13 +5284,7 @@ def apply_copper_fills(
         )
         fill_regions.append(gnd_plane)
 
-        # Inner layer 2 → power plane (first power net found, else GND)
-        pwr_net_name = fill_net_name
-        for net in all_nets:
-            if net.get("net_class") == "power" and net.get("net_id") != fill_net_id:
-                pwr_net_id = net["net_id"]
-                pwr_net_name = net.get("name", pwr_net_id)
-                break
+        # Inner layer 2 → power plane
         pwr_plane = generate_inner_plane(
             board, placements_list, pad_map, all_vias,
             layer="inner2",
@@ -5230,32 +5293,6 @@ def apply_copper_fills(
             config=config,
         )
         fill_regions.append(pwr_plane)
-
-        # Power via stitching: SMD pads on the power net only touch the top
-        # layer — add a via at each SMD pad location to reach the inner2 plane.
-        # TH pads already penetrate inner2 via their drilled hole.
-        existing_via_positions: set[tuple[float, float]] = {
-            (round(v.x_mm, 2), round(v.y_mm, 2)) for v in stitch_vias
-        }
-        for ref, pi in pad_map.items():
-            if pi.net_id != pwr_net_id:
-                continue
-            if pi.layer == "all":
-                continue  # through-hole: already penetrates inner2
-            px, py = round(pi.x_mm, 2), round(pi.y_mm, 2)
-            if (px, py) in existing_via_positions:
-                continue
-            existing_via_positions.add((px, py))
-            pwr_stitch_vias.append({
-                "x_mm": pi.x_mm,
-                "y_mm": pi.y_mm,
-                "drill_mm": config.via_drill_mm,
-                "diameter_mm": config.via_diameter_mm,
-                "net_id": pwr_net_id,
-                "net_name": pwr_net_name,
-            })
-        if pwr_stitch_vias:
-            print(f"  Power via stitching: {len(pwr_stitch_vias)} vias for {pwr_net_name}")
 
     # Phase 5: Update the routed dict
     result = _copy.deepcopy(routed)

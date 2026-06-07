@@ -33,8 +33,10 @@ def _resolve_dfm_profile(requirements: dict | None) -> tuple[dict, str]:
     if not requirements:
         return get_dfm_profile("generic"), "generic"
 
+    # Check nested "manufacturing.manufacturer" first (LLM-generated reqs),
+    # then fall back to top-level "manufacturer" (hand-written test reqs).
     mfg = requirements.get("manufacturing", {})
-    manufacturer = mfg.get("manufacturer", "")
+    manufacturer = mfg.get("manufacturer", "") or requirements.get("manufacturer", "")
 
     if manufacturer:
         profile = get_dfm_profile(manufacturer)

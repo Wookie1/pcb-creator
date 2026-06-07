@@ -232,16 +232,20 @@ def run_routing(project_dir: Path, project_name: str, config,
                 _log(f"  Layer count: {num_layers} (inner layers routed as signal)")
             # For 4-layer boards also exclude the power plane net (inner2)
             # so Freerouting doesn't try to route it — the plane fill handles it.
+            # Pick the most-connected non-GND power net for inner2 (usually VCC/3V3).
             exclude_nets = ["GND"]
             if num_layers >= 4:
+                best_pwr: tuple[int, str] = (0, "")
                 for elem in netlist_data.get("elements", []):
                     if (elem.get("element_type") == "net"
                             and elem.get("net_class") == "power"
                             and elem.get("name", elem.get("net_id", "")) != "GND"):
-                        pwr_name = elem.get("name", elem.get("net_id", ""))
-                        exclude_nets.append(pwr_name)
-                        _log(f"  Excluding power plane net from routing: {pwr_name}")
-                        break
+                        pin_count = len(elem.get("connected_port_ids", []))
+                        if pin_count > best_pwr[0]:
+                            best_pwr = (pin_count, elem.get("name", elem.get("net_id", "")))
+                if best_pwr[1]:
+                    exclude_nets.append(best_pwr[1])
+                    _log(f"  Excluding power plane net from routing: {best_pwr[1]} ({best_pwr[0]} pins)")
             routed = route_with_freerouting(
                 placement_data, netlist_data,
                 jar_path=config.freerouting_jar_path,
