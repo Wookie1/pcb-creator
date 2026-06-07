@@ -62,10 +62,23 @@ PINNED_TYPES = {"connector", "fiducial"}
 # ---------- Helpers ----------
 
 def _compute_iterations(n_movable: int, max_override: int | None) -> int:
-    """Compute iteration count scaled to the number of movable components."""
+    """Compute iteration count scaled to the number of movable components.
+
+    The upper bound is 8 000 iterations — enough for good placement quality on
+    boards up to ~70 components while keeping runtime under ~30 s on a Pi 5
+    (ARM Cortex-A76, single core).  The old cap of 50 000 caused the Pi to
+    hang for minutes on dense boards.
+
+    The stagnation_limit (default 500) in SAConfig provides an early-exit if
+    the optimizer hasn't improved in 500 consecutive iterations, so typical
+    runs finish well under the cap.
+
+    Override with PCB_OPTIMIZER_ITERATIONS env var or by passing an explicit
+    SAConfig(max_iterations=N) for more control.
+    """
     if max_override is not None:
         return max_override
-    return max(2000, min(50000, n_movable * 1000))
+    return max(2000, min(8000, n_movable * 200))
 
 
 def _get_bounding_box(
