@@ -182,7 +182,12 @@ def test_ground_net_no_ground_pin():
 # ---------------------------------------------------------------------------
 
 def test_multiple_power_out_on_net():
-    """Two power_out pins on the same net should error."""
+    """Two power_out pins on the same net warns (not errors).
+
+    Multiple power sources on one rail is a legitimate topology (e.g. USB VBUS
+    and a regulator output both feeding VCC through protection diodes/switches),
+    so this is flagged for review rather than rejected outright.
+    """
     elements = [
         _comp("comp_u1", "U1", "voltage_regulator", "LM7805"),
         _port("port_u1_out", "comp_u1", 1, "OUT", "power_out"),
@@ -191,8 +196,9 @@ def test_multiple_power_out_on_net():
         _net("net_vcc", "VCC", ["port_u1_out", "port_u2_out"], "power"),
     ]
     c, p, n = build_lookups(elements)
-    errors, _ = check_pin_type_conflicts(c, p, n)
-    assert any("power_out" in e and "short" in e.lower() for e in errors)
+    errors, warnings = check_pin_type_conflicts(c, p, n)
+    assert errors == []
+    assert any("power_out" in w for w in warnings)
 
 
 # ---------------------------------------------------------------------------
