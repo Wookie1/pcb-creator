@@ -29,9 +29,8 @@ Thumbs.db
 *.swp
 *.swo
 
-# Test data
+# Test data (dev notes / logs / large fixtures — not unit tests)
 test/
-tests/
 
 # Temp
 /tmp/
