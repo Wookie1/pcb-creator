@@ -492,8 +492,18 @@ def get_project_status(project_name: str) -> dict:
         }
 
     # routing_state: in-memory job wins; else infer from on-disk artifact.
+    import time as _time
     if job is not None:
         result["routing_state"] = job["state"]
+        # Elapsed time: live during run, final after completion/failure
+        started = job.get("started_at")
+        if job["state"] == "running" and started is not None:
+            result["routing_elapsed_s"] = round(_time.monotonic() - started, 1)
+        elif job.get("elapsed_s") is not None:
+            result["routing_elapsed_s"] = job["elapsed_s"]
+        # Live NCR iteration progress (only meaningful while running)
+        if job["state"] == "running" and job.get("progress") is not None:
+            result["routing_progress"] = job["progress"]
         if job["state"] == "complete" and job.get("result"):
             result["routing_result"] = job["result"]
         elif job["state"] == "failed":
@@ -789,26 +799,46 @@ def route_board(project_name: str) -> dict:
     if not (pdir / f"{project_name}_placement.json").exists():
         return {"success": False, "error": "No placement found — call optimize_placement first."}
 
+    import time as _time
+
     with _ROUTE_LOCK:
         current = _ROUTE_JOBS.get(project_name)
         if current and current["state"] == "running":
             return {"success": True, "state": "running", "project_name": project_name,
                     "message": "Routing already in progress; poll get_project_status."}
-        _ROUTE_JOBS[project_name] = {"state": "running", "result": None, "error": None}
+        _ROUTE_JOBS[project_name] = {
+            "state": "running", "result": None, "error": None,
+            "started_at": _time.monotonic(), "progress": None,
+        }
 
     config = _get_config()
 
+    def _on_progress(p: dict) -> None:
+        with _ROUTE_LOCK:
+            job = _ROUTE_JOBS.get(project_name)
+            if job and job["state"] == "running":
+                job["progress"] = p
+
     def _worker() -> None:
         try:
-            result = stages.run_routing(pdir, project_name, config)
+            result = stages.run_routing(pdir, project_name, config,
+                                        progress_callback=_on_progress)
             state = "complete" if result.get("success") else "failed"
             with _ROUTE_LOCK:
+                started = _ROUTE_JOBS.get(project_name, {}).get("started_at")
                 _ROUTE_JOBS[project_name] = {
                     "state": state, "result": result, "error": result.get("error"),
+                    "started_at": started, "progress": None,
+                    "elapsed_s": round(_time.monotonic() - started, 1) if started else None,
                 }
         except Exception as exc:  # noqa: BLE001 — surface any failure to the poller
             with _ROUTE_LOCK:
-                _ROUTE_JOBS[project_name] = {"state": "failed", "result": None, "error": str(exc)}
+                started = _ROUTE_JOBS.get(project_name, {}).get("started_at")
+                _ROUTE_JOBS[project_name] = {
+                    "state": "failed", "result": None, "error": str(exc),
+                    "started_at": started, "progress": None,
+                    "elapsed_s": round(_time.monotonic() - started, 1) if started else None,
+                }
 
     threading.Thread(target=_worker, daemon=True).start()
 

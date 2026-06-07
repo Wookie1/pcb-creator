@@ -163,11 +163,16 @@ def _build_router_kwargs(project_dir: Path, project_name: str) -> dict:
     return kwargs
 
 
-def run_routing(project_dir: Path, project_name: str, config) -> dict:
+def run_routing(project_dir: Path, project_name: str, config,
+                progress_callback=None) -> dict:
     """Route the board: Freerouting (if configured) with built-in fallback.
 
     Reads <project>_placement.json + <project>_netlist.json, writes
     <project>_routed.json.
+
+    progress_callback: optional callable({iteration, max_iterations,
+        legal_nets, total_nets, overused_cells, elapsed_s}) fired by the
+        built-in NCR router each iteration.  Ignored for Freerouting.
 
     Returns:
         {success, engine, completion_pct, routed_nets, total_nets,
@@ -222,7 +227,9 @@ def run_routing(project_dir: Path, project_name: str, config) -> dict:
     if routed is None:
         from optimizers.router import route_board, RouterConfig
         engine = "builtin" if config.router_engine != "freerouting" else "builtin (fallback)"
-        routed = route_board(placement_data, netlist_data, RouterConfig(**router_kwargs))
+        rc = RouterConfig(**router_kwargs)
+        rc.ncr_progress_callback = progress_callback
+        routed = route_board(placement_data, netlist_data, rc)
 
     routed_path = _p(project_dir, project_name, "routed")
     routed_path.write_text(json.dumps(routed, indent=2))

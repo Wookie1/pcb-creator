@@ -85,6 +85,8 @@ class RouterConfig:
     # Pre-route GND fill parameters
     pre_fill_enabled: bool = True        # commit GND fill to grid before signal routing
     pre_fill_fallback: bool = True       # retry without pre-fill if it routes fewer nets
+    # Progress reporting (not serialised — set at runtime by the MCP server)
+    ncr_progress_callback: object = None  # callable({iteration, max_iterations, legal_nets, ...}) | None
 
 
 @dataclass
@@ -3035,6 +3037,7 @@ def _negotiated_congestion_route(
     netlist: dict,
     diagonal: bool = True,
     channel_pressure: dict[str, list[float]] | None = None,
+    progress_callback=None,
 ) -> tuple[RoutingResult, list[str], list[tuple[NetInfo, int]], RoutingGrid]:
     """Negotiated congestion routing (PathFinder algorithm).
 
@@ -3188,6 +3191,19 @@ def _negotiated_congestion_route(
         print(f"  NCR iter {iteration}: {len(routed_this_iter)} routed, "
               f"{overused} overused cells, {len(legal_nets)} legal nets "
               f"[{elapsed:.1f}s]")
+
+        if progress_callback is not None:
+            try:
+                progress_callback({
+                    "iteration": iteration,
+                    "max_iterations": config.ncr_max_iterations,
+                    "legal_nets": len(legal_nets),
+                    "total_nets": len(net_order),
+                    "overused_cells": overused,
+                    "elapsed_s": round(elapsed, 1),
+                })
+            except Exception:
+                pass  # never let a bad callback kill the router
 
         if overused == 0:
             # Converged! All routes are legal.
@@ -3822,6 +3838,7 @@ def route_board(
             net_id_map, net_trace_widths, fill_net, config, netlist,
             diagonal=use_diagonal,
             channel_pressure=channel_pressure,
+            progress_callback=config.ncr_progress_callback,
         )
         # Use NCR result if it's better than initial trials
         if len(ncr_routed) > len(routed_net_ids):
