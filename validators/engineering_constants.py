@@ -165,6 +165,25 @@ MANUFACTURER_DFM_PROFILES: dict[str, dict] = {
         "min_hole_to_hole_mm": 0.5,
         "min_copper_to_edge_mm": 0.2,
     },
+    "jlcpcb_4layer": {
+        "description": "JLCPCB 4-layer standard process (1.6mm, ENIG, JLC7628 stackup)",
+        "trace_width_min_mm": 0.127,     # 5 mil outer layers
+        "clearance_min_mm": 0.127,       # 5 mil
+        "via_drill_min_mm": 0.3,
+        "via_diameter_min_mm": 0.6,
+        "min_annular_ring_mm": 0.13,     # 5 mil
+        "board_edge_clearance_mm": 0.3,
+        "silkscreen_min_width_mm": 0.15,
+        "silkscreen_min_height_mm": 0.8,
+        "min_hole_to_hole_mm": 0.5,
+        "min_copper_to_edge_mm": 0.2,
+        "inner_trace_width_min_mm": 0.127,  # 5 mil inner layers
+        "inner_clearance_min_mm": 0.127,
+        "board_thickness_mm": 1.6,       # total board thickness
+        "copper_weight_outer_oz": 1.0,   # 1oz outer (35µm)
+        "copper_weight_inner_oz": 0.5,   # 0.5oz inner (17.5µm)
+        "num_layers": 4,
+    },
     "jlcpcb_advanced": {
         "description": "JLCPCB advanced process (4+ layer, HDI)",
         "trace_width_min_mm": 0.09,      # 3.5 mil

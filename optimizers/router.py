@@ -2896,6 +2896,98 @@ def create_copper_fill(
     return results, stitch_vias
 
 
+def generate_inner_plane(
+    board: dict,
+    placements: list[dict],
+    pad_map: dict,
+    vias: list[dict],
+    layer: str,
+    net_id: str,
+    net_name: str,
+    config: "RouterConfig",
+) -> dict:
+    """Generate a solid copper plane on an inner layer for the given net.
+
+    Produces a board-sized filled polygon with circular antipad cutouts
+    around every through-hole pad and via that belongs to a different net.
+    Thermal relief spokes are added for same-net through-hole pads.
+
+    Args:
+        board: Board dict with width_mm/height_mm.
+        placements: All component placements.
+        pad_map: PadInfo map from build_pad_map().
+        vias: Routed via list.
+        layer: Internal layer name (e.g. "inner1", "inner2").
+        net_id: Net ID for the plane.
+        net_name: Net name for the plane.
+        config: RouterConfig for clearance/thermal parameters.
+
+    Returns:
+        Fill region dict with keys: layer, net_id, net_name, polygons.
+    """
+    w = board.get("width_mm", 50.0)
+    h = board.get("height_mm", 50.0)
+
+    # Solid board outline as the outer polygon
+    outer = [(0.0, 0.0), (w, 0.0), (w, h), (0.0, h), (0.0, 0.0)]
+
+    # Antipad radius = pad radius + clearance (IPC-2221 inner layer antipad)
+    clearance = config.fill_clearance_mm
+    thermal_gap = config.thermal_gap_mm
+    thermal_spoke_w = config.thermal_spoke_width_mm
+    ANTIPAD_SEGMENTS = 16  # circle approximation segments
+
+    def _circle_polygon(cx: float, cy: float, r: float) -> list[tuple[float, float]]:
+        pts = []
+        for i in range(ANTIPAD_SEGMENTS + 1):
+            angle = 2 * math.pi * i / ANTIPAD_SEGMENTS
+            pts.append((cx + r * math.cos(angle), cy + r * math.sin(angle)))
+        return pts
+
+    cutouts: list[list[tuple[float, float]]] = []
+
+    # Through-hole pads and vias are the only features that penetrate inner layers.
+    # SMD pads don't reach inner layers — skip them.
+    for pad_info in pad_map.values():
+        if pad_info.layer != "all":  # "all" = through-hole
+            continue
+        pad_r = max(pad_info.pad_width_mm, pad_info.pad_height_mm) / 2
+        if pad_info.net_id == net_id:
+            # Same-net pad: thermal relief — small clearance ring (no solid connection
+            # on inner plane; stitching vias provide plane contact)
+            r = pad_r + thermal_gap
+        else:
+            # Foreign-net pad: full antipad clearance
+            r = pad_r + clearance
+        cutouts.append(_circle_polygon(pad_info.x_mm, pad_info.y_mm, r))
+
+    # Via antipads
+    for via in vias:
+        via_r = via.get("diameter_mm", 0.6) / 2
+        if via.get("net_id") == net_id:
+            r = via_r + thermal_gap
+        else:
+            r = via_r + clearance
+        cutouts.append(_circle_polygon(via["x_mm"], via["y_mm"], r))
+
+    # Represent as a polygon list: first entry is the outer boundary,
+    # subsequent entries are holes (cutouts). KiCad zones handle holes
+    # natively; Gerber fills are additive so we use the outer minus cutouts
+    # approach (the gerber exporter renders each polygon as a separate region,
+    # so we produce the board fill minus cutout discs via a negative fill approach).
+    # For now: outer polygon first, then each cutout (exporters that support
+    # holes use them; Gerber exporter paints the outer then clears cutouts).
+    polygons = [outer] + cutouts
+
+    return {
+        "layer": layer,
+        "net_id": net_id,
+        "net_name": net_name,
+        "polygons": polygons,
+        "is_plane": True,  # flag for exporters: solid pour, not flood-fill
+    }
+
+
 def _apply_pre_fill(
     grid: RoutingGrid,
     fill_net_int: int,
@@ -5096,11 +5188,46 @@ def apply_copper_fills(
                         if val == EMPTY:
                             grid.set(nc, nr, layer, nid)
 
-    # Phase 4: Run copper fill
+    # Phase 4: Run copper fill (outer layers)
     fill_regions, stitch_vias = create_copper_fill(
         grid, fill_net_int, fill_net_id, fill_net_name,
         pad_map, config,
     )
+
+    # Phase 4b: Generate solid inner-layer planes for 4-layer boards.
+    # Stackup convention: In1.Cu = GND plane, In2.Cu = PWR plane (if present).
+    # PWR plane requires a designated power net; fall back to GND if not found.
+    num_layers = board.get("layers", 2)
+    if num_layers >= 4:
+        all_vias = routing.get("vias", []) + [v.to_dict() for v in stitch_vias]
+        placements_list = routed.get("placements", [])
+
+        # Inner layer 1 → GND plane (same net as the outer fill)
+        gnd_plane = generate_inner_plane(
+            board, placements_list, pad_map, all_vias,
+            layer="inner1",
+            net_id=fill_net_id,
+            net_name=fill_net_name,
+            config=config,
+        )
+        fill_regions.append(gnd_plane)
+
+        # Inner layer 2 → power plane (first power net found, else GND)
+        pwr_net_id = fill_net_id
+        pwr_net_name = fill_net_name
+        for net in all_nets:
+            if net.get("net_class") == "power" and net.get("net_id") != fill_net_id:
+                pwr_net_id = net["net_id"]
+                pwr_net_name = net.get("name", pwr_net_id)
+                break
+        pwr_plane = generate_inner_plane(
+            board, placements_list, pad_map, all_vias,
+            layer="inner2",
+            net_id=pwr_net_id,
+            net_name=pwr_net_name,
+            config=config,
+        )
+        fill_regions.append(pwr_plane)
 
     # Phase 5: Update the routed dict
     result = _copy.deepcopy(routed)

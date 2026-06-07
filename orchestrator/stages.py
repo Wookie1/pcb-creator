@@ -418,8 +418,13 @@ def run_export(project_dir: Path, project_name: str, config, log=None) -> dict:
     _log(f"  Pick-and-place: {cpl_path.name}")
 
     try:
+        board_thickness = {4: 1.6}.get(
+            routed.get("board", {}).get("layers", 2), 1.6
+        )
         step_path = export_step_populated(
-            routed, netlist_data, bom_data, output_dir / f"{project_name}_board.step"
+            routed, netlist_data, bom_data,
+            output_dir / f"{project_name}_board.step",
+            board_thickness_mm=board_thickness,
         )
         produced.append(str(step_path))
         _log(f"  STEP model: {step_path.name} (populated)")

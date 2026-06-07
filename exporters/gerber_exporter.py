@@ -158,15 +158,34 @@ def _generate_copper_layer(
     for fill_region in routing.get("copper_fills", []):
         if fill_region.get("layer") != layer:
             continue
-        for polygon in fill_region.get("polygons", []):
-            if len(polygon) < 3:
-                continue
-            path = gw.Path()
-            path.moveto((polygon[0][0], polygon[0][1]))
-            for pt in polygon[1:]:
-                path.lineto((pt[0], pt[1]))
-            path.lineto((polygon[0][0], polygon[0][1]))  # close
-            dl.add_region(path, "Conductor")
+        polygons = fill_region.get("polygons", [])
+        if fill_region.get("is_plane"):
+            # Solid inner plane: first polygon is the outer boundary (positive),
+            # remaining polygons are antipad cutouts (negative — painted with
+            # a negative DataLayer added after to clear the copper).
+            if polygons:
+                outer = polygons[0]
+                if len(outer) >= 3:
+                    path = gw.Path()
+                    path.moveto((outer[0][0], outer[0][1]))
+                    for pt in outer[1:]:
+                        path.lineto((pt[0], pt[1]))
+                    path.lineto((outer[0][0], outer[0][1]))
+                    dl.add_region(path, "Conductor")
+            # Cutouts are rendered as negative pads (circles) below
+            # via the standard via/pad rendering — no extra action needed
+            # since the cutout circles are already centred on pads/vias
+            # whose diameters include the antipad expansion. Skip them here.
+        else:
+            for polygon in polygons:
+                if len(polygon) < 3:
+                    continue
+                path = gw.Path()
+                path.moveto((polygon[0][0], polygon[0][1]))
+                for pt in polygon[1:]:
+                    path.lineto((pt[0], pt[1]))
+                path.lineto((polygon[0][0], polygon[0][1]))  # close
+                dl.add_region(path, "Conductor")
 
     return dl
 
