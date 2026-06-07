@@ -1365,6 +1365,127 @@ def export_outputs(project_name: str) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Component pre-positioning (pin edge connectors before auto-placement)
+# ---------------------------------------------------------------------------
+
+@mcp.tool()
+def set_component_positions(
+    project_name: str,
+    positions: list[dict],
+    board_width_mm: float | None = None,
+    board_height_mm: float | None = None,
+) -> dict:
+    """Pre-position components with placement_source='user' so optimize_placement
+    treats them as fixed anchors and only moves everything else.
+
+    Use this BEFORE optimize_placement to lock edge connectors (FFC ZIF,
+    terminal blocks, headers, debug ports) at their spec-defined board positions.
+    The SA optimizer skips components with placement_source='user', so they stay
+    exactly where you put them.
+
+    If no placement file exists yet for the project, a full grid placement is
+    generated automatically from the netlist and then the specified components
+    are pinned.  Call import_kicad_netlist first to ensure a netlist is available.
+
+    Args:
+        project_name:    Project slug.
+        positions:       List of component position dicts, each with:
+                           "designator"   (str, required) — e.g. "J1", "U3"
+                           "x_mm"         (float, required) — X from board origin
+                           "y_mm"         (float, required) — Y from board origin
+                           "rotation_deg" (int, optional, default 0)
+                           "layer"        (str, optional, "top" or "bottom", default "top")
+        board_width_mm:  Board width (mm). Required when no placement exists yet.
+        board_height_mm: Board height (mm). Required when no placement exists yet.
+
+    Returns:
+        {success: True, pinned_count: int, total_components: int,
+         placement_path: str, notes: [str]}
+        or {success: False, error: str}
+    """
+    pdir = _project_dir(project_name)
+    if not pdir.exists():
+        return {"success": False, "error": f"Project '{project_name}' not found. Run import_kicad_netlist first."}
+
+    netlist_path = pdir / f"{project_name}_netlist.json"
+    placement_path = pdir / f"{project_name}_placement.json"
+
+    if not netlist_path.exists():
+        return {"success": False, "error": "No netlist found — run import_kicad_netlist first."}
+
+    # Load or generate placement
+    if placement_path.exists():
+        placement = json.loads(placement_path.read_text())
+    else:
+        # Need board dimensions to generate a seed placement
+        bw = board_width_mm
+        bh = board_height_mm
+        if bw is None or bh is None:
+            return {
+                "success": False,
+                "error": (
+                    "No existing placement found and board_width_mm/board_height_mm not provided. "
+                    "Supply board dimensions so a seed placement can be generated, or call "
+                    "optimize_placement first and then call set_component_positions."
+                ),
+            }
+        from optimizers.initial_placement import generate_grid_placement
+        netlist = json.loads(netlist_path.read_text())
+        _activate_project_lookup(project_name)
+        placement = generate_grid_placement(netlist, bw, bh, project_name)
+        if placement is None:
+            return {"success": False, "error": "Could not generate seed placement — check that the netlist has components with resolvable footprints."}
+
+    # Build a lookup from designator → placement item index
+    des_index: dict[str, int] = {
+        item["designator"]: i
+        for i, item in enumerate(placement.get("placements", []))
+    }
+
+    notes = []
+    pinned = []
+
+    for pos in positions:
+        des = pos.get("designator", "")
+        if not des:
+            notes.append("Skipped entry with no designator.")
+            continue
+
+        x = pos.get("x_mm")
+        y = pos.get("y_mm")
+        if x is None or y is None:
+            notes.append(f"Skipped {des}: x_mm or y_mm missing.")
+            continue
+
+        if des not in des_index:
+            notes.append(f"Warning: {des} not found in placement — it may not be in the netlist.")
+            continue
+
+        idx = des_index[des]
+        placement["placements"][idx]["x_mm"] = float(x)
+        placement["placements"][idx]["y_mm"] = float(y)
+        placement["placements"][idx]["rotation_deg"] = int(pos.get("rotation_deg", 0))
+        placement["placements"][idx]["layer"] = pos.get("layer", "top")
+        placement["placements"][idx]["placement_source"] = "user"
+        pinned.append(des)
+
+    placement_path.write_text(json.dumps(placement, indent=2))
+
+    return {
+        "success": True,
+        "pinned_count": len(pinned),
+        "pinned_designators": pinned,
+        "total_components": len(placement.get("placements", [])),
+        "placement_path": str(placement_path),
+        "notes": notes,
+        "next_step": (
+            "Call optimize_placement — pinned components will stay fixed; "
+            "all other components will be placed around them."
+        ),
+    }
+
+
+# ---------------------------------------------------------------------------
 # Footprint coverage assessment and custom footprint registration
 # ---------------------------------------------------------------------------
 
