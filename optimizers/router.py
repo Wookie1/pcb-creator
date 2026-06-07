@@ -5194,6 +5194,9 @@ def apply_copper_fills(
         pad_map, config,
     )
 
+    pwr_net_id = fill_net_id
+    pwr_stitch_vias: list[dict] = []
+
     # Phase 4b: Generate solid inner-layer planes for 4-layer boards.
     # Stackup convention: In1.Cu = GND plane, In2.Cu = PWR plane (if present).
     # PWR plane requires a designated power net; fall back to GND if not found.
@@ -5213,7 +5216,6 @@ def apply_copper_fills(
         fill_regions.append(gnd_plane)
 
         # Inner layer 2 → power plane (first power net found, else GND)
-        pwr_net_id = fill_net_id
         pwr_net_name = fill_net_name
         for net in all_nets:
             if net.get("net_class") == "power" and net.get("net_id") != fill_net_id:
@@ -5229,20 +5231,51 @@ def apply_copper_fills(
         )
         fill_regions.append(pwr_plane)
 
+        # Power via stitching: SMD pads on the power net only touch the top
+        # layer — add a via at each SMD pad location to reach the inner2 plane.
+        # TH pads already penetrate inner2 via their drilled hole.
+        existing_via_positions: set[tuple[float, float]] = {
+            (round(v.x_mm, 2), round(v.y_mm, 2)) for v in stitch_vias
+        }
+        for ref, pi in pad_map.items():
+            if pi.net_id != pwr_net_id:
+                continue
+            if pi.layer == "all":
+                continue  # through-hole: already penetrates inner2
+            px, py = round(pi.x_mm, 2), round(pi.y_mm, 2)
+            if (px, py) in existing_via_positions:
+                continue
+            existing_via_positions.add((px, py))
+            pwr_stitch_vias.append({
+                "x_mm": pi.x_mm,
+                "y_mm": pi.y_mm,
+                "drill_mm": config.via_drill_mm,
+                "diameter_mm": config.via_diameter_mm,
+                "net_id": pwr_net_id,
+                "net_name": pwr_net_name,
+            })
+        if pwr_stitch_vias:
+            print(f"  Power via stitching: {len(pwr_stitch_vias)} vias for {pwr_net_name}")
+
     # Phase 5: Update the routed dict
     result = _copy.deepcopy(routed)
 
     # Add copper fills
     result["routing"]["copper_fills"] = fill_regions
 
-    # Add stitching vias
+    # Add stitching vias (GND outer-layer + power plane SMD stitching)
     stitch_via_dicts = [v.to_dict() for v in stitch_vias]
+    if num_layers >= 4:
+        stitch_via_dicts.extend(pwr_stitch_vias)
     result["routing"]["vias"] = result["routing"].get("vias", []) + stitch_via_dicts
 
-    # Remove fill net from unrouted list (copper fill connects it)
+    # Remove plane nets from unrouted list (copper fills connect them)
     unrouted = result["routing"].get("unrouted_nets", [])
-    if fill_net_id in unrouted and fill_regions:
-        unrouted = [n for n in unrouted if n != fill_net_id]
+    plane_net_ids = {fill_net_id}
+    if num_layers >= 4:
+        plane_net_ids.add(pwr_net_id)
+    if any(n in plane_net_ids for n in unrouted) and fill_regions:
+        unrouted = [n for n in unrouted if n not in plane_net_ids]
         result["routing"]["unrouted_nets"] = unrouted
 
     # Update statistics

@@ -230,11 +230,23 @@ def run_routing(project_dir: Path, project_name: str, config,
             }
             if num_layers > 2:
                 _log(f"  Layer count: {num_layers} (inner layers routed as signal)")
+            # For 4-layer boards also exclude the power plane net (inner2)
+            # so Freerouting doesn't try to route it — the plane fill handles it.
+            exclude_nets = ["GND"]
+            if num_layers >= 4:
+                for elem in netlist_data.get("elements", []):
+                    if (elem.get("element_type") == "net"
+                            and elem.get("net_class") == "power"
+                            and elem.get("name", elem.get("net_id", "")) != "GND"):
+                        pwr_name = elem.get("name", elem.get("net_id", ""))
+                        exclude_nets.append(pwr_name)
+                        _log(f"  Excluding power plane net from routing: {pwr_name}")
+                        break
             routed = route_with_freerouting(
                 placement_data, netlist_data,
                 jar_path=config.freerouting_jar_path,
                 timeout_s=config.freerouting_timeout_s,
-                exclude_nets=["GND"],
+                exclude_nets=exclude_nets,
                 dsn_config=dsn_config,
             )
             completion = routed.get("routing", {}).get("statistics", {}).get("completion_pct", 0)
