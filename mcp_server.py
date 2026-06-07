@@ -577,7 +577,31 @@ def get_project_status(project_name: str) -> dict:
         Dict with step status, routing statistics, and DRC pass/fail.
     """
     pdir = _project_dir(project_name)
+
+    # Check in-memory design/route jobs BEFORE checking disk.
+    # A background design_pcb thread may not have created the project
+    # directory yet (or crashed before mkdir), and callers need to see
+    # running/failed state instead of a misleading "not found".
+    with _DESIGN_LOCK:
+        djob = dict(_DESIGN_JOBS.get(project_name)) if project_name in _DESIGN_JOBS else None
+    with _ROUTE_LOCK:
+        rjob = dict(_ROUTE_JOBS.get(project_name)) if project_name in _ROUTE_JOBS else None
+
     if not pdir.exists():
+        # No directory on disk — still report in-memory job state if any.
+        if djob or rjob:
+            result: dict = {"project_name": project_name}
+            if djob is not None:
+                result["design_state"] = djob["state"]
+                if djob["state"] == "failed":
+                    result["design_error"] = djob.get("error")
+                if djob.get("progress"):
+                    result["design_progress"] = djob["progress"]
+            if rjob is not None:
+                result["routing_state"] = rjob["state"]
+                if rjob["state"] == "failed":
+                    result["routing_error"] = rjob.get("error")
+            return result
         return {"error": f"Project '{project_name}' not found"}
 
     result: dict = {"project_name": project_name}
@@ -603,10 +627,6 @@ def get_project_status(project_name: str) -> dict:
         except json.JSONDecodeError:
             result["status"] = {}
 
-    # Routing job state (for the async route_board flow), reconciled with disk.
-    with _ROUTE_LOCK:
-        job = dict(_ROUTE_JOBS.get(project_name)) if project_name in _ROUTE_JOBS else None
-
     # Routing stats
     routed = _read_project_json(project_name, "_routed.json")
     if routed:
@@ -622,27 +642,25 @@ def get_project_status(project_name: str) -> dict:
 
     # routing_state: in-memory job wins; else infer from on-disk artifact.
     import time as _time
-    if job is not None:
-        result["routing_state"] = job["state"]
+    if rjob is not None:
+        result["routing_state"] = rjob["state"]
         # Elapsed time: live during run, final after completion/failure
-        started = job.get("started_at")
-        if job["state"] == "running" and started is not None:
+        started = rjob.get("started_at")
+        if rjob["state"] == "running" and started is not None:
             result["routing_elapsed_s"] = round(_time.monotonic() - started, 1)
-        elif job.get("elapsed_s") is not None:
-            result["routing_elapsed_s"] = job["elapsed_s"]
+        elif rjob.get("elapsed_s") is not None:
+            result["routing_elapsed_s"] = rjob["elapsed_s"]
         # Live NCR iteration progress (only meaningful while running)
-        if job["state"] == "running" and job.get("progress") is not None:
-            result["routing_progress"] = job["progress"]
-        if job["state"] == "complete" and job.get("result"):
-            result["routing_result"] = job["result"]
-        elif job["state"] == "failed":
-            result["routing_error"] = job.get("error")
+        if rjob["state"] == "running" and rjob.get("progress") is not None:
+            result["routing_progress"] = rjob["progress"]
+        if rjob["state"] == "complete" and rjob.get("result"):
+            result["routing_result"] = rjob["result"]
+        elif rjob["state"] == "failed":
+            result["routing_error"] = rjob.get("error")
     else:
         result["routing_state"] = "complete" if routed else "none"
 
-    # Design job state (async design_pcb flow), reconciled with disk.
-    with _DESIGN_LOCK:
-        djob = dict(_DESIGN_JOBS.get(project_name)) if project_name in _DESIGN_JOBS else None
+    # Design job state (already fetched above for early-return).
     if djob is not None:
         result["design_state"] = djob["state"]
         dstarted = djob.get("started_at")
@@ -1075,6 +1093,13 @@ def export_outputs(project_name: str) -> dict:
 
 def main():
     """Run the MCP server (stdio transport)."""
+    # Ensure CWD exists — Hermes worker scratch dirs can be deleted
+    # out from under us, and pathlib.Path.cwd() will raise
+    # FileNotFoundError if the process CWD is gone.
+    try:
+        os.getcwd()
+    except FileNotFoundError:
+        os.chdir("/tmp")
     mcp.run()
 
 
