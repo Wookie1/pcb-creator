@@ -30,6 +30,20 @@ class StepBase(ABC):
         self.llm = llm
         self.prompt_builder = prompt_builder
         self.config = config
+        # Optional progress sink set by the runner (e.g. the async design_pcb
+        # job's _on_progress). None = no reporting. Lets a long-running step
+        # surface sub-phase progress to a polling agent in real time.
+        self.progress_callback = None
+
+    def _report_progress(self, **fields) -> None:
+        """Emit a progress update if a callback is wired; never raise."""
+        cb = getattr(self, "progress_callback", None)
+        if cb is None:
+            return
+        try:
+            cb(fields)
+        except Exception:
+            pass  # progress reporting must never break the pipeline
 
     @property
     @abstractmethod

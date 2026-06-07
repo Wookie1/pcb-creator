@@ -241,6 +241,7 @@ def run_workflow_streaming(
     project_name: str,
     config: OrchestratorConfig,
     attach_files: list[Path] | None = None,
+    progress_callback=None,
 ) -> Generator[dict, None, None]:
     """Generator version of run_workflow that yields events for Gradio UI updates.
 
@@ -251,6 +252,12 @@ def run_workflow_streaming(
         success: bool (for step_done/complete)
         html: str (for viewer_update/approval_needed)
         message: str (for error)
+
+    progress_callback: optional callable(dict) for INTRA-step progress. The
+        generator can only yield between steps, but a long step (e.g. the
+        schematic's chunked components→ports→nets generation) blocks the loop
+        for many minutes. Steps invoke this callback directly so a polling agent
+        sees sub-phase progress in real time. None = no intra-step reporting.
     """
     from .llm.litellm_client import LiteLLMClient
     from .project import ProjectManager
@@ -293,6 +300,9 @@ def run_workflow_streaming(
     # --- Step 1: Schematic/Netlist ---
     yield {"event": "step_start", "step": 1, "name": STEP_NAMES[1]}
     step1 = SchematicStep(project, llm, prompt_builder, config)
+    # Surface intra-step chunk progress (components→ports→nets) to a polling
+    # agent; the generator itself can't yield while step1.execute() blocks.
+    step1.progress_callback = progress_callback
     result = step1.execute()
     if not result.success:
         yield {"event": "step_done", "step": 1, "name": STEP_NAMES[1], "success": False}

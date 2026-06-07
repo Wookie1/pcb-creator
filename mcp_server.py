@@ -423,7 +423,9 @@ def _design_pcb_sync(
     last_event = None
 
     try:
-        for event in run_workflow_streaming(req_path, project_name, config):
+        for event in run_workflow_streaming(
+            req_path, project_name, config, progress_callback=progress_cb,
+        ):
             ev = event.get("event", "")
             if ev == "step_done":
                 steps_completed.append({

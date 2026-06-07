@@ -384,6 +384,8 @@ class SchematicStep(StepBase):
         for attempt in range(1, max_rework + 1):
             # 1. Generate or rework netlist
             print(f"  [Attempt {attempt}/{max_rework}] Generating netlist...")
+            self._report_progress(phase="schematic", sub="generate", attempt=attempt,
+                                  max_attempts=max_rework)
             if attempt == 1 and initial_raw_response is not None:
                 # Large circuit: use pre-generated chunked output
                 raw_response = initial_raw_response
@@ -485,7 +487,7 @@ class SchematicStep(StepBase):
                     try:
                         raw_response = self._generate_chunked(
                             requirements_text, project_name, pinout_table,
-                            pin_count_table,
+                            pin_count_table, attempt=attempt,
                         )
                     except Exception as e:
                         logger.error("Chunked generation failed: %s", e)
@@ -706,7 +708,7 @@ class SchematicStep(StepBase):
                 "summary": "Validator execution failed",
             }
 
-    def _generate_chunked(self, requirements_text: str, project_name: str, pinout_table: str, pin_count_table: str = "") -> str:
+    def _generate_chunked(self, requirements_text: str, project_name: str, pinout_table: str, pin_count_table: str = "", attempt: int = 1) -> str:
         """Generate netlist in 3 phases (components, ports, nets) for large boards.
 
         Each phase uses generate_long() with a minimum-length check and writes
@@ -714,6 +716,7 @@ class SchematicStep(StepBase):
         """
         # Phase 1: components
         print("  [Chunked] Phase 1: Generating components...")
+        self._report_progress(phase="schematic", sub="components", attempt=attempt)
         p1_prompt = self.prompt_builder.render(
             "schematic_generate_components",
             {
@@ -748,6 +751,7 @@ class SchematicStep(StepBase):
 
         # Phase 2: ports
         print("  [Chunked] Phase 2: Generating ports...")
+        self._report_progress(phase="schematic", sub="ports", attempt=attempt)
         p2_prompt = self.prompt_builder.render(
             "schematic_generate_ports",
             {
@@ -785,6 +789,7 @@ class SchematicStep(StepBase):
 
         # Phase 3: nets
         print("  [Chunked] Phase 3: Generating nets...")
+        self._report_progress(phase="schematic", sub="nets", attempt=attempt)
         p3_prompt = self.prompt_builder.render(
             "schematic_generate_nets",
             {
