@@ -74,9 +74,10 @@ class OrchestratorConfig:
     optimizer_seed: int | None = None
 
     # Tiered lookup settings
-    kicad_library_path: str | None = None   # Root of KiCad footprint library (.pretty dirs)
+    kicad_library_path: str | None = None     # Root of KiCad footprint library (.pretty dirs)
+    custom_footprint_dir: str | None = None   # Global writable dir for agent-registered footprints
     component_cache_path: str = "~/.pcb-creator/component_cache.json"
-    llm_enrichment_workers: int = 4         # Max parallel LLM calls for spec/footprint enrichment
+    llm_enrichment_workers: int = 4           # Max parallel LLM calls for spec/footprint enrichment
 
     # Paths (relative to base_dir)
     base_dir: Path = field(default_factory=lambda: Path.cwd())
@@ -136,6 +137,9 @@ class OrchestratorConfig:
         kicad_lib = os.environ.get("PCB_KICAD_LIBRARY_PATH")
         if kicad_lib:
             config.kicad_library_path = kicad_lib
+        custom_fp = os.environ.get("PCB_CUSTOM_FOOTPRINT_DIR")
+        if custom_fp:
+            config.custom_footprint_dir = custom_fp
         cache_path_env = os.environ.get("PCB_COMPONENT_CACHE_PATH")
         if cache_path_env:
             config.component_cache_path = cache_path_env
