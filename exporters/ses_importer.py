@@ -20,10 +20,14 @@ from .kicad_importer import _tokenize, _parse_sexpr
 
 _LAYER_MAP = {
     "F.Cu": "top",
+    "In1.Cu": "inner1",
+    "In2.Cu": "inner2",
     "B.Cu": "bottom",
     # Some Freerouting versions may output layer indices
     "0": "top",
-    "1": "bottom",
+    "1": "inner1",
+    "2": "inner2",
+    "3": "bottom",
 }
 
 
@@ -254,9 +258,10 @@ def import_ses(
         dy = t["end_y_mm"] - t["start_y_mm"]
         total_trace_length += (dx**2 + dy**2) ** 0.5
 
-    # Count layer usage
-    top_traces = sum(1 for t in traces if t["layer"] == "top")
-    bot_traces = sum(1 for t in traces if t["layer"] == "bottom")
+    # Count layer usage (N-layer aware)
+    layer_usage: dict[str, int] = {}
+    for t in traces:
+        layer_usage[t["layer"]] = layer_usage.get(t["layer"], 0) + 1
 
     # Build output dict
     routed = {
@@ -276,10 +281,7 @@ def import_ses(
                 "completion_pct": round(100 * routed_count / total_nets, 1) if total_nets else 100,
                 "total_trace_length_mm": round(total_trace_length, 1),
                 "via_count": len(vias),
-                "layer_usage": {
-                    "top": top_traces,
-                    "bottom": bot_traces,
-                },
+                "layer_usage": layer_usage,
             },
             "config": {
                 "router": "freerouting",

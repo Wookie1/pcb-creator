@@ -22,6 +22,8 @@ from optimizers.pad_geometry import get_footprint_def, _generate_fallback_footpr
 
 _LAYER_MAP = {
     "top": "F.Cu",
+    "inner1": "In1.Cu",
+    "inner2": "In2.Cu",
     "bottom": "B.Cu",
     "top_silk": "F.SilkS",
     "bottom_silk": "B.SilkS",
@@ -48,8 +50,12 @@ def _uid() -> str:
 # S-expression building helpers
 # ---------------------------------------------------------------------------
 
-def _header() -> str:
+def _header(num_layers: int = 2) -> str:
     """KiCad PCB file header with layer definitions."""
+    # Inner copper layers occupy indices 1..N-2 in KiCad's numbering
+    inner_layers = ""
+    if num_layers >= 4:
+        inner_layers = '\n    (1 "In1.Cu" signal)\n    (2 "In2.Cu" signal)'
     return f"""\
 (kicad_pcb
   (version 20240108)
@@ -61,7 +67,7 @@ def _header() -> str:
   )
   (paper "A4")
   (layers
-    (0 "F.Cu" signal)
+    (0 "F.Cu" signal){inner_layers}
     (31 "B.Cu" signal)
     (32 "B.Adhes" user "B.Adhesive")
     (33 "F.Adhes" user "F.Adhesive")
@@ -304,15 +310,17 @@ def _traces(traces: list[dict], net_num_map: dict[str, int]) -> str:
     return "\n".join(lines)
 
 
-def _vias(vias: list[dict], net_num_map: dict[str, int]) -> str:
+def _vias(vias: list[dict], net_num_map: dict[str, int], num_layers: int = 2) -> str:
     """Generate via definitions."""
+    # Through-vias always span the full stack (F.Cu to B.Cu)
+    via_layers = '"F.Cu" "B.Cu"'
     lines = []
     for v in vias:
         net_num = net_num_map.get(v.get("net_id", ""), 0)
         lines.append(
             f'  (via (at {v["x_mm"]} {v["y_mm"]})'
             f' (size {v["diameter_mm"]}) (drill {v["drill_mm"]})'
-            f' (layers "F.Cu" "B.Cu")'
+            f' (layers {via_layers})'
             f' (net {net_num}) (tstamp {_uid()}))'
         )
     return "\n".join(lines)
@@ -458,8 +466,10 @@ def export_kicad_pcb(
         elif elem.get("element_type") == "component":
             components[elem["component_id"]] = elem
 
+    num_layers = routed.get("board", {}).get("layers", 2)
+
     # Assemble the file
-    parts = [_header()]
+    parts = [_header(num_layers)]
     parts.append(_setup(routed.get("routing", {}).get("config", {})))
     parts.append(_net_declarations(net_list))
     parts.append(_board_outline(routed.get("board", {})))
@@ -475,7 +485,7 @@ def export_kicad_pcb(
     if routing.get("traces"):
         parts.append(_traces(routing["traces"], net_num_map))
     if routing.get("vias"):
-        parts.append(_vias(routing["vias"], net_num_map))
+        parts.append(_vias(routing["vias"], net_num_map, num_layers))
     if routing.get("copper_fills"):
         parts.append(_copper_fills(routing["copper_fills"], net_num_map, routed.get("board", {})))
 

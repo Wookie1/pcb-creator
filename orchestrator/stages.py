@@ -206,6 +206,15 @@ def run_routing(project_dir: Path, project_name: str, config,
 
     routed = None
     engine = "builtin"
+    num_layers = placement_data.get("board", {}).get("layers", 2)
+
+    # 4-layer boards require Freerouting — the built-in A* is 2-layer only
+    if num_layers > 2 and config.router_engine != "freerouting":
+        return {
+            "success": False,
+            "error": f"{num_layers}-layer boards require Freerouting. "
+                     "Set PCB_ROUTER_ENGINE=freerouting (default) or check Java/JAR availability.",
+        }
 
     if config.router_engine == "freerouting":
         try:
@@ -217,7 +226,10 @@ def run_routing(project_dir: Path, project_name: str, config,
                 "clearance_mm": router_kwargs.get("clearance_mm", 0.2),
                 "via_drill_mm": router_kwargs.get("via_drill_mm", 0.3),
                 "via_diameter_mm": router_kwargs.get("via_diameter_mm", 0.6),
+                "num_layers": num_layers,
             }
+            if num_layers > 2:
+                _log(f"  Layer count: {num_layers} (inner layers routed as signal)")
             routed = route_with_freerouting(
                 placement_data, netlist_data,
                 jar_path=config.freerouting_jar_path,
@@ -229,13 +241,19 @@ def run_routing(project_dir: Path, project_name: str, config,
             if completion < 100:
                 unrouted = routed.get("routing", {}).get("unrouted_nets", [])
                 _log(f"  Freerouting incomplete ({completion:.0f}%): {len(unrouted)} nets unrouted")
-                _log("  Falling back to built-in router...")
-                routed = None  # fall back to built-in for incomplete boards
-            else:
+                if num_layers > 2:
+                    # No built-in fallback for multi-layer — return partial result
+                    _log("  No built-in fallback for multi-layer boards; returning partial result")
+                else:
+                    _log("  Falling back to built-in router...")
+                    routed = None  # fall back to built-in for 2-layer incomplete boards
+            if routed is not None:
                 from optimizers.router import apply_copper_fills, RouterConfig
                 routed = apply_copper_fills(routed, netlist_data, RouterConfig(**router_kwargs))
         except Exception as exc:
             _log(f"  Freerouting FAILED: {exc}")
+            if num_layers > 2:
+                return {"success": False, "error": f"Freerouting failed for {num_layers}-layer board: {exc}"}
             _log("  Falling back to built-in router...")
             routed = None
             engine = "builtin"

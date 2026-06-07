@@ -91,20 +91,31 @@ def _dsn_header(project_name: str) -> str:
     return f'(pcb "{project_name}"\n  (parser\n    (string_quote ")\n    (host_cad "pcb-creator")\n    (host_version "1.0")\n  )\n  (resolution mm 1000)\n  (unit mm)\n'
 
 
+# Ordered copper layer names by board layer count (inner layers signal by default)
+_COPPER_LAYERS_BY_COUNT: dict[int, list[str]] = {
+    1: ["F.Cu"],
+    2: ["F.Cu", "B.Cu"],
+    4: ["F.Cu", "In1.Cu", "In2.Cu", "B.Cu"],
+}
+
+
 def _dsn_structure(board: dict, config: dict) -> str:
     """Generate structure section: layers, boundary, design rules."""
     w = board.get("width_mm", 50.0)
     h = board.get("height_mm", 50.0)
+    num_layers = board.get("layers", 2)
 
     clearance = config.get("clearance_mm", TRACE_CLEARANCE_MM)
     trace_w = config.get("trace_width_mm", TRACE_WIDTH_SIGNAL_MM)
     via_dia = config.get("via_diameter_mm", VIA_DIAMETER_MM)
     via_drill = config.get("via_drill_mm", VIA_DRILL_MM)
 
-    lines = [
-        "  (structure",
-        '    (layer "F.Cu" (type signal))',
-        '    (layer "B.Cu" (type signal))',
+    copper_layers = _COPPER_LAYERS_BY_COUNT.get(num_layers, _COPPER_LAYERS_BY_COUNT[2])
+
+    lines = ["  (structure"]
+    for lname in copper_layers:
+        lines.append(f'    (layer "{lname}" (type signal))')
+    lines += [
         "    (boundary",
         "      (path pcb 0",
         f"        0 0 {_fmt(w)} 0 {_fmt(w)} {_fmt(h)} 0 {_fmt(h)} 0 0",
@@ -210,10 +221,12 @@ def _dsn_library(
                     lines.append(f'      (attach off)')
                     lines.append(f'    )')
 
-    # Via padstack
+    # Via padstack — one shape per copper layer so Freerouting can place through-vias
+    num_layers = config.get("num_layers", 2)
+    via_copper_layers = _COPPER_LAYERS_BY_COUNT.get(num_layers, _COPPER_LAYERS_BY_COUNT[2])
     lines.append(f'    (padstack Via_Default')
-    lines.append(f'      (shape (circle "F.Cu" {_fmt(via_dia)}))')
-    lines.append(f'      (shape (circle "B.Cu" {_fmt(via_dia)}))')
+    for lname in via_copper_layers:
+        lines.append(f'      (shape (circle "{lname}" {_fmt(via_dia)}))')
     lines.append(f'      (attach off)')
     lines.append(f'    )')
 
@@ -401,11 +414,15 @@ def export_dsn(
         Path to the written file.
     """
     output_path = Path(output_path)
-    cfg = config or {}
+    cfg = dict(config or {})
 
     board = placement.get("board", {})
     project_name = placement.get("project_name", "pcb")
     placements = placement.get("placements", [])
+
+    # Propagate layer count from board into cfg so library/padstack sections can use it
+    if "num_layers" not in cfg:
+        cfg["num_layers"] = board.get("layers", 2)
 
     # Determine which nets to exclude (typically GND for copper fill)
     exclude_nets = cfg.get("exclude_nets", [])

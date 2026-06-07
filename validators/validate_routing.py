@@ -81,12 +81,11 @@ def _check_trace_clearance(routed: dict) -> tuple[list[str], list[str]]:
     traces = routing.get("traces", [])
     clearance = routing.get("config", {}).get("trace_clearance_mm", 0.2)
 
-    # Group traces by layer
-    by_layer: dict[str, list[dict]] = {"top": [], "bottom": []}
+    # Group traces by layer (N-layer aware)
+    by_layer: dict[str, list[dict]] = {}
     for t in traces:
         layer = t.get("layer", "top")
-        if layer in by_layer:
-            by_layer[layer].append(t)
+        by_layer.setdefault(layer, []).append(t)
 
     for layer, layer_traces in by_layer.items():
         n = len(layer_traces)

@@ -32,7 +32,9 @@ MASK_EXPANSION_MM = 0.05  # solder mask opening larger than pad on each side
 
 LAYER_FUNCTIONS = {
     "F_Cu": "Copper,L1,Top",
-    "B_Cu": "Copper,L2,Bot",
+    "In1_Cu": "Copper,L2,Inr",
+    "In2_Cu": "Copper,L3,Inr",
+    "B_Cu": "Copper,L4,Bot",  # index is updated dynamically for 2-layer ("L2,Bot")
     "F_SilkS": "Legend,Top",
     "B_SilkS": "Legend,Bot",
     "F_Mask": "Soldermask,Top",
@@ -41,10 +43,22 @@ LAYER_FUNCTIONS = {
     "Edge_Cuts": "Profile",
 }
 
-# Map internal layer names to Gerber layer keys
-_COPPER_MAP = {"top": "F_Cu", "bottom": "B_Cu"}
+# Map internal layer names to Gerber layer keys (N-layer aware)
+_COPPER_MAP = {
+    "top": "F_Cu",
+    "inner1": "In1_Cu",
+    "inner2": "In2_Cu",
+    "bottom": "B_Cu",
+}
 _SILK_MAP = {"top_silk": "F_SilkS", "bottom_silk": "B_SilkS"}
 _MASK_MAP = {"top": "F_Mask", "bottom": "B_Mask"}
+
+# Ordered copper internal layer names by board layer count
+_COPPER_LAYERS_BY_COUNT: dict[int, list[str]] = {
+    1: ["top"],
+    2: ["top", "bottom"],
+    4: ["top", "inner1", "inner2", "bottom"],
+}
 
 
 def _is_through_hole(package: str) -> bool:
@@ -73,15 +87,29 @@ def _get_board_vertices(board: dict) -> list[tuple[float, float]]:
 # Gerber layer generators
 # ---------------------------------------------------------------------------
 
+def _copper_layer_function(layer: str, num_layers: int) -> str:
+    """Return the Gerber layer function string for a copper layer."""
+    if layer == "top":
+        return "Copper,L1,Top"
+    if layer == "bottom":
+        return f"Copper,L{num_layers},Bot"
+    if layer == "inner1":
+        return "Copper,L2,Inr"
+    if layer == "inner2":
+        return "Copper,L3,Inr"
+    return "Copper,L1,Top"
+
+
 def _generate_copper_layer(
     routed: dict,
     netlist: dict,
     layer: str,
     pad_map: dict,
+    num_layers: int = 2,
 ) -> gw.DataLayer:
-    """Generate copper Gerber for one layer (top or bottom)."""
+    """Generate copper Gerber for one layer."""
     gerber_key = _COPPER_MAP[layer]
-    dl = gw.DataLayer(LAYER_FUNCTIONS[gerber_key], negative=False)
+    dl = gw.DataLayer(_copper_layer_function(layer, num_layers), negative=False)
 
     routing = routed.get("routing", {})
 
@@ -303,14 +331,16 @@ def export_gerbers(
 
     project = routed.get("project_name", "board")
     pad_map = build_pad_map(routed, netlist)
+    num_layers = routed.get("board", {}).get("layers", 2)
+    copper_layers = _COPPER_LAYERS_BY_COUNT.get(num_layers, _COPPER_LAYERS_BY_COUNT[2])
 
     gw.set_generation_software("Productizr", "pcb-creator", "1.0")
 
     generated: list[Path] = []
 
-    # Copper layers
-    for layer in ("top", "bottom"):
-        dl = _generate_copper_layer(routed, netlist, layer, pad_map)
+    # Copper layers (N-layer aware)
+    for layer in copper_layers:
+        dl = _generate_copper_layer(routed, netlist, layer, pad_map, num_layers)
         gerber_key = _COPPER_MAP[layer]
         path = output_dir / f"{project}-{gerber_key}.gbr"
         with open(path, "w") as f:
