@@ -228,11 +228,20 @@ def _dsn_library(
                     lines.append(f'      (attach off)')
                     lines.append(f'    )')
 
-    # Via padstack — one shape per copper layer so Freerouting can place through-vias
+    # Via padstack — shapes only for layers declared in the structure section
+    # (i.e. the routing layers).  Inner copper layers that are power/ground planes
+    # are intentionally excluded from the structure section so Freerouting does not
+    # try to route signal traces on them.  Including inner-layer shapes here while
+    # omitting those layers from structure causes Freerouting to dereference an
+    # uninitialised layer-index entry and crash with ArrayIndexOutOfBoundsException.
+    # The physical via still passes through inner plane layers; copper fill connects
+    # those planes to via barrels after routing.
     num_layers = config.get("num_layers", 2)
-    via_copper_layers = _COPPER_LAYERS_BY_COUNT.get(num_layers, _COPPER_LAYERS_BY_COUNT[2])
+    all_copper_layers = _COPPER_LAYERS_BY_COUNT.get(num_layers, _COPPER_LAYERS_BY_COUNT[2])
+    _inner = {"In1.Cu", "In2.Cu"}
+    via_routing_layers = [l for l in all_copper_layers if l not in _inner] if num_layers > 2 else all_copper_layers
     lines.append(f'    (padstack Via_Default')
-    for lname in via_copper_layers:
+    for lname in via_routing_layers:
         lines.append(f'      (shape (circle "{lname}" {_fmt(via_dia)}))')
     lines.append(f'      (attach off)')
     lines.append(f'    )')
