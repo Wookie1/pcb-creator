@@ -715,18 +715,28 @@ def repair_placement(
         pin_count = comp_pin_counts.get(cid, 2)
         packages[des] = (pkg, pin_count)
 
-    # In repair mode, only pin components that are within board boundaries.
-    # "placement_source: user" is set by the LLM on components it considers
-    # important — but if they're outside the board we must still move them.
+    # Always pin user-placed components.  If the specified position puts the
+    # footprint outside the board (e.g. centre at y=95 but footprint height 15mm
+    # on a 100mm board), snap the centre to the nearest valid in-bounds position
+    # first — same clamping logic as the movable pre-pass below — then hold it
+    # there.  This preserves the agent's placement intent even when the exact
+    # position is slightly out of bounds, and prevents the SA loop from treating
+    # the component as free to move anywhere.
     for item in items:
         des = item["designator"]
-        x, y = positions[des]
-        fw, fh = footprints[des]
-        rot = rotations[des]
-        xmin, ymin, xmax, ymax = _get_bounding_box(x, y, fw, fh, rot)
-        within_bounds = xmin >= 0 and ymin >= 0 and xmax <= board_w and ymax <= board_h
-        if within_bounds and item.get("placement_source") == "user":
-            pinned.add(des)  # user-placed AND within bounds → respect it
+        if item.get("placement_source") == "user":
+            x, y = positions[des]
+            fw, fh = footprints[des]
+            rot = rotations[des]
+            if rot in (90, 270):
+                fw, fh = fh, fw
+            hw, hh = fw / 2, fh / 2
+            margin = BOARD_EDGE_CLEARANCE_MM
+            nx = max(hw + margin, min(board_w - hw - margin, x))
+            ny = max(hh + margin, min(board_h - hh - margin, y))
+            if nx != x or ny != y:
+                positions[des] = (round(nx, 2), round(ny, 2))
+            pinned.add(des)
 
     movable = [d for d in positions if d not in pinned]
     if not movable:
