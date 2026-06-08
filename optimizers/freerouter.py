@@ -6,6 +6,7 @@ Auto-downloads the Freerouting JAR to ~/.cache/pcb-creator/ on first use.
 
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 import tempfile
@@ -40,10 +41,24 @@ def ensure_java() -> str:
 
     Raises RuntimeError if Java is not found.
     """
+    # Try common Java paths first (MCP server may have restricted PATH)
+    for candidate in ["/usr/bin/java", "/usr/local/bin/java", "/opt/java/bin/java"]:
+        if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+            try:
+                result = subprocess.run(
+                    [candidate, "-version"],
+                    capture_output=True, text=True, timeout=10,
+                )
+                if result.returncode == 0:
+                    return candidate
+            except subprocess.TimeoutExpired:
+                pass
+
+    # Fall back to shutil.which
     java_bin = shutil.which("java")
     if not java_bin:
         raise RuntimeError(
-            "Java not found. Freerouting requires Java 17+.\n"
+            "Java not found. Freerouting requires Java 17+.\\n"
             "Install from: https://adoptium.net/ or run: brew install temurin"
         )
 

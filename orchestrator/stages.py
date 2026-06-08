@@ -87,13 +87,21 @@ def run_placement(
 
     placement_path = _p(project_dir, project_name, "placement")
 
-    # Resolve board dimensions
+    # Resolve board dimensions and preserve any user-pinned positions + layer count
+    # from an existing placement before we regenerate the grid seed.
     bw, bh = board_width_mm, board_height_mm
-    if (bw is None or bh is None) and placement_path.exists():
+    user_pinned: dict[str, dict] = {}  # designator → placement item with placement_source=="user"
+    existing_layers: int = 2           # default; overridden if existing placement has more
+    if placement_path.exists():
         try:
-            existing_board = _load(placement_path).get("board", {})
+            existing_pl = _load(placement_path)
+            existing_board = existing_pl.get("board", {})
             bw = bw or existing_board.get("width_mm")
             bh = bh or existing_board.get("height_mm")
+            existing_layers = existing_board.get("layers", 2)
+            for item in existing_pl.get("placements", []):
+                if item.get("placement_source") == "user":
+                    user_pinned[item["designator"]] = item
         except Exception:
             pass
     if bw is None or bh is None:
@@ -114,6 +122,24 @@ def run_placement(
     placement = generate_grid_placement(netlist, bw, bh, project_name)
     if placement is None:
         return {"success": False, "error": "No components with resolvable footprints"}
+
+    # generate_grid_placement hardcodes layers=2; restore the real layer count.
+    if existing_layers > 2:
+        placement["board"]["layers"] = existing_layers
+
+    # Re-inject user-pinned positions so repair + SA optimise around them rather
+    # than discarding them.  Only fields the user explicitly set are overwritten;
+    # footprint_width/height come from the freshly resolved footprint def.
+    if user_pinned:
+        for item in placement["placements"]:
+            pinned = user_pinned.get(item["designator"])
+            if pinned is None:
+                continue
+            item["x_mm"] = pinned["x_mm"]
+            item["y_mm"] = pinned["y_mm"]
+            item["rotation_deg"] = pinned.get("rotation_deg", item["rotation_deg"])
+            item["layer"] = pinned.get("layer", item["layer"])
+            item["placement_source"] = "user"
 
     # Repair overlaps/boundary, then optimize.  Thread the seed through both
     # so a given seed yields a fully reproducible placement.
@@ -281,7 +307,7 @@ def run_routing(project_dir: Path, project_name: str, config,
             routed = apply_copper_fills(routed, netlist_data, RouterConfig(**router_kwargs))
         except Exception as exc:
             _log(f"  Freerouting FAILED: {exc}")
-            return {"success": False, "error": f"Freerouting failed: {exc}"}
+            _log("  Falling back to built-in router")
 
     if routed is None:
         from optimizers.router import route_board, RouterConfig

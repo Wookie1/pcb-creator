@@ -1075,6 +1075,7 @@ def verify_footprints(project_name: str) -> dict:
                 "error": f"No netlist for '{project_name}'. Import one first."}
 
     _ensure_lookup_configured()
+    _activate_project_lookup(project_name)
     from validators.verify_footprints import verify_footprints as _verify
 
     unresolved = _verify(netlist)
