@@ -32,6 +32,35 @@ FREEROUTING_DOWNLOAD_URL = (
 DEFAULT_CACHE_DIR = Path.home() / ".cache" / "pcb-creator"
 
 
+def _default_heap_mb() -> int:
+    """Pick a safe JVM max-heap (MB) for Freerouting.
+
+    Freerouting 2.x grows memory aggressively on dense boards (observed >25 GB
+    on a 73-component 4-layer board).  With no cap the JVM will exhaust system
+    RAM and the OS OOM-kills the process — an opaque "crash" that looks like a
+    routing failure.  Capping the heap makes the JVM raise a catchable
+    OutOfMemoryError instead, so route_with_freerouting can return a clear,
+    actionable message (board too congested → add a routing layer / re-place).
+
+    Default: env PCB_FREEROUTING_HEAP_MB if set, else ~55% of total RAM clamped
+    to [1024, 6144] MB, leaving headroom for the OS, the MCP server, and other
+    concurrent agents on small hosts (e.g. an 8 GB Raspberry Pi 5).
+    """
+    env = os.environ.get("PCB_FREEROUTING_HEAP_MB")
+    if env:
+        try:
+            return max(512, int(env))
+        except ValueError:
+            pass
+    try:
+        page_size = os.sysconf("SC_PAGE_SIZE")
+        phys_pages = os.sysconf("SC_PHYS_PAGES")
+        total_mb = (page_size * phys_pages) // (1024 * 1024)
+        return max(1024, min(6144, int(total_mb * 0.55)))
+    except (ValueError, OSError, AttributeError):
+        return 2048
+
+
 # ---------------------------------------------------------------------------
 # Environment checks
 # ---------------------------------------------------------------------------
@@ -120,6 +149,7 @@ def route_with_freerouting(
     timeout_s: int = 300,
     exclude_nets: list[str] | None = None,
     dsn_config: dict | None = None,
+    heap_mb: int | None = None,
 ) -> dict:
     """Route a PCB using Freerouting.
 
@@ -137,6 +167,9 @@ def route_with_freerouting(
         exclude_nets: Net names to exclude from routing (e.g., ["GND"]).
         dsn_config: Design rules dict for DSN export:
             trace_width_mm, clearance_mm, via_drill_mm, via_diameter_mm
+        heap_mb: JVM max-heap cap in MB.  None → auto (see _default_heap_mb).
+            Prevents Freerouting's unbounded memory growth from OOM-killing the
+            host on dense boards; instead it surfaces as a clear error.
 
     Returns:
         Routed dict compatible with route_board() output format.
@@ -190,11 +223,14 @@ def route_with_freerouting(
         # Excluded nets are already omitted from the DSN, so Freerouting routes
         # all nets present in the file. The -inc flag would RESTRICT routing to
         # only those nets — the opposite of what we want.
-        cmd = [java_bin, "-Djava.awt.headless=true",
+        # -Xmx caps the heap so a runaway board raises OutOfMemoryError (caught
+        # below) instead of OOM-killing the host.
+        heap = heap_mb if heap_mb is not None else _default_heap_mb()
+        cmd = [java_bin, f"-Xmx{heap}m", "-Djava.awt.headless=true",
                "-jar", str(jar), "-de", str(dsn_path), "-do", str(ses_path),
                "-mp", "20", "-mt", "1"]  # -mt 1: single-thread optimization (avoids clearance bugs)
 
-        print(f"  Running Freerouting (timeout={timeout_s}s)...")
+        print(f"  Running Freerouting (timeout={timeout_s}s, heap={heap}MB)...")
 
         # 3. Run Freerouting
         try:
@@ -208,6 +244,23 @@ def route_with_freerouting(
             raise RuntimeError(
                 f"Freerouting timed out after {timeout_s}s. "
                 "Try increasing PCB_FREEROUTING_TIMEOUT or simplifying the board."
+            )
+
+        # Detect out-of-memory: the JVM may exit non-zero with OutOfMemoryError
+        # in its output, or be killed by the OS OOM-killer (exit code -9 / 137).
+        combined = ((result.stdout or "") + (result.stderr or ""))
+        oom = (
+            "OutOfMemoryError" in combined
+            or "java.lang.OutOfMemory" in combined
+            or result.returncode in (137, -9)
+        )
+        if oom:
+            raise RuntimeError(
+                f"Freerouting ran out of memory (heap cap {heap}MB). The board is "
+                "too congested to route on the available signal layers. Add a "
+                "routing layer (e.g. make an inner layer signal instead of a plane), "
+                "loosen placement density, or raise PCB_FREEROUTING_HEAP_MB if the "
+                "host has spare RAM."
             )
 
         if result.returncode != 0:
