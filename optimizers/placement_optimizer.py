@@ -860,6 +860,14 @@ def repair_placement(
     for item in result["placements"]:
         des = item["designator"]
         if des in pinned:
+            # Write back any boundary-snapping we applied to this component's
+            # centre position (best_pos[des] holds the snapped value; for
+            # already-in-bounds items it equals the original and this is a
+            # no-op).  placement_source is intentionally left unchanged so
+            # "user" pins stay "user" after a boundary snap.
+            item["x_mm"] = round(best_pos[des][0], 2)
+            item["y_mm"] = round(best_pos[des][1], 2)
+            item["rotation_deg"] = best_rot[des]
             continue
         old_pos = positions[des]
         old_rot = rotations[des]
