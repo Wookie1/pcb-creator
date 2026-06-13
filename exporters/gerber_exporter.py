@@ -305,7 +305,8 @@ def _generate_paste(
     pad_map: dict,
 ) -> gw.DataLayer:
     """Generate solder paste Gerber (SMD pads only)."""
-    dl = gw.DataLayer(LAYER_FUNCTIONS["F_Paste"], negative=False)
+    func = LAYER_FUNCTIONS["F_Paste"] if layer == "top" else "Paste,Bot"
+    dl = gw.DataLayer(func, negative=False)
 
     for pad_info in pad_map.values():
         # Only SMD pads on the specified layer
@@ -384,12 +385,19 @@ def export_gerbers(
             f.write(dl.dumps_gerber())
         generated.append(path)
 
-    # Solder paste (front only typically)
+    # Solder paste: front always; back only when bottom-side SMD pads exist
     dl = _generate_paste(routed, "top", pad_map)
     path = output_dir / f"{project}-F_Paste.gbr"
     with open(path, "w") as f:
         f.write(dl.dumps_gerber())
     generated.append(path)
+
+    if any(p.layer == "bottom" for p in pad_map.values()):
+        dl = _generate_paste(routed, "bottom", pad_map)
+        path = output_dir / f"{project}-B_Paste.gbr"
+        with open(path, "w") as f:
+            f.write(dl.dumps_gerber())
+        generated.append(path)
 
     # Edge cuts
     dl = _generate_edge_cuts(routed.get("board", {}))

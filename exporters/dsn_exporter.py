@@ -379,31 +379,29 @@ def _dsn_network(
         else:
             signal_nets.append(net_name)
 
-    # Compute power trace width (max of all power net widths)
-    power_width = default_width
-    if net_widths:
-        for name in power_nets:
-            if name in net_widths:
-                power_width = max(power_width, net_widths[name])
-    power_width = max(power_width, TRACE_WIDTH_POWER_MM)
+    # One DSN class per distinct required width, so a high-current SIGNAL net
+    # (e.g. a buck converter's SW node) gets its IPC-2221 width instead of
+    # the signal default, and power nets don't inherit each other's widths.
+    floor_by_net: dict[str, float] = {}
+    for name in power_nets:
+        floor_by_net[name] = TRACE_WIDTH_POWER_MM
+    for name in signal_nets:
+        floor_by_net[name] = default_width
 
-    # Net classes with appropriate widths
-    if power_nets:
-        quoted = " ".join(f'"{n}"' for n in power_nets)
-        lines.append(f'    (class power {quoted}')
+    nets_by_width: dict[float, list[str]] = {}
+    for name, floor in floor_by_net.items():
+        width = max(floor, (net_widths or {}).get(name, 0.0))
+        nets_by_width.setdefault(round(width, 3), []).append(name)
+
+    for width in sorted(nets_by_width):
+        names = nets_by_width[width]
+        class_id = "w" + _fmt(width).replace(".", "p")
+        quoted = " ".join(f'"{n}"' for n in names)
+        lines.append(f'    (class {class_id} {quoted}')
         lines.append(f'      (circuit')
         lines.append(f'        (use_via Via_Default)')
         lines.append(f'      )')
-        lines.append(f'      (rule (width {_fmt(power_width)}))')
-        lines.append(f'    )')
-
-    if signal_nets:
-        quoted = " ".join(f'"{n}"' for n in signal_nets)
-        lines.append(f'    (class signal {quoted}')
-        lines.append(f'      (circuit')
-        lines.append(f'        (use_via Via_Default)')
-        lines.append(f'      )')
-        lines.append(f'      (rule (width {_fmt(default_width)}))')
+        lines.append(f'      (rule (width {_fmt(width)}))')
         lines.append(f'    )')
 
     lines.append("  )")

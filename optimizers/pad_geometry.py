@@ -64,9 +64,12 @@ class FootprintDef:
 
     pin_offsets maps pin_number -> (dx_mm, dy_mm) offset from center.
     pad_size is (width_mm, height_mm) of each pad.
+    is_through_hole: True/False when the generator knows; None defers to the
+    package-name prefix heuristic in build_pad_map.
     """
     pin_offsets: dict[int, tuple[float, float]]
     pad_size: tuple[float, float]
+    is_through_hole: bool | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -474,6 +477,19 @@ def _generate_fallback_footprint(
     return FootprintDef(pin_offsets=offsets, pad_size=(0.5, 0.5))
 
 
+def is_through_hole_package(package: str, fp: "FootprintDef | None" = None) -> bool:
+    """True when a package mounts through-hole (pads span both layers).
+
+    Uses the footprint's explicit flag when the generator set one, else the
+    package-name prefix heuristic.
+    """
+    if fp is not None and fp.is_through_hole is not None:
+        return fp.is_through_hole
+    return str(package).startswith(
+        ("DIP", "PinHeader", "PJ-002A", "TO-220", "HC49", "6mm_tactile",
+         "ScrewTerminal", "Multiwatt", "TO-92", "electrolytic"))
+
+
 def _rotate_offset(dx: float, dy: float, rotation_deg: int) -> tuple[float, float]:
     """Rotate a pad offset by component rotation (0/90/180/270 CCW)."""
     if rotation_deg == 0:
@@ -575,8 +591,13 @@ def build_pad_map(
             # Pin number not in definition — use center
             dx, dy = 0.0, 0.0
 
-        # Apply component rotation
+        # Apply component rotation. Bottom-side components are MIRRORED about
+        # their local Y axis (dx -> -dx) before rotation — the same transform
+        # Specctra applies to back-side images and KiCad bakes into flipped
+        # footprints, so every consumer agrees pin-for-pin on pad positions.
         rotation = plc.get("rotation_deg", 0)
+        if plc.get("layer", "top") == "bottom":
+            dx = -dx
         dx_rot, dy_rot = _rotate_offset(dx, dy, rotation)
 
         # Absolute position
@@ -589,10 +610,7 @@ def build_pad_map(
             pw, ph = ph, pw
 
         # Through-hole pads span both layers; SMD pads are on the component layer only
-        is_th = fp.is_through_hole if hasattr(fp, 'is_through_hole') else (
-            package.startswith(("DIP", "PinHeader", "PJ-002A", "TO-220", "HC49",
-                                "6mm_tactile"))
-        )
+        is_th = is_through_hole_package(package, fp)
         pad_layer = "all" if is_th else plc.get("layer", "top")
 
         pad_map[port_id] = PadInfo(

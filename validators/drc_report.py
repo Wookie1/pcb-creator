@@ -271,3 +271,93 @@ def run_drc(
     }
 
     return report
+
+
+# Per-rule remediation hints for agents. Keep these concrete: which tool to
+# reach for and what to change.
+_RULE_REMEDIATION = {
+    "trace_clearance": "Re-route with route_board(effort='best'), or re-place "
+                       "on a larger board with optimize_placement and route again.",
+    "via_clearance": "Re-route with route_board(effort='best') — via spacing is "
+                     "decided by the router.",
+    "connectivity": "Some nets are not fully connected. Re-run route_board "
+                    "(higher effort), or re-place with a larger board first.",
+    "no_shorts": "Traces of different nets touch. Re-route with "
+                 "route_board(effort='best').",
+    "pad_clearance": "Re-route with route_board(effort='best'); persistent pad "
+                     "clearance violations usually mean the placement is too "
+                     "dense — re-place on a larger board.",
+    "trace_width_min": "Trace width is below the manufacturing minimum — pick a "
+                       "less strict manufacturer profile or adjust trace widths.",
+    "clearance_min": "Copper clearance below manufacturing minimum. Re-route "
+                     "with route_board(effort='best') or relax the DFM profile.",
+    "via_drill_min": "Via drill below manufacturing minimum — adjust the via "
+                     "settings or DFM profile.",
+    "annular_ring": "Via annular ring too thin — increase via diameter or "
+                    "relax the DFM profile.",
+    "silkscreen": "Silkscreen text below minimum legible size; usually safe to "
+                  "ignore (warning) or adjust board text settings.",
+    "hole_to_hole": "Drill holes too close together — re-place with more "
+                    "spacing (larger board) and re-route.",
+    "copper_to_edge": "Copper too close to the board edge — re-place with a "
+                      "slightly larger board, then re-route.",
+    "inner_plane_antipad": "Inner plane antipad clearance issue — re-route; if "
+                           "persistent, increase board size.",
+    "trace_current_capacity": "A trace is too narrow for its current (IPC-2221). "
+                              "Increase the net's trace width or copper weight.",
+}
+
+
+def summarize_drc(report: dict, top_n: int = 10) -> dict:
+    """Condense a full DRC report into an agent-friendly summary.
+
+    Returns severity-ranked violations (errors first, capped at top_n),
+    per-rule counts, and a concrete remediation hint per failing rule —
+    so a small model can act without parsing all 14 check dicts.
+    """
+    failing: list[dict] = []
+    flat: list[dict] = []
+    for check in report.get("checks", []):
+        rule = check.get("rule", "?")
+        errs = [v for v in check.get("violations", [])
+                if v.get("severity") == "error"]
+        warns = [v for v in check.get("violations", [])
+                 if v.get("severity") == "warning"]
+        if errs or warns:
+            entry = {
+                "rule": rule,
+                "category": check.get("category", ""),
+                "errors": len(errs),
+                "warnings": len(warns),
+            }
+            hint = _RULE_REMEDIATION.get(rule)
+            if hint:
+                entry["remediation_hint"] = hint
+            failing.append(entry)
+        flat.extend(errs)
+        flat.extend(warns)
+
+    # Errors first, then warnings; preserve check order within each severity.
+    flat.sort(key=lambda v: 0 if v.get("severity") == "error" else 1)
+    top = []
+    for v in flat[:top_n]:
+        item = {"rule": v.get("rule"), "severity": v.get("severity"),
+                "message": v.get("message")}
+        if v.get("location"):
+            item["location"] = v["location"]
+        top.append(item)
+
+    stats = report.get("statistics", {})
+    return {
+        "passed": report.get("passed", False),
+        "summary": report.get("summary", ""),
+        "manufacturer": report.get("manufacturer", ""),
+        "error_count": stats.get("errors", 0),
+        "warning_count": stats.get("warnings", 0),
+        "failing_rules": failing,
+        "top_violations": top,
+        "truncated": len(flat) > top_n,
+        "note": (f"Showing {min(top_n, len(flat))} of {len(flat)} violations; "
+                 "call get_drc_report(verbose=True) for the full report."
+                 if len(flat) > top_n else None),
+    }

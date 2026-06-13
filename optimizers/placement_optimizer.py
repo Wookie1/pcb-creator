@@ -20,6 +20,7 @@ import copy
 import json
 import math
 import random
+import re
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -29,6 +30,10 @@ from .ratsnest import (
     find_decoupling_associations, find_crystal_associations,
     DecouplingAssociation, CrystalAssociation, IncrementalCost,
 )
+
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 # ---------- Configuration ----------
@@ -45,6 +50,16 @@ class SAConfig:
     proximity_weight: float = 8.0   # decoupling cap proximity to IC
     crystal_weight: float = 10.0    # crystal proximity to MCU
     grouping_weight: float = 2.0    # functional grouping affinity
+    congestion_weight: float = 0.0  # pad-density penalty (escape-route proxy);
+                                    # 0 = off, enabled by the routing retry loop
+    two_sided: bool = False         # allow flipping small SMD passives to the
+                                    # bottom side (layer-flip SA move)
+    bottom_penalty: float = 4.0     # cost per bottom-side component — on a
+                                    # 2-layer board the bottom is the router's
+                                    # escape layer, so flips must pay their way
+                                    # (congestion relief > penalty)
+    min_clearance_mm: float = 0.5   # component-to-component clearance enforced
+                                    # during moves (raise to spread a congested board)
     stagnation_limit: int = 500  # early stop if no improvement in N iterations
     seed: int | None = None
 
@@ -57,6 +72,27 @@ BOARD_EDGE_CLEARANCE_MM = 1.0
 
 # Component types that are pinned (never moved)
 PINNED_TYPES = {"connector", "fiducial"}
+
+# Packages that are mechanical keepouts — mounting holes and fiducials must
+# stay where they were placed (they line up with the enclosure/assembly).
+_KEEPOUT_PACKAGE_RE = re.compile(r"MountingHole|Fiducial", re.IGNORECASE)
+
+
+def _effective_layer(package: str, pin_count: int, layer: str) -> str:
+    """Through-hole parts block BOTH sides; SMD parts only their own layer."""
+    from .pad_geometry import get_footprint_def, is_through_hole_package
+    fp = get_footprint_def(package, pin_count)
+    if is_through_hole_package(package, fp):
+        return "all"
+    return layer
+
+
+def _layers_conflict(layer_a: str, layer_b: str) -> bool:
+    return layer_a == layer_b or layer_a == "all" or layer_b == "all"
+
+
+def _is_keepout_package(package: str) -> bool:
+    return bool(package and _KEEPOUT_PACKAGE_RE.search(package))
 
 
 # ---------- Helpers ----------
@@ -202,12 +238,44 @@ def _build_grouping_pairs(nets: list[NetInfo]) -> list[tuple[str, str]]:
     return [(a, b) for (a, b), count in shared_count.items() if count >= 2]
 
 
+CONGESTION_CELL_MM = 5.0     # pad-density bucket size
+CONGESTION_THRESHOLD = 10.0  # pins per cell before the penalty kicks in
+
+
+def _congestion_cost(
+    positions: dict[str, tuple[float, float]],
+    packages: dict[str, tuple[str, int]],
+    cell_mm: float = CONGESTION_CELL_MM,
+    threshold: float = CONGESTION_THRESHOLD,
+    layers: dict[str, str] | None = None,
+) -> float:
+    """Quadratic penalty on pad density per grid cell (escape-route proxy).
+
+    Cells holding more pins than the threshold are increasingly hard to
+    route out of; spreading them costs a little wirelength but saves
+    rip-up/retry later.
+    """
+    buckets: dict[tuple, float] = {}
+    for des, (x, y) in positions.items():
+        pin_count = packages.get(des, ("", 2))[1]
+        layer = layers.get(des, "top") if layers else "top"
+        key = (layer, int(x // cell_mm), int(y // cell_mm))
+        buckets[key] = buckets.get(key, 0.0) + pin_count
+    cost = 0.0
+    for pins in buckets.values():
+        if pins > threshold:
+            cost += (pins - threshold) ** 2
+    return cost
+
+
 def _quality_cost(
     positions: dict[str, tuple[float, float]],
     config: SAConfig,
     decoupling: list[DecouplingAssociation],
     crystals: list[CrystalAssociation],
     grouping_pairs: list[tuple[str, str]],
+    packages: dict[str, tuple[str, int]] | None = None,
+    layers: dict[str, str] | None = None,
 ) -> float:
     """Weighted sum of the placement-quality terms (proximity/crystal/grouping).
 
@@ -222,6 +290,12 @@ def _quality_cost(
         cost += config.crystal_weight * _crystal_cost(positions, crystals)
     if grouping_pairs and config.grouping_weight > 0:
         cost += config.grouping_weight * _grouping_cost(positions, grouping_pairs)
+    if packages and config.congestion_weight > 0:
+        cost += config.congestion_weight * _congestion_cost(positions, packages,
+                                                            layers=layers)
+    if layers and config.two_sided and config.bottom_penalty > 0:
+        cost += config.bottom_penalty * sum(
+            1 for l in layers.values() if l == "bottom")
     return cost
 
 
@@ -297,6 +371,8 @@ def optimize_placement(
             pinned.add(des)
         if item.get("component_type") in PINNED_TYPES:
             pinned.add(des)
+        if _is_keepout_package(pkg):
+            pinned.add(des)
 
     movable = [d for d in positions if d not in pinned]
 
@@ -313,11 +389,32 @@ def optimize_placement(
     grouping_pairs = _build_grouping_pairs(nets)
 
     if decoupling:
-        print(f"  Decoupling associations: {len(decoupling)} (cap→IC pairs)")
+        logger.info(f"  Decoupling associations: {len(decoupling)} (cap→IC pairs)")
     if crystal_assocs:
-        print(f"  Crystal associations: {len(crystal_assocs)} (crystal→IC pairs)")
+        logger.info(f"  Crystal associations: {len(crystal_assocs)} (crystal→IC pairs)")
     if grouping_pairs:
-        print(f"  Grouping pairs: {len(grouping_pairs)} (components sharing 2+ nets)")
+        logger.info(f"  Grouping pairs: {len(grouping_pairs)} (components sharing 2+ nets)")
+
+    # Flip-eligible components for two-sided placement: small non-polarized
+    # SMD passives only. Connectors, ICs, TH parts, keepouts, and anything
+    # pinned stay on their side; LEDs stay visible on top.
+    flip_eligible: set[str] = set()
+    if config.two_sided:
+        from .pad_geometry import get_footprint_def, is_through_hole_package
+        for item in items:
+            des = item["designator"]
+            if des in pinned:
+                continue
+            if item.get("component_type") not in ("resistor", "capacitor",
+                                                  "diode"):
+                continue
+            pkg, pin_count = packages.get(des, ("", 2))
+            fp = get_footprint_def(pkg, pin_count)
+            if is_through_hole_package(pkg, fp):
+                continue
+            flip_eligible.add(des)
+        if flip_eligible:
+            logger.info(f"  Two-sided: {len(flip_eligible)} flip-eligible passives")
 
     # Compute iteration count
     iterations = _compute_iterations(len(movable), config.max_iterations)
@@ -332,16 +429,19 @@ def optimize_placement(
     initial_cost = (
         config.wire_weight * initial_wire
         + config.crossing_weight * initial_cross
-        + _quality_cost(positions, config, decoupling, crystal_assocs, grouping_pairs)
+        + _quality_cost(positions, config, decoupling, crystal_assocs, grouping_pairs, packages,
+                        layers=layers)
     )
 
     # SA state
     current_pos = dict(positions)
     current_rot = dict(rotations)
+    current_layers = dict(layers)
     current_cost = initial_cost
 
     best_pos = dict(current_pos)
     best_rot = dict(current_rot)
+    best_layers = dict(current_layers)
     best_cost = current_cost
 
     T = config.initial_temperature
@@ -362,15 +462,27 @@ def optimize_placement(
     swappable_groups = [g for g in package_groups.values() if len(g) >= 2]
 
     for iteration in range(iterations):
-        # Generate a move
-        new_pos, new_rot = _generate_move(
-            current_pos, current_rot, movable, swappable_groups,
-            footprints, layers, board_w, board_h, T, config.initial_temperature, rng,
-            nets=nets,
-        )
+        # Generate a move: occasionally flip an eligible passive to the other
+        # side (two-sided mode); otherwise translate/swap/rotate as usual.
+        new_layers = current_layers
+        if flip_eligible and rng.random() < 0.15:
+            new_pos, new_rot = dict(current_pos), dict(current_rot)
+            flip_des = rng.choice(sorted(flip_eligible))
+            new_layers = dict(current_layers)
+            new_layers[flip_des] = ("bottom"
+                                    if current_layers[flip_des] == "top"
+                                    else "top")
+        else:
+            new_pos, new_rot = _generate_move(
+                current_pos, current_rot, movable, swappable_groups,
+                footprints, current_layers, board_w, board_h, T,
+                config.initial_temperature, rng,
+                nets=nets,
+            )
 
         # Fast constraint check
-        if not _is_valid(new_pos, new_rot, footprints, layers, board_w, board_h, packages):
+        if not _is_valid(new_pos, new_rot, footprints, new_layers, board_w, board_h, packages,
+                         clearance=config.min_clearance_mm):
             since_improvement += 1
             if since_improvement >= config.stagnation_limit:
                 break
@@ -382,7 +494,8 @@ def optimize_placement(
         new_cost = (
             config.wire_weight * ev_wire
             + config.crossing_weight * ev_cross
-            + _quality_cost(new_pos, config, decoupling, crystal_assocs, grouping_pairs)
+            + _quality_cost(new_pos, config, decoupling, crystal_assocs, grouping_pairs, packages,
+                            layers=new_layers)
         )
 
         # Accept or reject
@@ -391,12 +504,14 @@ def optimize_placement(
             evaluator.commit()
             current_pos = new_pos
             current_rot = new_rot
+            current_layers = new_layers
             current_cost = new_cost
             accepted += 1
 
             if current_cost < best_cost:
                 best_pos = dict(current_pos)
                 best_rot = dict(current_rot)
+                best_layers = dict(current_layers)
                 best_cost = current_cost
                 since_improvement = 0
             else:
@@ -421,31 +536,34 @@ def optimize_placement(
             continue
         old_pos = positions[des]
         old_rot = rotations[des]
+        old_layer = layers[des]
         new_p = best_pos[des]
         new_r = best_rot[des]
+        new_l = best_layers.get(des, old_layer)
         item["x_mm"] = round(new_p[0], 2)
         item["y_mm"] = round(new_p[1], 2)
         item["rotation_deg"] = new_r
-        # Mark as optimizer-placed if position or rotation changed
-        if old_pos != new_p or old_rot != new_r:
+        item["layer"] = new_l
+        # Mark as optimizer-placed if position, rotation, or side changed
+        if old_pos != new_p or old_rot != new_r or old_layer != new_l:
             item["placement_source"] = "optimizer"
 
     # Compute final metrics for logging (signal-net crossings, plane-aware)
     final_eval = IncrementalCost(nets, best_pos)
     improvement = (1 - best_cost / initial_cost) * 100 if initial_cost > 0 else 0
 
-    print(f"  SA Optimizer: {iteration + 1} iterations, {accepted} accepted moves")
-    print(f"  Wire length : {initial_wire:.1f}mm → {final_eval.total_wire:.1f}mm")
-    print(f"  Crossings   : {initial_cross} → {final_eval.total_cross} (signal nets)")
+    logger.info(f"  SA Optimizer: {iteration + 1} iterations, {accepted} accepted moves")
+    logger.info(f"  Wire length : {initial_wire:.1f}mm → {final_eval.total_wire:.1f}mm")
+    logger.info(f"  Crossings   : {initial_cross} → {final_eval.total_cross} (signal nets)")
     if decoupling:
         init_prox = _proximity_cost(positions, decoupling)
         final_prox = _proximity_cost(best_pos, decoupling)
-        print(f"  Decoupling  : proximity cost {init_prox:.1f} → {final_prox:.1f}")
+        logger.info(f"  Decoupling  : proximity cost {init_prox:.1f} → {final_prox:.1f}")
     if crystal_assocs:
         init_xtal = _crystal_cost(positions, crystal_assocs)
         final_xtal = _crystal_cost(best_pos, crystal_assocs)
-        print(f"  Crystal     : proximity cost {init_xtal:.1f} → {final_xtal:.1f}")
-    print(f"  Improvement : {improvement:.1f}%")
+        logger.info(f"  Crystal     : proximity cost {init_xtal:.1f} → {final_xtal:.1f}")
+    logger.info(f"  Improvement : {improvement:.1f}%")
 
     return result
 
@@ -536,6 +654,7 @@ def _is_valid(
     board_w: float,
     board_h: float,
     packages: dict[str, tuple[str, int]] | None = None,
+    clearance: float = MIN_CLEARANCE_MM,
 ) -> bool:
     """Fast constraint check — no JSON serialization.
 
@@ -563,14 +682,16 @@ def _is_valid(
                 box[2] > board_w - ec + 0.01 or box[3] > board_h - ec + 0.01):
             return False
 
-        boxes.append((des, box, layers.get(des, "top")))
+        pkg, pc = (packages or {}).get(des, ("", 2))
+        boxes.append((des, box,
+                      _effective_layer(pkg, pc, layers.get(des, "top"))))
 
-    # Pairwise overlap check (same layer only)
+    # Pairwise overlap check (through-hole parts conflict on both sides)
     for i in range(len(boxes)):
         for j in range(i + 1, len(boxes)):
-            if boxes[i][2] != boxes[j][2]:
-                continue  # different layers, no conflict
-            if _boxes_overlap_with_clearance(boxes[i][1], boxes[j][1]):
+            if not _layers_conflict(boxes[i][2], boxes[j][2]):
+                continue
+            if _boxes_overlap_with_clearance(boxes[i][1], boxes[j][1], clearance):
                 return False
 
     return True
@@ -586,6 +707,7 @@ def _count_violations(
     board_w: float,
     board_h: float,
     packages: dict[str, tuple[str, int]] | None = None,
+    clearance: float = MIN_CLEARANCE_MM,
 ) -> tuple[int, float]:
     """Count constraint violations and total overlap depth.
 
@@ -605,8 +727,10 @@ def _count_violations(
             pkg, pin_count = packages[des]
             box = _get_pad_extent_box(x, y, w, h, rot, pkg, pin_count)
         else:
+            pkg, pin_count = "", 2
             box = _get_bounding_box(x, y, w, h, rot)
-        boxes.append((des, box, layers.get(des, "top")))
+        boxes.append((des, box,
+                      _effective_layer(pkg, pin_count, layers.get(des, "top"))))
 
         # Board boundary violations (with edge clearance)
         if box[0] < ec - 0.01:
@@ -622,29 +746,117 @@ def _count_violations(
             violations += 1
             overlap_depth += box[3] - (board_h - ec)
 
-    # Pairwise overlap check (same layer)
+    # Pairwise overlap check (through-hole parts conflict on both sides)
     for i in range(len(boxes)):
         for j in range(i + 1, len(boxes)):
-            if boxes[i][2] != boxes[j][2]:
+            if not _layers_conflict(boxes[i][2], boxes[j][2]):
                 continue
             b1, b2 = boxes[i][1], boxes[j][1]
             # Check if they overlap (with clearance)
-            if _boxes_overlap_with_clearance(b1, b2):
+            if _boxes_overlap_with_clearance(b1, b2, clearance):
                 violations += 1
                 # Compute overlap depth (how much they need to move apart)
-                ox = min(b1[2] + MIN_CLEARANCE_MM - b2[0], b2[2] + MIN_CLEARANCE_MM - b1[0])
-                oy = min(b1[3] + MIN_CLEARANCE_MM - b2[1], b2[3] + MIN_CLEARANCE_MM - b1[1])
+                ox = min(b1[2] + clearance - b2[0], b2[2] + clearance - b1[0])
+                oy = min(b1[3] + clearance - b2[1], b2[3] + clearance - b1[1])
                 if ox > 0 and oy > 0:
                     overlap_depth += min(ox, oy)
 
     return violations, overlap_depth
 
 
+def find_placement_violations(
+    placement: dict,
+    netlist: dict | None = None,
+    clearance: float = MIN_CLEARANCE_MM,
+) -> dict:
+    """Structured constraint report for a placement (pad-extent aware).
+
+    Returns {"out_of_bounds": [...], "overlaps": [...], "count": int}.
+    Each out_of_bounds entry: {designator, pinned, detail}.
+    Each overlap entry: {a, b, layer, pinned (both pinned → unfixable
+    automatically), detail}.
+    """
+    board = placement.get("board", {})
+    board_w = board.get("width_mm", 0.0)
+    board_h = board.get("height_mm", 0.0)
+    items = placement.get("placements", [])
+
+    # Pin counts per designator for pad-extent boxes
+    comp_pin_counts: dict[str, int] = {}
+    des_to_comp_id: dict[str, str] = {}
+    if netlist:
+        for elem in netlist.get("elements", []):
+            if elem.get("element_type") == "port":
+                cid = elem.get("component_id", "")
+                comp_pin_counts[cid] = comp_pin_counts.get(cid, 0) + 1
+            elif elem.get("element_type") == "component":
+                des_to_comp_id[elem.get("designator", "")] = elem["component_id"]
+
+    boxes: list[tuple[str, tuple, str, bool]] = []  # (des, box, layer, pinned)
+    out_of_bounds: list[dict] = []
+    ec = BOARD_EDGE_CLEARANCE_MM
+    for item in items:
+        des = item["designator"]
+        x, y = item["x_mm"], item["y_mm"]
+        fw, fh = item["footprint_width_mm"], item["footprint_height_mm"]
+        rot = item.get("rotation_deg", 0)
+        pkg = item.get("package", "")
+        pinned = (item.get("placement_source") == "user"
+                  or item.get("component_type") in PINNED_TYPES
+                  or _is_keepout_package(pkg))
+        if pkg:
+            pin_count = comp_pin_counts.get(des_to_comp_id.get(des, ""), 2)
+            box = _get_pad_extent_box(x, y, fw, fh, rot, pkg, pin_count)
+        else:
+            box = _get_bounding_box(x, y, fw, fh, rot)
+        eff_layer = _effective_layer(pkg, pin_count if pkg else 2,
+                                     item.get("layer", "top"))
+        boxes.append((des, box, eff_layer, pinned))
+
+        parts = []
+        if box[0] < ec - 0.01:
+            parts.append(f"{ec - box[0]:.2f}mm past the left edge margin")
+        if box[1] < ec - 0.01:
+            parts.append(f"{ec - box[1]:.2f}mm past the top edge margin")
+        if box[2] > board_w - ec + 0.01:
+            parts.append(f"{box[2] - (board_w - ec):.2f}mm past the right edge margin")
+        if box[3] > board_h - ec + 0.01:
+            parts.append(f"{box[3] - (board_h - ec):.2f}mm past the bottom edge margin")
+        if parts:
+            out_of_bounds.append({
+                "designator": des, "pinned": pinned,
+                "detail": f"{des} pads extend {', '.join(parts)} "
+                          f"(board {board_w}x{board_h}mm, edge clearance {ec}mm)",
+            })
+
+    overlaps: list[dict] = []
+    for i in range(len(boxes)):
+        for j in range(i + 1, len(boxes)):
+            des_a, box_a, layer_a, pin_a = boxes[i]
+            des_b, box_b, layer_b, pin_b = boxes[j]
+            if not _layers_conflict(layer_a, layer_b):
+                continue
+            if _boxes_overlap_with_clearance(box_a, box_b, clearance):
+                overlaps.append({
+                    "a": des_a, "b": des_b, "layer": layer_a,
+                    "pinned": pin_a and pin_b,
+                    "detail": f"{des_a} and {des_b} overlap (or are closer "
+                              f"than {clearance}mm) on {layer_a}"
+                              + (" — both are pinned; move one of them"
+                                 if pin_a and pin_b else ""),
+                })
+
+    return {"out_of_bounds": out_of_bounds, "overlaps": overlaps,
+            "count": len(out_of_bounds) + len(overlaps)}
+
+
 def repair_placement(
     placement: dict,
     netlist: dict | None = None,
     max_iterations: int = 10000,
+    clearance: float = MIN_CLEARANCE_MM,
     seed: int | None = None,
+    two_sided: bool = False,
 ) -> dict:
     """Repair a placement with overlaps and/or boundary violations.
 
@@ -703,17 +915,25 @@ def repair_placement(
         packages[des] = (pkg, pin_count)
 
     # In repair mode, only pin components that are within board boundaries.
-    # "placement_source: user" is set by the LLM on components it considers
-    # important — but if they're outside the board we must still move them.
+    # "placement_source: user" is set by the agent/LLM on components it
+    # considers important — but if they're outside the board we must still
+    # move them. Bounds use PAD extents (not just the body) so a connector
+    # whose pins overhang the edge is treated as out of bounds.
     for item in items:
         des = item["designator"]
         x, y = positions[des]
         fw, fh = footprints[des]
         rot = rotations[des]
-        xmin, ymin, xmax, ymax = _get_bounding_box(x, y, fw, fh, rot)
-        within_bounds = xmin >= 0 and ymin >= 0 and xmax <= board_w and ymax <= board_h
-        if within_bounds and item.get("placement_source") == "user":
-            pinned.add(des)  # user-placed AND within bounds → respect it
+        pkg, pin_count = packages.get(des, ("", 2))
+        if pkg:
+            xmin, ymin, xmax, ymax = _get_pad_extent_box(x, y, fw, fh, rot, pkg, pin_count)
+        else:
+            xmin, ymin, xmax, ymax = _get_bounding_box(x, y, fw, fh, rot)
+        within_bounds = (xmin >= 0 and ymin >= 0
+                         and xmax <= board_w and ymax <= board_h)
+        if within_bounds and (item.get("placement_source") == "user"
+                              or _is_keepout_package(pkg)):
+            pinned.add(des)  # agent-placed/keepout AND within bounds → respect it
 
     movable = [d for d in positions if d not in pinned]
     if not movable:
@@ -749,7 +969,7 @@ def repair_placement(
             positions[des] = (round(nx2, 2), round(ny2, 2))
             snapped += 1
     if snapped:
-        print(f"  Repair pre-pass: snapped {snapped} out-of-bounds component(s) onto board")
+        logger.info(f"  Repair pre-pass: snapped {snapped} out-of-bounds component(s) onto board")
 
     # Build connectivity if netlist provided
     nets = []
@@ -761,20 +981,42 @@ def repair_placement(
     VIOLATION_WEIGHT = 1000.0
     WIRE_WEIGHT = 0.1
 
-    def cost(pos, rot):
-        v_count, v_depth = _count_violations(pos, rot, footprints, layers, board_w, board_h, packages)
+    def cost(pos, rot, lyrs):
+        v_count, v_depth = _count_violations(pos, rot, footprints, lyrs, board_w, board_h, packages,
+                                              clearance=clearance)
         violation_cost = VIOLATION_WEIGHT * (v_count * 10 + v_depth)
         wire_cost = 0.0
         if nets and v_count == 0:
             wire_cost = WIRE_WEIGHT * total_wire_length(nets, pos)
         return violation_cost + wire_cost, v_count
 
+    # Two-sided repair: flipping a passive to the bottom directly resolves
+    # same-layer overlaps — exactly what an over-full top side needs.
+    flip_eligible: set[str] = set()
+    if two_sided:
+        from .pad_geometry import get_footprint_def, is_through_hole_package
+        for item in items:
+            des = item["designator"]
+            if des in pinned:
+                continue
+            if item.get("component_type") not in ("resistor", "capacitor",
+                                                  "diode"):
+                continue
+            pkg, pc = packages.get(des, ("", 2))
+            if is_through_hole_package(pkg, get_footprint_def(pkg, pc)):
+                continue
+            flip_eligible.add(des)
+        if flip_eligible:
+            logger.info(f"  Repair two-sided: {len(flip_eligible)} flip-eligible passives")
+
     current_pos = dict(positions)
     current_rot = dict(rotations)
-    current_cost, current_violations = cost(current_pos, current_rot)
+    current_layers = dict(layers)
+    current_cost, current_violations = cost(current_pos, current_rot, current_layers)
 
     best_pos = dict(current_pos)
     best_rot = dict(current_rot)
+    best_layers = dict(current_layers)
     best_cost = current_cost
     best_violations = current_violations
 
@@ -796,24 +1038,35 @@ def repair_placement(
     max_stagnation = 3000
 
     for iteration in range(max_iterations):
-        new_pos, new_rot = _generate_move(
-            current_pos, current_rot, movable, swappable_groups,
-            footprints, layers, board_w, board_h, T, 200.0, rng,
-        )
+        new_layers = current_layers
+        if flip_eligible and rng.random() < 0.2:
+            new_pos, new_rot = dict(current_pos), dict(current_rot)
+            flip_des = rng.choice(sorted(flip_eligible))
+            new_layers = dict(current_layers)
+            new_layers[flip_des] = ("bottom"
+                                    if current_layers[flip_des] == "top"
+                                    else "top")
+        else:
+            new_pos, new_rot = _generate_move(
+                current_pos, current_rot, movable, swappable_groups,
+                footprints, current_layers, board_w, board_h, T, 200.0, rng,
+            )
 
         # In repair mode, we DON'T reject invalid moves — we score them
-        new_cost, new_violations = cost(new_pos, new_rot)
+        new_cost, new_violations = cost(new_pos, new_rot, new_layers)
 
         delta = new_cost - current_cost
         if delta < 0 or rng.random() < math.exp(-delta / max(T, 1e-10)):
             current_pos = new_pos
             current_rot = new_rot
+            current_layers = new_layers
             current_cost = new_cost
             current_violations = new_violations
 
             if current_cost < best_cost:
                 best_pos = dict(current_pos)
                 best_rot = dict(current_rot)
+                best_layers = dict(current_layers)
                 best_cost = current_cost
                 best_violations = current_violations
                 stagnation = 0
@@ -840,21 +1093,25 @@ def repair_placement(
             continue
         old_pos = positions[des]
         old_rot = rotations[des]
+        old_layer = layers[des]
         new_p = best_pos[des]
         new_r = best_rot[des]
+        new_l = best_layers.get(des, old_layer)
         item["x_mm"] = round(new_p[0], 2)
         item["y_mm"] = round(new_p[1], 2)
         item["rotation_deg"] = new_r
-        if old_pos != new_p or old_rot != new_r:
+        item["layer"] = new_l
+        if old_pos != new_p or old_rot != new_r or old_layer != new_l:
             item["placement_source"] = "optimizer"
 
-    initial_v, _ = _count_violations(positions, rotations, footprints, layers, board_w, board_h, packages)
-    print(f"  Repair: {iteration + 1} iterations")
-    print(f"  Violations: {initial_v} → {best_violations}")
+    initial_v, _ = _count_violations(positions, rotations, footprints, layers, board_w, board_h, packages,
+                                     clearance=clearance)
+    logger.info(f"  Repair: {iteration + 1} iterations")
+    logger.info(f"  Violations: {initial_v} → {best_violations}")
     if best_violations == 0:
-        print(f"  All overlaps resolved ✓")
+        logger.info(f"  All overlaps resolved ✓")
     else:
-        print(f"  WARNING: {best_violations} violations remain")
+        logger.info(f"  WARNING: {best_violations} violations remain")
 
     return result
 
@@ -888,7 +1145,7 @@ def main(argv: list[str] | None = None) -> int:
 
     output_path = args.output or args.placement
     output_path.write_text(json.dumps(optimized, indent=2))
-    print(f"\n  Optimized placement written to {output_path}")
+    logger.info(f"\n  Optimized placement written to {output_path}")
 
     return 0
 

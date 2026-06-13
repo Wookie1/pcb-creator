@@ -6,9 +6,12 @@ Auto-downloads the Freerouting JAR to ~/.cache/pcb-creator/ on first use.
 
 from __future__ import annotations
 
+import re
 import shutil
 import subprocess
 import tempfile
+import threading
+import time
 import urllib.request
 from pathlib import Path
 
@@ -16,6 +19,10 @@ from validators.engineering_constants import (
     VIA_DRILL_MM,
     VIA_DIAMETER_MM,
 )
+
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -79,8 +86,8 @@ def ensure_jar(jar_path: Path | None = None) -> Path:
 
     # Download
     DEFAULT_CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    print(f"  Downloading Freerouting {FREEROUTING_VERSION}...")
-    print(f"  From: {FREEROUTING_DOWNLOAD_URL}")
+    logger.info(f"  Downloading Freerouting {FREEROUTING_VERSION}...")
+    logger.info(f"  From: {FREEROUTING_DOWNLOAD_URL}")
 
     try:
         urllib.request.urlretrieve(FREEROUTING_DOWNLOAD_URL, default_path)
@@ -90,13 +97,26 @@ def ensure_jar(jar_path: Path | None = None) -> Path:
             default_path.unlink()
         raise RuntimeError(f"Failed to download Freerouting: {e}")
 
-    print(f"  Saved to: {default_path}")
+    logger.info(f"  Saved to: {default_path}")
     return default_path
 
 
 # ---------------------------------------------------------------------------
 # Main routing function
 # ---------------------------------------------------------------------------
+
+# Freerouting v2.1.0 per-pass progress line (verified via
+# scripts/spike_freerouting_progress.py):
+#   ... INFO [job] Auto-router pass #3 on board '<hash>' was completed in
+#   0.03 seconds with the score of 214.91 (1 unrouted).
+# The "(N unrouted)" suffix is omitted once nothing is unrouted.
+_PASS_RE = re.compile(
+    r"Auto-router pass #(\d+) .*?completed in (\d+(?:\.\d+)?) seconds "
+    r"with the score of (\d+(?:\.\d+)?)(?: \((\d+) unrouted\))?"
+)
+
+_HEARTBEAT_INTERVAL_S = 10.0
+
 
 def route_with_freerouting(
     placement: dict,
@@ -105,12 +125,14 @@ def route_with_freerouting(
     timeout_s: int = 300,
     exclude_nets: list[str] | None = None,
     dsn_config: dict | None = None,
+    progress_callback=None,
+    max_passes: int = 20,
 ) -> dict:
     """Route a PCB using Freerouting.
 
     Workflow:
     1. Export placement + netlist to DSN format
-    2. Run Freerouting headlessly
+    2. Run Freerouting headlessly, streaming stdout for per-pass progress
     3. Import SES result
     4. Return routed dict (without copper fills)
 
@@ -122,6 +144,12 @@ def route_with_freerouting(
         exclude_nets: Net names to exclude from routing (e.g., ["GND"]).
         dsn_config: Design rules dict for DSN export:
             trace_width_mm, clearance_mm, via_drill_mm, via_diameter_mm
+        progress_callback: optional callable(dict) fired for every parsed
+            auto-router pass with {phase: "freerouting", pass_num, max_passes,
+            incomplete_connections, score, elapsed_s, heartbeat}, and at least
+            every ~10s as a heartbeat (the 'heartbeat' counter always
+            increases, so pollers see forward motion even between passes).
+        max_passes: Freerouting -mp value (max optimization passes).
 
     Returns:
         Routed dict compatible with route_board() output format.
@@ -139,23 +167,23 @@ def route_with_freerouting(
     copper_oz = cfg.get("copper_weight_oz", 0.5)
 
     # Compute IPC-2221 trace widths per net so Freerouting uses correct widths
-    # for power nets from the start (prevents post-routing DRC failures)
+    # from the start (prevents post-routing DRC failures). Currents propagate
+    # through series inductors/fuses so e.g. a buck's VOUT gets the same
+    # width as its SW node.
     net_widths: dict[str, float] = {}
     try:
-        from .router import ipc2221_trace_width, compute_net_current
-        from .ratsnest import build_connectivity
-        nets = build_connectivity(netlist)
-        for net in nets:
-            current = compute_net_current(net, netlist)
+        from .router import ipc2221_trace_width, compute_net_currents
+        currents = compute_net_currents(netlist)
+        net_names = {elem["net_id"]: elem.get("name", elem["net_id"])
+                     for elem in netlist.get("elements", [])
+                     if elem.get("element_type") == "net"}
+        for net_id, current in currents.items():
             if current > 0:
-                ipc_width = ipc2221_trace_width(current, copper_oz)
-                # Find the net name from netlist
-                for elem in netlist.get("elements", []):
-                    if elem.get("element_type") == "net" and elem.get("net_id") == net.net_id:
-                        net_widths[elem.get("name", net.net_id)] = ipc_width
-                        break
-    except Exception:
-        pass  # fall back to default widths
+                net_widths[net_names.get(net_id, net_id)] = \
+                    ipc2221_trace_width(current, copper_oz)
+    except Exception as exc:
+        logger.warning("IPC-2221 net width computation failed (%s) — "
+                       "falling back to default widths", exc)
 
     # Add exclude_nets and net_widths to DSN config
     dsn_cfg = dict(cfg)
@@ -169,7 +197,7 @@ def route_with_freerouting(
         # 1. Export DSN
         from exporters.dsn_exporter import export_dsn
         export_dsn(placement, netlist, dsn_path, config=dsn_cfg)
-        print(f"  DSN exported: {dsn_path}")
+        logger.info(f"  DSN exported: {dsn_path}")
 
         # 2. Build command
         # Excluded nets are already omitted from the DSN, so Freerouting routes
@@ -177,27 +205,90 @@ def route_with_freerouting(
         # only those nets — the opposite of what we want.
         cmd = [java_bin, "-Djava.awt.headless=true",
                "-jar", str(jar), "-de", str(dsn_path), "-do", str(ses_path),
-               "-mp", "20", "-mt", "1"]  # -mt 1: single-thread optimization (avoids clearance bugs)
+               "-mp", str(max_passes),
+               "-mt", "1"]  # -mt 1: single-thread optimization (avoids clearance bugs)
 
-        print(f"  Running Freerouting (timeout={timeout_s}s)...")
+        logger.info(f"  Running Freerouting (timeout={timeout_s}s, max_passes={max_passes})...")
 
-        # 3. Run Freerouting
-        try:
-            result = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                timeout=timeout_s,
-            )
-        except subprocess.TimeoutExpired:
-            raise RuntimeError(
-                f"Freerouting timed out after {timeout_s}s. "
-                "Try increasing PCB_FREEROUTING_TIMEOUT or simplifying the board."
-            )
+        # 3. Run Freerouting with stdout streaming for live pass progress.
+        t0 = time.monotonic()
+        state = {"pass_num": None, "incomplete": None, "score": None,
+                 "heartbeat": 0}
+        state_lock = threading.Lock()
+        stderr_tail: list[str] = []
 
-        if result.returncode != 0:
-            stderr_snippet = result.stderr[:500] if result.stderr else "no error output"
-            raise RuntimeError(f"Freerouting failed (exit code {result.returncode}): {stderr_snippet}")
+        def _emit() -> None:
+            if progress_callback is None:
+                return
+            with state_lock:
+                state["heartbeat"] += 1
+                snapshot = {
+                    "phase": "freerouting",
+                    "pass_num": state["pass_num"],
+                    "max_passes": max_passes,
+                    "incomplete_connections": state["incomplete"],
+                    "score": state["score"],
+                    "elapsed_s": round(time.monotonic() - t0, 1),
+                    "heartbeat": state["heartbeat"],
+                }
+            try:
+                progress_callback(snapshot)
+            except Exception:
+                pass  # progress must never kill the route
+
+        def _read_stdout(pipe) -> None:
+            for line in iter(pipe.readline, ""):
+                m = _PASS_RE.search(line)
+                if m:
+                    with state_lock:
+                        state["pass_num"] = int(m.group(1))
+                        state["score"] = float(m.group(3))
+                        state["incomplete"] = int(m.group(4)) if m.group(4) else 0
+                    _emit()
+            pipe.close()
+
+        def _read_stderr(pipe) -> None:
+            for line in iter(pipe.readline, ""):
+                stderr_tail.append(line)
+                if len(stderr_tail) > 50:
+                    stderr_tail.pop(0)
+            pipe.close()
+
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE, text=True, bufsize=1)
+        readers = [
+            threading.Thread(target=_read_stdout, args=(proc.stdout,), daemon=True),
+            threading.Thread(target=_read_stderr, args=(proc.stderr,), daemon=True),
+        ]
+        for r in readers:
+            r.start()
+
+        # Heartbeat loop: wait in short slices so the poller always sees the
+        # heartbeat counter advance even when Freerouting emits nothing.
+        deadline = t0 + timeout_s
+        next_beat = t0 + _HEARTBEAT_INTERVAL_S
+        while True:
+            try:
+                proc.wait(timeout=min(1.0, max(0.05, deadline - time.monotonic())))
+                break
+            except subprocess.TimeoutExpired:
+                now = time.monotonic()
+                if now >= deadline:
+                    proc.kill()
+                    proc.wait()
+                    raise RuntimeError(
+                        f"Freerouting timed out after {timeout_s}s. "
+                        "Try increasing PCB_FREEROUTING_TIMEOUT or simplifying the board."
+                    )
+                if now >= next_beat:
+                    _emit()
+                    next_beat = now + _HEARTBEAT_INTERVAL_S
+        for r in readers:
+            r.join(timeout=5)
+
+        if proc.returncode != 0:
+            stderr_snippet = "".join(stderr_tail)[-500:] or "no error output"
+            raise RuntimeError(f"Freerouting failed (exit code {proc.returncode}): {stderr_snippet}")
 
         if not ses_path.exists():
             # Freerouting may name the output differently
@@ -221,7 +312,7 @@ def route_with_freerouting(
                     f"Files in temp dir: {[f.name for f in created]}"
                 )
 
-        print(f"  SES output: {ses_path.stat().st_size} bytes")
+        logger.info(f"  SES output: {ses_path.stat().st_size} bytes")
 
         # 4. Import SES — pass excluded net IDs so completion % is computed correctly
         from exporters.ses_importer import import_ses
@@ -240,7 +331,7 @@ def route_with_freerouting(
         )
 
         stats = routed.get("routing", {}).get("statistics", {})
-        print(f"  Freerouting complete: {stats.get('routed_nets', 0)}/{stats.get('total_nets', 0)} nets "
+        logger.info(f"  Freerouting complete: {stats.get('routed_nets', 0)}/{stats.get('total_nets', 0)} nets "
               f"({stats.get('completion_pct', 0)}%)")
 
         return routed

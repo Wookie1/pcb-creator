@@ -237,6 +237,10 @@ def _footprint(
     for pin_num, (dx, dy) in sorted(fp_def.pin_offsets.items()):
         # Round offsets to avoid floating point noise (e.g., 3.8099999999999987)
         # which causes KiCad to compute pad positions that don't match trace endpoints
+        # Back-side footprints store X-mirrored local offsets (KiCad bakes the
+        # flip into the file) — must match build_pad_map's mirror convention.
+        if layer == "B.Cu":
+            dx = -dx
         dx = round(dx, 4)
         dy = round(dy, 4)
 

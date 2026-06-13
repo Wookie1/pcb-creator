@@ -35,6 +35,164 @@ def _load(path: Path) -> dict:
 # Placement
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Placement pins: agent-fixed component positions, applied on every placement
+# run and validated immediately when set.
+# ---------------------------------------------------------------------------
+
+def _pins_path(project_dir: Path, project_name: str) -> Path:
+    return project_dir / f"{project_name}_placement_pins.json"
+
+
+def load_placement_pins(project_dir: Path, project_name: str) -> dict:
+    path = _pins_path(project_dir, project_name)
+    if path.exists():
+        return json.loads(path.read_text())
+    return {}
+
+
+def _resolve_layers(project_dir: Path, project_name: str) -> int:
+    """Board layer count from existing placement, circuit draft, or
+    requirements (default 2)."""
+    for path, key in (
+        (_p(project_dir, project_name, "placement"), "board"),
+        (project_dir / f"{project_name}_circuit_draft.json", "board"),
+        (_p(project_dir, project_name, "requirements"), "board"),
+    ):
+        if path.exists():
+            try:
+                n = _load(path).get(key, {}).get("layers")
+                if n in (2, 4):
+                    return int(n)
+            except Exception:
+                pass
+    return 2
+
+
+def _resolve_board_dims(project_dir: Path, project_name: str) -> tuple[float | None, float | None]:
+    """Board dims from existing placement, circuit draft, or requirements."""
+    placement_path = _p(project_dir, project_name, "placement")
+    if placement_path.exists():
+        try:
+            b = _load(placement_path).get("board", {})
+            if b.get("width_mm") and b.get("height_mm"):
+                return b["width_mm"], b["height_mm"]
+        except Exception:
+            pass
+    draft_path = project_dir / f"{project_name}_circuit_draft.json"
+    if draft_path.exists():
+        try:
+            b = json.loads(draft_path.read_text()).get("board", {})
+            if b.get("width_mm") and b.get("height_mm"):
+                return b["width_mm"], b["height_mm"]
+        except Exception:
+            pass
+    req_path = _p(project_dir, project_name, "requirements")
+    if req_path.exists():
+        try:
+            b = _load(req_path).get("board", {})
+            return b.get("width_mm"), b.get("height_mm")
+        except Exception:
+            pass
+    return None, None
+
+
+def set_placement_pin(project_dir: Path, project_name: str, designator: str,
+                      x_mm: float, y_mm: float, rotation_deg: int = 0,
+                      layer: str = "top") -> dict:
+    """Pin a component at fixed coordinates; validated immediately.
+
+    Origin is the top-left board corner; x grows right, y grows down
+    (same frame as the placement JSON). Returns {"ok": bool, ...}.
+    """
+    netlist_path = _p(project_dir, project_name, "netlist")
+    if not netlist_path.exists():
+        return {"ok": False, "code": "no_netlist",
+                "error": f"No netlist for '{project_name}' — import or build "
+                         "the circuit first."}
+    netlist = _load(netlist_path)
+    comp = None
+    pin_count = 0
+    for elem in netlist.get("elements", []):
+        if (elem.get("element_type") == "component"
+                and elem.get("designator") == designator):
+            comp = elem
+    if comp is None:
+        known = sorted(e.get("designator", "") for e in netlist.get("elements", [])
+                       if e.get("element_type") == "component")
+        return {"ok": False, "code": "unknown_designator",
+                "error": f"No component '{designator}' in the netlist. "
+                         f"Known: {', '.join(known)}."}
+    for elem in netlist.get("elements", []):
+        if (elem.get("element_type") == "port"
+                and elem.get("component_id") == comp.get("component_id")):
+            pin_count += 1
+
+    if rotation_deg not in (0, 90, 180, 270):
+        return {"ok": False, "code": "bad_rotation",
+                "error": "rotation_deg must be 0, 90, 180, or 270."}
+    if layer not in ("top", "bottom"):
+        return {"ok": False, "code": "bad_layer",
+                "error": "layer must be 'top' or 'bottom'."}
+
+    from optimizers.placement_optimizer import (
+        _get_pad_extent_box, _boxes_overlap_with_clearance,
+        BOARD_EDGE_CLEARANCE_MM, MIN_CLEARANCE_MM,
+    )
+    package = comp.get("package", "")
+    box = _get_pad_extent_box(float(x_mm), float(y_mm), 1.0, 1.0,
+                              rotation_deg, package, pin_count)
+
+    # Board-bounds check (when dimensions are known)
+    bw, bh = _resolve_board_dims(project_dir, project_name)
+    if bw and bh:
+        ec = BOARD_EDGE_CLEARANCE_MM
+        if (box[0] < ec - 0.01 or box[1] < ec - 0.01
+                or box[2] > bw - ec + 0.01 or box[3] > bh - ec + 0.01):
+            return {"ok": False, "code": "out_of_bounds",
+                    "error": f"{designator} at ({x_mm}, {y_mm}) rot "
+                             f"{rotation_deg} has pads spanning "
+                             f"x [{box[0]:.1f}, {box[2]:.1f}], "
+                             f"y [{box[1]:.1f}, {box[3]:.1f}] — outside the "
+                             f"{bw}x{bh}mm board minus {ec}mm edge clearance. "
+                             "Move it inward, rotate it, or enlarge the board."}
+
+    # Conflict check against other pinned components
+    pins = load_placement_pins(project_dir, project_name)
+    des_to_pkg = {e.get("designator"): e.get("package", "")
+                  for e in netlist.get("elements", [])
+                  if e.get("element_type") == "component"}
+    for other_des, p in pins.items():
+        if other_des == designator or p.get("layer", "top") != layer:
+            continue
+        other_box = _get_pad_extent_box(
+            p["x_mm"], p["y_mm"], 1.0, 1.0, p.get("rotation_deg", 0),
+            des_to_pkg.get(other_des, ""), 2)
+        if _boxes_overlap_with_clearance(box, other_box, MIN_CLEARANCE_MM):
+            return {"ok": False, "code": "pin_overlap",
+                    "error": f"{designator} at ({x_mm}, {y_mm}) overlaps the "
+                             f"already-pinned {other_des} at "
+                             f"({p['x_mm']}, {p['y_mm']}). Move one of them."}
+
+    pins[designator] = {"x_mm": float(x_mm), "y_mm": float(y_mm),
+                        "rotation_deg": rotation_deg, "layer": layer}
+    _pins_path(project_dir, project_name).write_text(json.dumps(pins, indent=2))
+    return {"ok": True, "designator": designator, "pinned": pins[designator],
+            "pinned_count": len(pins)}
+
+
+def clear_placement_pin(project_dir: Path, project_name: str,
+                        designator: str) -> dict:
+    pins = load_placement_pins(project_dir, project_name)
+    if designator not in pins:
+        return {"ok": False, "code": "not_pinned",
+                "error": f"'{designator}' is not pinned. Pinned: "
+                         f"{', '.join(sorted(pins)) or '(none)'}."}
+    del pins[designator]
+    _pins_path(project_dir, project_name).write_text(json.dumps(pins, indent=2))
+    return {"ok": True, "designator": designator, "pinned_count": len(pins)}
+
+
 def run_placement(
     project_dir: Path,
     project_name: str,
@@ -42,6 +200,9 @@ def run_placement(
     board_width_mm: float | None = None,
     board_height_mm: float | None = None,
     seed: int | None = None,
+    extra_clearance_mm: float = 0.0,
+    congestion_weight: float = 0.0,
+    two_sided: bool | None = None,
 ) -> dict:
     """Deterministic grid placement → repair → SA optimize.
 
@@ -110,18 +271,90 @@ def run_placement(
     if bh is None:
         bh = 50.0
 
+    # Resolve layer count (existing placement → circuit draft → requirements).
+    num_layers = _resolve_layers(project_dir, project_name)
+
     # Deterministic seed placement
-    placement = generate_grid_placement(netlist, bw, bh, project_name)
+    placement = generate_grid_placement(netlist, bw, bh, project_name,
+                                        layers=num_layers)
     if placement is None:
         return {"success": False, "error": "No components with resolvable footprints"}
 
+    # Apply agent-set placement pins (place_component): fixed position,
+    # marked placement_source=user so repair/optimize never move them.
+    pins = load_placement_pins(project_dir, project_name)
+    if pins:
+        for item in placement.get("placements", []):
+            pin = pins.get(item["designator"])
+            if pin:
+                item["x_mm"] = pin["x_mm"]
+                item["y_mm"] = pin["y_mm"]
+                item["rotation_deg"] = pin.get("rotation_deg", 0)
+                item["layer"] = pin.get("layer", "top")
+                item["placement_source"] = "user"
+
+    # Two-sided placement: explicit arg wins; otherwise reuse the previous
+    # placement's setting (so the routing retry loop re-places consistently).
+    if two_sided is None:
+        two_sided = bool(placement.get("board", {}).get("two_sided", False))
+        if placement_path.exists():
+            try:
+                two_sided = two_sided or bool(
+                    _load(placement_path).get("board", {}).get("two_sided"))
+            except Exception:
+                pass
+    placement.setdefault("board", {})["two_sided"] = two_sided
+
     # Repair overlaps/boundary, then optimize.  Thread the seed through both
     # so a given seed yields a fully reproducible placement.
-    placement = repair_placement(placement, netlist, seed=seed)
-    sa = SAConfig(seed=seed) if seed is not None else SAConfig()
+    from optimizers.placement_optimizer import (
+        MIN_CLEARANCE_MM, find_placement_violations,
+    )
+    clearance = MIN_CLEARANCE_MM + max(0.0, extra_clearance_mm)
+    placement = repair_placement(placement, netlist, clearance=clearance, seed=seed,
+                                 two_sided=two_sided)
+    # Flipping is only attractive to the annealer through the layer-aware
+    # congestion term — give it a floor when two-sided is on.
+    if two_sided and congestion_weight <= 0:
+        congestion_weight = 2.0
+    # Bottom-side reluctance: on a 2-layer board the bottom IS the router's
+    # escape layer, so flips must clearly pay for themselves (high penalty).
+    # On a 4-layer board the inner layers carry power/ground planes and both
+    # outer layers are free for signal routing, so the bottom is cheap — let
+    # the optimizer use it freely (low penalty, just a slight top preference
+    # for assembly cost).
+    bottom_penalty = 0.5 if num_layers >= 4 else 4.0
+    sa = SAConfig(seed=seed, min_clearance_mm=clearance,
+                  congestion_weight=congestion_weight,
+                  two_sided=two_sided, bottom_penalty=bottom_penalty)
     placement = optimize_placement(placement, netlist, sa)
 
     placement_path.write_text(json.dumps(placement, indent=2))
+
+    # Final constraint check — repair logs a warning when it cannot resolve
+    # everything, but the caller must SEE the violations (pinned components
+    # overlapping each other or hanging past the edge can never be fixed by
+    # moving the movable ones).
+    violations = find_placement_violations(placement, netlist, clearance=MIN_CLEARANCE_MM)
+    if violations["count"]:
+        pinned_involved = ([v for v in violations["out_of_bounds"] if v["pinned"]]
+                           + [v for v in violations["overlaps"] if v["pinned"]])
+        details = ([v["detail"] for v in violations["out_of_bounds"]]
+                   + [v["detail"] for v in violations["overlaps"]])
+        return {
+            "success": False,
+            "error": (f"Placement has {violations['count']} unresolved "
+                      "constraint violation(s)"
+                      + (" — fixed/pinned components are involved; they are "
+                         "never moved automatically, so adjust their "
+                         "coordinates (place_component) or unpin them "
+                         "(unplace_component)" if pinned_involved else
+                         " — the board is likely too dense; enlarge it and "
+                         "re-run") + "."),
+            "violations": violations,
+            "violation_details": details[:15],
+            "placement_path": str(placement_path),
+        }
 
     # Metrics
     from optimizers.ratsnest import build_connectivity, IncrementalCost
@@ -143,6 +376,48 @@ def run_placement(
 # ---------------------------------------------------------------------------
 # Routing (lifted from runner.run_workflow so there is one implementation)
 # ---------------------------------------------------------------------------
+
+# Below this minimum pad pitch a board is "fine-pitch" and needs tightened
+# routing rules (0.5mm-pitch QFN/connectors land here; 0.65mm parts too).
+FINE_PITCH_THRESHOLD_MM = 0.8
+
+
+def _min_pad_pitch(project_dir: Path, project_name: str) -> float | None:
+    """Smallest centre-to-centre distance between adjacent pads of any
+    component on the board (a proxy for the tightest part's pitch). None if
+    it can't be determined."""
+    netlist_path = _p(project_dir, project_name, "netlist")
+    if not netlist_path.exists():
+        return None
+    try:
+        import math
+        from optimizers.pad_geometry import get_footprint_def
+        netlist = _load(netlist_path)
+        pin_counts: dict[str, int] = {}
+        for e in netlist.get("elements", []):
+            if e.get("element_type") == "port":
+                pin_counts[e.get("component_id", "")] = \
+                    pin_counts.get(e.get("component_id", ""), 0) + 1
+        best: float | None = None
+        for e in netlist.get("elements", []):
+            if e.get("element_type") != "component":
+                continue
+            fp = get_footprint_def(e.get("package", ""),
+                                   pin_counts.get(e.get("component_id", ""), 0))
+            if fp is None or len(fp.pin_offsets) < 2:
+                continue
+            pts = list(fp.pin_offsets.values())
+            # Nearest-neighbour distance for this footprint
+            local = min(
+                (math.hypot(pts[i][0] - pts[j][0], pts[i][1] - pts[j][1])
+                 for i in range(len(pts)) for j in range(i + 1, len(pts))),
+                default=None)
+            if local is not None and (best is None or local < best):
+                best = local
+        return best
+    except Exception:
+        return None
+
 
 def _build_router_kwargs(project_dir: Path, project_name: str, log=None) -> dict:
     """Derive router design rules from the requirements/DFM profile (if any).
@@ -172,35 +447,80 @@ def _build_router_kwargs(project_dir: Path, project_name: str, log=None) -> dict
         except Exception:
             pass
 
+    # Is there a fine-pitch part on the board? If the tightest pad pitch is
+    # small, the comfortable default rules (0.25mm trace / 0.2mm clearance /
+    # 0.6mm via) physically cannot escape the pads or fan out without
+    # clearance/short violations — so drop to the manufacturer's MINIMUM
+    # trace/clearance/via near such parts. The defaults stay for ordinary
+    # boards (finer rules are less robust in fab, so only use them when the
+    # geometry demands it).
+    min_pitch = _min_pad_pitch(project_dir, project_name)
+    fine_pitch = min_pitch is not None and min_pitch < FINE_PITCH_THRESHOLD_MM
+
     kwargs: dict = {"copper_weight_oz": copper_oz}
     if mfg_rules:
+        # On a fine-pitch board respect the DFM minimum (no coarse floor);
+        # otherwise keep the robust default as a floor.
+        tw_floor = 0.0 if fine_pitch else 0.25
+        cl_floor = 0.0 if fine_pitch else 0.2
+        via_d_floor = 0.0 if fine_pitch else 0.3
+        via_dia_floor = 0.0 if fine_pitch else 0.6
         if "trace_width_min_mm" in mfg_rules:
             tw = mfg_rules["trace_width_min_mm"]
-            kwargs["trace_width_signal_mm"] = max(0.25, tw)
+            kwargs["trace_width_signal_mm"] = max(tw_floor, tw)
+            # Power/ground keep their robust width — IPC-2221 per-net widths
+            # (computed in freerouter) override where current demands more.
             kwargs["trace_width_power_mm"] = max(0.5, tw)
             kwargs["trace_width_ground_mm"] = max(0.5, tw)
         if "clearance_min_mm" in mfg_rules:
-            kwargs["clearance_mm"] = max(0.2, mfg_rules["clearance_min_mm"])
+            kwargs["clearance_mm"] = max(cl_floor, mfg_rules["clearance_min_mm"])
         if "via_drill_min_mm" in mfg_rules:
-            kwargs["via_drill_mm"] = max(0.3, mfg_rules["via_drill_min_mm"])
+            kwargs["via_drill_mm"] = max(via_d_floor, mfg_rules["via_drill_min_mm"])
         if "via_diameter_min_mm" in mfg_rules:
-            kwargs["via_diameter_mm"] = max(0.6, mfg_rules["via_diameter_min_mm"])
+            kwargs["via_diameter_mm"] = max(via_dia_floor, mfg_rules["via_diameter_min_mm"])
+    elif fine_pitch:
+        # No DFM profile but the board is fine-pitch — use a safe fine ruleset
+        # (5 mil / 5 mil, common to every modern fab) so escape is feasible.
+        kwargs["trace_width_signal_mm"] = 0.127
+        kwargs["clearance_mm"] = 0.127
+
+    if fine_pitch:
+        _log(f"  Fine-pitch board (min pad pitch {min_pitch:.2f}mm): using "
+             f"tightened rules (trace {kwargs.get('trace_width_signal_mm', 0.127)}mm, "
+             f"clearance {kwargs.get('clearance_mm', 0.127)}mm)")
     return kwargs
 
 
+# Effort levels for routing: Freerouting max passes + timeout. "best" also
+# retries once with a doubled timeout if the first attempt times out.
+ROUTING_EFFORT = {
+    "fast":   {"max_passes": 5,  "timeout_s": 120, "retry_on_timeout": False},
+    "normal": {"max_passes": 20, "timeout_s": 300, "retry_on_timeout": False},
+    "best":   {"max_passes": 40, "timeout_s": 900, "retry_on_timeout": True},
+}
+
+
 def run_routing(project_dir: Path, project_name: str, config,
-                progress_callback=None, log=None) -> dict:
+                progress_callback=None, log=None,
+                effort: str = "normal", max_seconds: int | None = None) -> dict:
     """Route the board: Freerouting (if configured) or built-in A* (2-layer only).
 
     Reads <project>_placement.json + <project>_netlist.json, writes
     <project>_routed.json.
 
-    progress_callback: optional callable({iteration, max_iterations,
-        legal_nets, total_nets, overused_cells, elapsed_s}) fired by the
-        built-in NCR router each iteration.  Ignored for Freerouting.
+    progress_callback: optional callable(dict) fired by both engines — the
+        built-in NCR router per iteration ({iteration, max_iterations,
+        legal_nets, total_nets, overused_cells, elapsed_s}) and Freerouting
+        per auto-router pass / ~10s heartbeat ({phase: "freerouting",
+        pass_num, max_passes, incomplete_connections, score, elapsed_s,
+        heartbeat}).
     log: optional callable(str) — when provided (e.g. the CLI runner passes
         print), emits the engine/fallback/stats/validation diagnostic lines.
         None (default) keeps this silent for MCP callers.
+    effort: "fast" | "normal" | "best" — maps to Freerouting passes/timeout
+        (see ROUTING_EFFORT). "best" retries once with a doubled timeout if
+        the first attempt times out.
+    max_seconds: overrides the effort level's timeout when given.
 
     Returns:
         {success, engine, completion_pct, routed_nets, total_nets, via_count,
@@ -265,13 +585,30 @@ def run_routing(project_dir: Path, project_name: str, config,
                 if best_pwr[1]:
                     exclude_nets.append(best_pwr[1])
                     _log(f"  Excluding power plane net from routing: {best_pwr[1]} ({best_pwr[0]} pins)")
-            routed = route_with_freerouting(
-                placement_data, netlist_data,
+            eff = ROUTING_EFFORT.get(effort, ROUTING_EFFORT["normal"])
+            timeout_s = max_seconds or eff["timeout_s"] or config.freerouting_timeout_s
+            fr_kwargs = dict(
                 jar_path=config.freerouting_jar_path,
-                timeout_s=config.freerouting_timeout_s,
                 exclude_nets=exclude_nets,
                 dsn_config=dsn_config,
+                progress_callback=progress_callback,
+                max_passes=eff["max_passes"],
             )
+            try:
+                routed = route_with_freerouting(
+                    placement_data, netlist_data,
+                    timeout_s=timeout_s, **fr_kwargs,
+                )
+            except RuntimeError as exc:
+                if eff["retry_on_timeout"] and "timed out" in str(exc):
+                    _log(f"  Freerouting timed out at {timeout_s}s — retrying once "
+                         f"with {timeout_s * 2}s")
+                    routed = route_with_freerouting(
+                        placement_data, netlist_data,
+                        timeout_s=timeout_s * 2, **fr_kwargs,
+                    )
+                else:
+                    raise
             completion = routed.get("routing", {}).get("statistics", {}).get("completion_pct", 0)
             if completion < 100:
                 unrouted = routed.get("routing", {}).get("unrouted_nets", [])
@@ -290,6 +627,18 @@ def run_routing(project_dir: Path, project_name: str, config,
         rc = RouterConfig(**router_kwargs)
         rc.ncr_progress_callback = progress_callback
         routed = route_board(placement_data, netlist_data, rc)
+
+    # Persist the design rules the board was ACTUALLY routed to, so the DRC
+    # checks against the same clearance/widths the router used (otherwise the
+    # validator falls back to its 0.2mm default and false-flags fine-pitch
+    # boards routed at the manufacturer minimum).
+    routed.setdefault("routing", {}).setdefault("config", {})
+    routed["routing"]["config"].update({
+        "trace_clearance_mm": router_kwargs.get("clearance_mm", 0.2),
+        "trace_width_signal_mm": router_kwargs.get("trace_width_signal_mm", 0.25),
+        "via_diameter_mm": router_kwargs.get("via_diameter_mm", 0.6),
+        "via_drill_mm": router_kwargs.get("via_drill_mm", 0.3),
+    })
 
     routed_path = _p(project_dir, project_name, "routed")
     routed_path.write_text(json.dumps(routed, indent=2))
@@ -328,6 +677,104 @@ def run_routing(project_dir: Path, project_name: str, config,
         "unrouted_nets": unrouted,
         "routed_path": str(routed_path),
     }
+
+
+def _route_is_clean(result: dict) -> bool:
+    return (bool(result.get("success"))
+            and result.get("completion_pct", 0) >= 100
+            and bool(result.get("valid", True)))
+
+
+def _attempt_summary(result: dict) -> dict:
+    return {k: result.get(k) for k in
+            ("success", "engine", "valid", "completion_pct", "routed_nets",
+             "total_nets", "via_count", "trace_length_mm", "unrouted_nets")}
+
+
+def run_route_with_retry(project_dir: Path, project_name: str, config,
+                         progress_callback=None, log=None,
+                         effort: str = "normal", max_seconds: int | None = None,
+                         allow_grow: bool = False) -> dict:
+    """Route with one placement→routing feedback retry.
+
+    If the first route is incomplete or invalid, re-place once with +0.5mm
+    component clearance, the congestion cost term enabled, and a different
+    seed (or a 10% larger board when allow_grow=True), then re-route at the
+    same effort. Keeps whichever attempt routed better; the result carries
+    both attempts' stats under 'attempts'.
+    """
+    _log = log or (lambda *_a: None)
+    first = run_routing(project_dir, project_name, config,
+                        progress_callback=progress_callback, log=log,
+                        effort=effort, max_seconds=max_seconds)
+    precondition_failure = (not first.get("success", False)
+                            and "No placement" in str(first.get("error", "")))
+    if _route_is_clean(first) or precondition_failure:
+        first["attempts"] = [_attempt_summary(first)]
+        return first
+
+    _log(f"  Route incomplete ({first.get('completion_pct', 0)}%) — "
+         "re-placing with extra clearance and congestion penalty, then re-routing")
+    if progress_callback is not None:
+        try:
+            progress_callback({"phase": "replace_retry",
+                               "detail": "re-placing with extra clearance"})
+        except Exception:
+            pass
+
+    placement_path = _p(project_dir, project_name, "placement")
+    routed_path = _p(project_dir, project_name, "routed")
+    saved_placement = placement_path.read_text() if placement_path.exists() else None
+    saved_routed = routed_path.read_text() if routed_path.exists() else None
+
+    bw = bh = None
+    seed = None
+    try:
+        board = _load(placement_path).get("board", {}) if placement_path.exists() else {}
+        if allow_grow:
+            bw = board.get("width_mm")
+            bh = board.get("height_mm")
+            if bw and bh:
+                bw, bh = round(bw * 1.1, 1), round(bh * 1.1, 1)
+    except Exception:
+        pass
+
+    place_result = run_placement(
+        project_dir, project_name, config,
+        board_width_mm=bw, board_height_mm=bh,
+        seed=(config.optimizer_seed or 0) + 1,
+        extra_clearance_mm=0.5,
+        congestion_weight=2.0,
+    )
+    if not place_result.get("success"):
+        _log(f"  Retry re-place failed: {place_result.get('error')}")
+        first["attempts"] = [_attempt_summary(first)]
+        return first
+
+    second = run_routing(project_dir, project_name, config,
+                         progress_callback=progress_callback, log=log,
+                         effort=effort, max_seconds=max_seconds)
+
+    attempts = [_attempt_summary(first), _attempt_summary(second)]
+
+    def _score(r: dict) -> tuple:
+        return (bool(r.get("success")), r.get("completion_pct", 0),
+                bool(r.get("valid", False)))
+
+    if _score(second) >= _score(first):
+        second["attempts"] = attempts
+        second["retried"] = True
+        return second
+
+    # First attempt was better — restore its placement and routing artifacts.
+    _log("  Retry routed worse — restoring the first attempt's result")
+    if saved_placement is not None:
+        placement_path.write_text(saved_placement)
+    if saved_routed is not None:
+        routed_path.write_text(saved_routed)
+    first["attempts"] = attempts
+    first["retried"] = True
+    return first
 
 
 # ---------------------------------------------------------------------------

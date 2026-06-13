@@ -271,6 +271,14 @@ def check_silkscreen(routed: dict, dfm: dict) -> list[DRCViolation]:
     return violations
 
 
+# Pad-entry neckdown tolerance (short necks have negligible thermal impact
+# per IPC-2152): each pad on the net may contribute a short undersized
+# entry, so the per-net allowance scales with pad count — but no single
+# undersized run may exceed the segment cap.
+NECKDOWN_PER_PAD_MM = 2.5
+NECKDOWN_MAX_SEGMENT_MM = 4.0
+
+
 def check_trace_current_capacity(
     routed: dict,
     netlist: dict,
@@ -283,19 +291,14 @@ def check_trace_current_capacity(
         import sys
         from pathlib import Path
         sys.path.insert(0, str(Path(__file__).parent.parent))
-        from optimizers.router import ipc2221_trace_width, compute_net_current
-        from optimizers.ratsnest import build_connectivity
+        from optimizers.router import ipc2221_trace_width, compute_net_currents
     except ImportError:
         return violations
 
-    nets = build_connectivity(netlist)
-
-    # Build net current estimates
-    net_currents: dict[str, float] = {}
-    for net in nets:
-        current = compute_net_current(net, netlist)
-        if current > 0:
-            net_currents[net.net_id] = current
+    # Net current estimates with series-element propagation — must match the
+    # pre-route width hints in freerouter.py so DRC and the router agree.
+    net_currents = {nid: c for nid, c in compute_net_currents(netlist).items()
+                    if c > 0}
 
     # Build net_id -> name lookup
     net_names: dict[str, str] = {}
@@ -303,7 +306,14 @@ def check_trace_current_capacity(
         if elem.get("element_type") == "net":
             net_names[elem["net_id"]] = elem.get("name", elem["net_id"])
 
-    # Check each trace
+    # Check each trace, accumulating undersized length per net for the
+    # neckdown tolerance below
+    undersized_len_by_net: dict[str, float] = {}
+    max_seg_by_net: dict[str, float] = {}
+    pads_by_net: dict[str, int] = {}
+    for elem in netlist.get("elements", []):
+        if elem.get("element_type") == "net":
+            pads_by_net[elem["net_id"]] = len(elem.get("connected_port_ids", []))
     for trace in routed.get("routing", {}).get("traces", []):
         net_id = trace.get("net_id", "")
         current = net_currents.get(net_id)
@@ -314,6 +324,12 @@ def check_trace_current_capacity(
         actual_width = trace.get("width_mm", 0.25)
 
         if actual_width < min_width - 0.01:
+            seg_len = math.hypot(trace["end_x_mm"] - trace["start_x_mm"],
+                                 trace["end_y_mm"] - trace["start_y_mm"])
+            undersized_len_by_net[net_id] = (
+                undersized_len_by_net.get(net_id, 0.0) + seg_len)
+            max_seg_by_net[net_id] = max(max_seg_by_net.get(net_id, 0.0),
+                                         seg_len)
             violations.append(DRCViolation(
                 rule="trace_current_capacity",
                 severity="error",
@@ -329,10 +345,28 @@ def check_trace_current_capacity(
                 net=net_names.get(net_id, net_id),
             ))
 
-    # Deduplicate: keep one per net
+    # Short neckdowns are accepted practice: routers narrow a wide trace for
+    # the last couple of millimetres to enter each small pad, and the
+    # thermal impact of a short neck is negligible (IPC-2152). Demote to a
+    # warning when the undersized copper looks like pad-entry necking:
+    # total length within the per-pad allowance AND no single long run.
+    name_to_id = {v: k for k, v in net_names.items()}
+    for v in violations:
+        nid = name_to_id.get(v.net, v.net)
+        total = undersized_len_by_net.get(nid, 1e9)
+        allowance = NECKDOWN_PER_PAD_MM * max(pads_by_net.get(nid, 0), 1)
+        if total <= allowance and \
+                max_seg_by_net.get(nid, 1e9) <= NECKDOWN_MAX_SEGMENT_MM:
+            v.severity = "warning"
+            v.message += (f" — undersized total {total:.1f}mm across "
+                          f"{pads_by_net.get(nid, '?')} pads, longest run "
+                          f"{max_seg_by_net.get(nid, 0):.1f}mm (pad-entry "
+                          f"neckdown, tolerated)")
+
+    # Deduplicate: keep one per net (prefer errors over warnings)
     seen_nets: set[str] = set()
     deduped = []
-    for v in violations:
+    for v in sorted(violations, key=lambda v: v.severity != "error"):
         if v.net not in seen_nets:
             deduped.append(v)
             seen_nets.add(v.net)
@@ -421,11 +455,17 @@ def check_inner_plane_antipad(routed: dict, netlist: dict, dfm: dict) -> list[DR
         # Cutout discs are stored as circle-polygon approximations; measure
         # their effective radius as the mean distance from centroid to vertices.
         def _cutout_radius(poly: list) -> tuple[float, float, float]:
-            if len(poly) < 3:
+            # Drop a duplicated closing vertex (circle polygons repeat point 0
+            # at the end) — otherwise it double-weights the centroid and skews
+            # the measurement. Use the INSCRIBED radius (min vertex distance):
+            # copper can approach as close as the polygon edges, so this is the
+            # conservative, physically-correct clearance basis.
+            pts = poly[:-1] if len(poly) > 1 and poly[0] == poly[-1] else poly
+            if len(pts) < 3:
                 return 0.0, 0.0, 0.0
-            cx = sum(p[0] for p in poly) / len(poly)
-            cy = sum(p[1] for p in poly) / len(poly)
-            r = sum(math.hypot(p[0] - cx, p[1] - cy) for p in poly) / len(poly)
+            cx = sum(p[0] for p in pts) / len(pts)
+            cy = sum(p[1] for p in pts) / len(pts)
+            r = min(math.hypot(p[0] - cx, p[1] - cy) for p in pts)
             return cx, cy, r
 
         cutout_circles = [_cutout_radius(p) for p in polygons[1:]]

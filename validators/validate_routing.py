@@ -12,6 +12,10 @@ from pathlib import Path
 
 import jsonschema
 
+import logging
+
+logger = logging.getLogger(__name__)
+
 SCHEMA_PATH = Path(__file__).parent.parent / "schemas" / "routed_schema.json"
 
 
@@ -203,11 +207,14 @@ def _check_connectivity(routed: dict, netlist: dict | None) -> tuple[list[str], 
 
     # Identify nets connected by copper fill (all pads on fill layer(s) are connected)
     fill_nets: dict[str, set[str]] = {}  # net_id -> set of layers with fill
+    inner_plane_nets: dict[str, set[str]] = {}  # net_id -> set of inner-plane layers
     for fill_region in routing.get("copper_fills", []):
         fnet = fill_region.get("net_id", "")
         flayer = fill_region.get("layer", "")
         if fnet and flayer:
             fill_nets.setdefault(fnet, set()).add(flayer)
+            if fill_region.get("is_plane"):
+                inner_plane_nets.setdefault(fnet, set()).add(flayer)
 
     # Build union-find for each net
     # Key: (round(x, 2), round(y, 2), layer) -> parent
@@ -314,6 +321,48 @@ def _check_connectivity(routed: dict, netlist: dict | None) -> tuple[list[str], 
                 for i in range(1, len(pads)):
                     union(pads[0], pads[i])
 
+        # Inner-plane connectivity: a solid inner plane (is_plane fill on
+        # inner1/inner2) is one continuous copper pour, so every same-net
+        # feature that reaches it is mutually connected. A through via (or any
+        # via spanning to the plane layer) lands on the plane; union all such
+        # vias together, then union each to the pad it serves (via-in-pad or
+        # the short stub trace places it on/at the pad).
+        plane_layers = inner_plane_nets.get(net_id, set())
+        if plane_layers:
+            outer = {"top", "bottom"}
+
+            def _reaches_plane(v: dict) -> bool:
+                fl, tl = v.get("from_layer", "top"), v.get("to_layer", "bottom")
+                # A through via (top↔bottom) crosses every inner layer.
+                if {fl, tl} == outer:
+                    return True
+                return fl in plane_layers or tl in plane_layers
+
+            # The plane is one continuous pour; collect every same-net feature
+            # that touches it into a single group: through-hole pads (penetrate
+            # all layers) and vias spanning to the plane, plus the surface pads
+            # those vias serve.
+            anchor = None
+
+            def _join(point):
+                nonlocal anchor
+                if anchor is None:
+                    anchor = point
+                union(anchor, point)
+
+            for pad_pos in pads:
+                if pad_pos[2] == "all":  # through-hole — penetrates the plane
+                    _join(pad_pos)
+            for v in net_vias:
+                if not _reaches_plane(v):
+                    continue
+                vp = (round(v["x_mm"], 2), round(v["y_mm"], 2),
+                      v.get("from_layer", "top"))
+                _join(vp)
+                for pad_pos in pads:
+                    if math.hypot(vp[0] - pad_pos[0], vp[1] - pad_pos[1]) < snap:
+                        _join(pad_pos)
+
         # Check all pads are in the same component
         roots = set()
         for pad_pos in pads:
@@ -380,6 +429,49 @@ def _check_no_shorts(routed: dict) -> tuple[list[str], list[str]]:
 # 6. Trace-to-pad and via-to-pad clearance
 # ---------------------------------------------------------------------------
 
+def _point_to_rect_distance(px: float, py: float, cx: float, cy: float,
+                            hw: float, hh: float) -> float:
+    """Distance from a point to an axis-aligned rectangle (0 if inside)."""
+    dx = max(abs(px - cx) - hw, 0.0)
+    dy = max(abs(py - cy) - hh, 0.0)
+    return math.hypot(dx, dy)
+
+
+def _segment_to_rect_distance(ax: float, ay: float, bx: float, by: float,
+                              cx: float, cy: float, hw: float, hh: float) -> float:
+    """Minimum distance from segment (a→b) to an axis-aligned rectangle
+    centred at (cx, cy) with half-extents (hw, hh). 0 if they intersect.
+
+    Pads are true rectangles (build_pad_map swaps w/h for rotated parts), so
+    this replaces the old max-extent circular approximation that falsely
+    flagged traces legally passing the SHORT side of an elongated pad
+    (e.g. a 1.5x0.6mm SOIC pad treated as a 0.75mm-radius circle).
+    """
+    # Endpoint inside the rectangle → intersecting
+    if (abs(ax - cx) <= hw and abs(ay - cy) <= hh) or \
+       (abs(bx - cx) <= hw and abs(by - cy) <= hh):
+        return 0.0
+
+    def seg_seg(p1x, p1y, p2x, p2y, p3x, p3y, p4x, p4y) -> float:
+        denom = (p2x - p1x) * (p4y - p3y) - (p2y - p1y) * (p4x - p3x)
+        if abs(denom) > 1e-12:  # not parallel — check for a true crossing
+            t = ((p3x - p1x) * (p4y - p3y) - (p3y - p1y) * (p4x - p3x)) / denom
+            u = ((p3x - p1x) * (p2y - p1y) - (p3y - p1y) * (p2x - p1x)) / denom
+            if 0.0 <= t <= 1.0 and 0.0 <= u <= 1.0:
+                return 0.0
+        return min(
+            _point_to_segment_distance(p1x, p1y, p3x, p3y, p4x, p4y),
+            _point_to_segment_distance(p2x, p2y, p3x, p3y, p4x, p4y),
+            _point_to_segment_distance(p3x, p3y, p1x, p1y, p2x, p2y),
+            _point_to_segment_distance(p4x, p4y, p1x, p1y, p2x, p2y),
+        )
+
+    x0, y0, x1, y1 = cx - hw, cy - hh, cx + hw, cy + hh
+    edges = [(x0, y0, x1, y0), (x1, y0, x1, y1),
+             (x1, y1, x0, y1), (x0, y1, x0, y0)]
+    return min(seg_seg(ax, ay, bx, by, *e) for e in edges)
+
+
 def _check_pad_clearance(routed: dict, netlist: dict | None) -> tuple[list[str], list[str]]:
     """Check trace-to-pad and via-to-pad clearance for different nets.
 
@@ -405,23 +497,24 @@ def _check_pad_clearance(routed: dict, netlist: dict | None) -> tuple[list[str],
     vias = routing.get("vias", [])
     clearance = routing.get("config", {}).get("trace_clearance_mm", 0.2)
 
-    # Build pad list with per-layer extents
+    # Build pad list with per-layer extents. Through-hole pads are CIRCLES
+    # of diameter max(w,h) on every layer (matching both the DSN export that
+    # Freerouting routes against and the KiCad export); SMD pads are true
+    # rectangles on their own layer.
     pads_by_layer: dict[str, list] = {"top": [], "bottom": []}
     for pad in pad_map.values():
         if pad.net_id is None:
             continue
         is_th = pad.layer == "all"
         for layer in (["top", "bottom"] if is_th else [pad.layer]):
-            if is_th and layer != "top":
-                # Opposite layer: circular pad using max(w,h) diameter
-                # Must match KiCad export which uses max(w,h) on all layers
+            if is_th:
                 pad_hw = max(pad.pad_width_mm, pad.pad_height_mm) / 2
                 pad_hh = pad_hw
             else:
                 pad_hw = pad.pad_width_mm / 2
                 pad_hh = pad.pad_height_mm / 2
             pads_by_layer.setdefault(layer, []).append(
-                (pad, pad_hw, pad_hh, layer)
+                (pad, pad_hw, pad_hh, is_th)
             )
 
     # Trace-to-pad: check if trace copper overlaps pad copper (rectangular check)
@@ -433,14 +526,24 @@ def _check_pad_clearance(routed: dict, netlist: dict | None) -> tuple[list[str],
         ax, ay = trace["start_x_mm"], trace["start_y_mm"]
         bx, by = trace["end_x_mm"], trace["end_y_mm"]
 
-        for pad, pad_hw, pad_hh, _ in pads_by_layer.get(t_layer, []):
+        for pad, pad_hw, pad_hh, is_circle in pads_by_layer.get(t_layer, []):
             if pad.net_id == t_net:
                 continue
 
-            dist = _point_to_segment_distance(pad.x_mm, pad.y_mm, ax, ay, bx, by)
-            # Conservative circular check: overlap if distance < trace_half + pad_max_extent
-            pad_extent = max(pad_hw, pad_hh)
-            if dist < t_half + pad_extent - 0.01:
+            # Cheap circular reject before the exact test
+            centre_dist = _point_to_segment_distance(pad.x_mm, pad.y_mm,
+                                                     ax, ay, bx, by)
+            if centre_dist > t_half + max(pad_hw, pad_hh) + 0.5:
+                continue
+
+            if is_circle:
+                pad_dist = centre_dist - pad_hw  # circle of radius pad_hw
+            else:
+                pad_dist = _segment_to_rect_distance(ax, ay, bx, by,
+                                                     pad.x_mm, pad.y_mm,
+                                                     pad_hw, pad_hh)
+            gap = pad_dist - t_half  # copper-to-copper gap
+            if gap < -0.01:
                 key = (t_net, pad.designator, pad.pin_number, t_layer)
                 if key in seen_tp:
                     continue
@@ -449,7 +552,18 @@ def _check_pad_clearance(routed: dict, netlist: dict | None) -> tuple[list[str],
                     f"Trace-pad short on {t_layer}: "
                     f"trace({trace.get('net_name', t_net)}) overlaps "
                     f"pad({pad.designator}.{pad.pin_number} net={pad.net_id}) "
-                    f"distance={dist:.3f}mm"
+                    f"by {-gap:.3f}mm"
+                )
+            elif gap < clearance - 0.05:
+                key = ("warn", t_net, pad.designator, pad.pin_number, t_layer)
+                if key in seen_tp:
+                    continue
+                seen_tp.add(key)
+                warnings.append(
+                    f"Trace-pad clearance on {t_layer}: "
+                    f"trace({trace.get('net_name', t_net)}) is {gap:.3f}mm from "
+                    f"pad({pad.designator}.{pad.pin_number} net={pad.net_id}) "
+                    f"(min {clearance}mm)"
                 )
 
     # Via-to-pad
@@ -460,17 +574,29 @@ def _check_pad_clearance(routed: dict, netlist: dict | None) -> tuple[list[str],
         via_layers = {via.get("from_layer", "top"), via.get("to_layer", "bottom")}
 
         for layer in via_layers:
-            for pad, pad_hw, pad_hh, _ in pads_by_layer.get(layer, []):
+            for pad, pad_hw, pad_hh, is_circle in pads_by_layer.get(layer, []):
                 if pad.net_id == v_net:
                     continue
-                dist = math.hypot(vx - pad.x_mm, vy - pad.y_mm)
-                pad_extent = max(pad_hw, pad_hh)
-                if dist < v_radius + pad_extent - 0.01:
+                if is_circle:
+                    pad_dist = math.hypot(vx - pad.x_mm, vy - pad.y_mm) - pad_hw
+                else:
+                    pad_dist = _point_to_rect_distance(vx, vy,
+                                                       pad.x_mm, pad.y_mm,
+                                                       pad_hw, pad_hh)
+                gap = pad_dist - v_radius
+                if gap < -0.01:
                     errors.append(
                         f"Via-pad short on {layer}: "
                         f"via({via.get('net_name', v_net)}) overlaps "
                         f"pad({pad.designator}.{pad.pin_number} net={pad.net_id}) "
-                        f"distance={dist:.3f}mm"
+                        f"by {-gap:.3f}mm"
+                    )
+                elif gap < clearance - 0.05:
+                    warnings.append(
+                        f"Via-pad clearance on {layer}: "
+                        f"via({via.get('net_name', v_net)}) is {gap:.3f}mm from "
+                        f"pad({pad.designator}.{pad.pin_number} net={pad.net_id}) "
+                        f"(min {clearance}mm)"
                     )
 
     return errors, warnings

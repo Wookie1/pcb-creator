@@ -9,6 +9,7 @@ Reuses the S-expression parser from kicad_importer.py.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 from .kicad_importer import _tokenize, _parse_sexpr
@@ -18,17 +19,50 @@ from .kicad_importer import _tokenize, _parse_sexpr
 # SES layer name mapping
 # ---------------------------------------------------------------------------
 
-_LAYER_MAP = {
+_LAYER_NAME_MAP = {
     "F.Cu": "top",
     "In1.Cu": "inner1",
     "In2.Cu": "inner2",
     "B.Cu": "bottom",
-    # Some Freerouting versions may output layer indices
-    "0": "top",
-    "1": "inner1",
-    "2": "inner2",
-    "3": "bottom",
 }
+
+# Copper layer order by board layer count — numeric SES layer indices map
+# into this (a 2-layer board's index 1 is the BOTTOM, not inner1).
+_LAYER_ORDER = {
+    2: ["top", "bottom"],
+    4: ["top", "inner1", "inner2", "bottom"],
+}
+
+# KiCad-style via padstack names carry the layer span: Via[0-3]_600:300_um
+_VIA_SPAN_RE = re.compile(r"\[(\d+)-(\d+)\]")
+
+
+def _resolve_layer(layer_name: str, num_layers: int) -> str:
+    """Map an SES layer token (name or numeric index) to our layer name."""
+    if layer_name in _LAYER_NAME_MAP:
+        return _LAYER_NAME_MAP[layer_name]
+    order = _LAYER_ORDER.get(num_layers, _LAYER_ORDER[2])
+    if layer_name.isdigit():
+        idx = int(layer_name)
+        if 0 <= idx < len(order):
+            return order[idx]
+    return "top"
+
+
+def _via_layers(padstack_name: str, num_layers: int) -> tuple[str, str]:
+    """Resolve a via's (from_layer, to_layer) from its padstack name.
+
+    Our DSN exporter only defines through vias ("Via_Default"), but sessions
+    produced from KiCad-exported DSNs use spans like "Via[0-3]_600:300_um".
+    Defaults to a through via when the name carries no span.
+    """
+    m = _VIA_SPAN_RE.search(padstack_name)
+    order = _LAYER_ORDER.get(num_layers, _LAYER_ORDER[2])
+    if m:
+        a, b = int(m.group(1)), int(m.group(2))
+        if 0 <= a < len(order) and 0 <= b < len(order):
+            return order[min(a, b)], order[max(a, b)]
+    return order[0], order[-1]
 
 
 # ---------------------------------------------------------------------------
@@ -99,6 +133,7 @@ def _extract_routes(
     scale: float,
     via_drill_mm: float,
     via_diameter_mm: float,
+    num_layers: int = 2,
 ) -> tuple[list[dict], list[dict], set[str]]:
     """Extract traces and vias from SES routes section.
 
@@ -137,7 +172,7 @@ def _extract_routes(
                 continue
 
             layer_name = str(path[1])
-            layer = _LAYER_MAP.get(layer_name, "top")
+            layer = _resolve_layer(layer_name, num_layers)
 
             try:
                 width_mm = float(path[2]) * scale
@@ -178,13 +213,14 @@ def _extract_routes(
             except (ValueError, IndexError):
                 continue
 
+            from_layer, to_layer = _via_layers(str(via_node[1]), num_layers)
             vias.append({
                 "x_mm": round(x_mm, 4),
                 "y_mm": round(y_mm, 4),
                 "drill_mm": via_drill_mm,
                 "diameter_mm": via_diameter_mm,
-                "from_layer": "top",
-                "to_layer": "bottom",
+                "from_layer": from_layer,
+                "to_layer": to_layer,
                 "net_id": net_id,
                 "net_name": net_name,
             })
@@ -238,9 +274,11 @@ def import_ses(
             all_net_ids.add(elem["net_id"])
 
     # Extract routing data
+    num_layers = placement.get("board", {}).get("layers", 2)
     traces, vias, routed_net_ids = _extract_routes(
         tree, net_name_to_id, 1.0,  # scale determined inside
         via_drill_mm, via_diameter_mm,
+        num_layers=num_layers,
     )
 
     # Excluded nets (e.g. GND handled by copper fill) don't count against completion

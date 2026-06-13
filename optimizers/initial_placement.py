@@ -12,6 +12,10 @@ from __future__ import annotations
 
 import json
 
+import logging
+
+logger = logging.getLogger(__name__)
+
 
 def generate_grid_placement(
     netlist: dict,
@@ -20,6 +24,7 @@ def generate_grid_placement(
     project_name: str = "",
     netlist_filename: str = "",
     bom_filename: str = "",
+    layers: int = 2,
 ) -> dict | None:
     """Generate a grid-based deterministic placement.
 
@@ -121,7 +126,7 @@ def generate_grid_placement(
         "board": {
             "width_mm": board_width_mm,
             "height_mm": board_height_mm,
-            "layers": 2,
+            "layers": layers,
             "copper_thickness_oz": 1,
         },
         "placements": placements,

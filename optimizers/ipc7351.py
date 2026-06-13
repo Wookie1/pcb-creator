@@ -253,6 +253,285 @@ def make_bga(
 
 
 # ---------------------------------------------------------------------------
+# QFP (gull-wing quad flat pack: TQFP / LQFP / QFP)
+# ---------------------------------------------------------------------------
+
+# Common JEDEC body size / pitch by pin count (used when the package string
+# carries no explicit dimensions).
+_QFP_DEFAULTS: dict[int, tuple[float, float]] = {
+    32: (7.0, 0.8),
+    44: (10.0, 0.8),
+    48: (7.0, 0.5),
+    64: (10.0, 0.5),
+    80: (12.0, 0.5),
+    100: (14.0, 0.5),
+    144: (20.0, 0.5),
+    176: (24.0, 0.5),
+}
+
+
+def make_qfp(
+    pin_count: int,
+    body_mm: float | None = None,
+    pitch_mm: float | None = None,
+) -> FootprintDef | None:
+    """Generate a QFP footprint (gull-wing leads extending beyond the body).
+
+    Pin numbering: CCW from top of left side (KiCad/datasheet convention).
+    """
+    if pin_count < 8 or pin_count % 4 != 0:
+        return None
+    if body_mm is None or pitch_mm is None:
+        defaults = _QFP_DEFAULTS.get(pin_count)
+        if defaults is None:
+            # Derive a plausible body from pitch=0.5: per-side span + margin
+            pitch_mm = pitch_mm or 0.5
+            body_mm = body_mm or round((pin_count // 4 - 1) * pitch_mm + 2.0, 1)
+        else:
+            body_mm = body_mm or defaults[0]
+            pitch_mm = pitch_mm or defaults[1]
+
+    per_side = pin_count // 4
+    # Gull-wing leads extend ~1mm beyond the body on each side
+    pad_len = 1.5
+    pad_w = round(pitch_mm * 0.55, 3)
+    pad_centre = body_mm / 2.0 + 1.0  # lead-tip land centre
+
+    offsets: dict[int, tuple[float, float]] = {}
+    span = (per_side - 1) * pitch_mm
+    pin = 1
+    # Left side (top to bottom)
+    for i in range(per_side):
+        offsets[pin] = (round(-pad_centre, 4), round(span / 2 - i * pitch_mm, 4))
+        pin += 1
+    # Bottom side (left to right)
+    for i in range(per_side):
+        offsets[pin] = (round(-span / 2 + i * pitch_mm, 4), round(pad_centre, 4))
+        pin += 1
+    # Right side (bottom to top)
+    for i in range(per_side):
+        offsets[pin] = (round(pad_centre, 4), round(-span / 2 + i * pitch_mm, 4))
+        pin += 1
+    # Top side (right to left)
+    for i in range(per_side):
+        offsets[pin] = (round(span / 2 - i * pitch_mm, 4), round(-pad_centre, 4))
+        pin += 1
+
+    return FootprintDef(pin_offsets=offsets, pad_size=(pad_len, pad_w))
+
+
+# ---------------------------------------------------------------------------
+# SOD (small-outline diode): 2 pads, pin 1 = cathode
+# ---------------------------------------------------------------------------
+
+_SOD_FAMILIES: dict[str, tuple[float, tuple[float, float]]] = {
+    # name -> (pad-centre spacing, (pad_w, pad_h))
+    "123": (3.4, (0.9, 1.2)),
+    "323": (2.4, (0.6, 0.9)),
+    "523": (1.6, (0.5, 0.7)),
+    "723": (1.2, (0.4, 0.55)),
+    "80": (3.5, (1.0, 1.4)),
+}
+
+
+def make_sod(variant: str) -> FootprintDef | None:
+    params = _SOD_FAMILIES.get(variant)
+    if params is None:
+        return None
+    spacing, pad = params
+    half = spacing / 2.0
+    return FootprintDef(
+        pin_offsets={1: (-half, 0.0), 2: (half, 0.0)},
+        pad_size=pad,
+    )
+
+
+# ---------------------------------------------------------------------------
+# DO-214 SMD diodes (SMA / SMB / SMC): 2 pads, pin 1 = cathode
+# ---------------------------------------------------------------------------
+
+_DO214_FAMILIES: dict[str, tuple[float, tuple[float, float]]] = {
+    "SMA": (4.0, (1.5, 1.8)),
+    "SMB": (4.3, (2.0, 2.1)),
+    "SMC": (6.9, (2.3, 3.0)),
+}
+
+
+def make_do214(variant: str) -> FootprintDef | None:
+    params = _DO214_FAMILIES.get(variant.upper())
+    if params is None:
+        return None
+    spacing, pad = params
+    half = spacing / 2.0
+    return FootprintDef(
+        pin_offsets={1: (-half, 0.0), 2: (half, 0.0)},
+        pad_size=pad,
+    )
+
+
+# ---------------------------------------------------------------------------
+# ESP8266 castellated modules (ESP-12E/F/S, ESP-07): 2 rows of 8, 2mm pitch
+# ---------------------------------------------------------------------------
+
+def make_esp12(pin_count: int = 22) -> FootprintDef:
+    """ESP-12 style module: castellated pads, 2mm pitch.
+
+    Two variants, both per the module datasheets:
+    - 22 pins (ESP-12E/F): 1-8 down the left edge, 9-14 the six bottom
+      programming pads (left to right), 15-22 up the right edge.
+    - 16 pins (classic ESP-12): 1-8 down the left edge, 9-16 up the right.
+    """
+    offsets: dict[int, tuple[float, float]] = {}
+    pitch = 2.0
+    half_w = 7.6  # pad centres ~15.2mm apart on a 16mm-wide module
+    span = 7 * pitch
+    for i in range(8):  # left edge, top to bottom
+        offsets[i + 1] = (-half_w, round(-span / 2 + i * pitch, 4))
+    if pin_count >= 22:
+        bottom_span = 5 * pitch
+        for i in range(6):  # bottom edge, left to right
+            offsets[i + 9] = (round(-bottom_span / 2 + i * pitch, 4), 10.0)
+        for i in range(8):  # right edge, bottom to top
+            offsets[i + 15] = (half_w, round(span / 2 - i * pitch, 4))
+    else:
+        for i in range(8):  # right edge, bottom to top
+            offsets[i + 9] = (half_w, round(span / 2 - i * pitch, 4))
+    return FootprintDef(pin_offsets=offsets, pad_size=(2.0, 1.1))
+
+
+# ---------------------------------------------------------------------------
+# MC-306 SMD tuning-fork crystal: 2 pads
+# ---------------------------------------------------------------------------
+
+def make_mc306() -> FootprintDef:
+    return FootprintDef(
+        pin_offsets={1: (-2.35, 0.0), 2: (2.35, 0.0)},
+        pad_size=(1.7, 1.4),
+    )
+
+
+# ---------------------------------------------------------------------------
+# DPAK / D2PAK power packages (TO-252 / TO-263): leads + tab as last pad
+# ---------------------------------------------------------------------------
+
+def make_dpak(lead_count: int, d2: bool = False) -> FootprintDef | None:
+    """TO-252 (DPAK) / TO-263 (D2PAK) with N leads and the tab as pad N+1."""
+    if lead_count < 2 or lead_count > 9:
+        return None
+    if d2:
+        pitch = 2.54 if lead_count <= 3 else 1.7
+        lead_y, tab_y = 5.5, -2.5
+        tab_size = (10.0, 8.0)
+        pad = (1.0 if lead_count > 3 else 1.4, 2.2)
+    else:
+        pitch = 2.28 if lead_count <= 3 else 1.27
+        lead_y, tab_y = 4.5, -2.0
+        tab_size = (6.2, 5.8)
+        pad = (0.9 if lead_count > 3 else 1.3, 1.8)
+
+    offsets: dict[int, tuple[float, float]] = {}
+    span = (lead_count - 1) * pitch
+    for i in range(lead_count):
+        offsets[i + 1] = (round(-span / 2 + i * pitch, 4), lead_y)
+    offsets[lead_count + 1] = (0.0, tab_y)  # tab (heatsink/center pin)
+    # pad_size applies to leads; the tab is approximated by the same pad size
+    # extent at its centre (placement spacing comes from pad extents).
+    _ = tab_size
+    return FootprintDef(pin_offsets=offsets, pad_size=pad)
+
+
+# ---------------------------------------------------------------------------
+# Screw terminals: 1xN row, default 5mm pitch
+# ---------------------------------------------------------------------------
+
+def make_screw_terminal(positions: int, pitch_mm: float = 5.0) -> FootprintDef | None:
+    if positions < 1 or positions > 24:
+        return None
+    span = (positions - 1) * pitch_mm
+    offsets = {i + 1: (round(-span / 2 + i * pitch_mm, 4), 0.0)
+               for i in range(positions)}
+    return FootprintDef(pin_offsets=offsets, pad_size=(2.4, 2.4))
+
+
+# ---------------------------------------------------------------------------
+# Multiwatt (staggered power package, e.g. L298N Multiwatt-15)
+# ---------------------------------------------------------------------------
+
+def make_multiwatt(pin_count: int) -> FootprintDef | None:
+    if pin_count < 9 or pin_count > 25:
+        return None
+    pitch = 1.7
+    span = (pin_count - 1) * pitch
+    offsets: dict[int, tuple[float, float]] = {}
+    for i in range(pin_count):
+        # Staggered two-row THT pins: odd pins front row, even pins back row
+        y = 0.0 if i % 2 == 0 else 2.7
+        offsets[i + 1] = (round(-span / 2 + i * pitch, 4), y)
+    return FootprintDef(pin_offsets=offsets, pad_size=(1.5, 1.5))
+
+
+# ---------------------------------------------------------------------------
+# Generic dimensional packages the LLM pipeline emits: "12x12mm" SMD power
+# inductors and "electrolytic_10x12" radial capacitors.
+# ---------------------------------------------------------------------------
+
+def make_smd_2pad_body(length_mm: float, width_mm: float) -> FootprintDef | None:
+    """Generic 2-pad SMD part described only by body size (power inductors,
+    large 2-terminal parts): pads under the body ends."""
+    if length_mm < 1.0 or length_mm > 60 or width_mm < 1.0 or width_mm > 60:
+        return None
+    pad_len = round(length_mm * 0.35, 2)
+    pad_w = round(width_mm * 0.6, 2)
+    centre = round(length_mm / 2 - pad_len / 2, 3)
+    return FootprintDef(
+        pin_offsets={1: (-centre, 0.0), 2: (centre, 0.0)},
+        pad_size=(pad_len, pad_w),
+    )
+
+
+def make_radial_electrolytic(diameter_mm: float) -> FootprintDef | None:
+    """Radial THT electrolytic: 2 leads at the standard spacing for the can
+    diameter. Pin 1 = positive."""
+    if diameter_mm < 3 or diameter_mm > 40:
+        return None
+    if diameter_mm <= 5:
+        spacing, pad = 2.0, 1.4
+    elif diameter_mm <= 6.3:
+        spacing, pad = 2.5, 1.6
+    elif diameter_mm <= 8:
+        spacing, pad = 3.5, 1.8
+    else:
+        spacing, pad = 5.0, 2.0
+    half = spacing / 2.0
+    return FootprintDef(
+        pin_offsets={1: (-half, 0.0), 2: (half, 0.0)},
+        pad_size=(pad, pad),
+        is_through_hole=True,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Mounting holes: single pad whose extent is the annulus, so the placement
+# engine keeps components away from the hole (M3: 3.2mm hole → ~6.4mm pad).
+# ---------------------------------------------------------------------------
+
+def make_mounting_hole(hole_mm: float) -> FootprintDef:
+    pad_d = round(hole_mm * 2.0, 2)
+    return FootprintDef(pin_offsets={1: (0.0, 0.0)}, pad_size=(pad_d, pad_d))
+
+
+# ---------------------------------------------------------------------------
+# 3mm/3x3 SMD trimmer potentiometer (3 pads in a triangle)
+# ---------------------------------------------------------------------------
+
+def make_trimmer_3mm() -> FootprintDef:
+    return FootprintDef(
+        pin_offsets={1: (-1.3, 1.0), 2: (0.0, -1.0), 3: (1.3, 1.0)},
+        pad_size=(0.8, 0.9),
+    )
+
+
+# ---------------------------------------------------------------------------
 # Dispatch: parse package string and pick generator
 # ---------------------------------------------------------------------------
 
@@ -262,12 +541,40 @@ _PATTERNS: list[tuple[re.Pattern, str]] = [
     (re.compile(r"QFN-?(\d+)", re.IGNORECASE), "qfn"),
     # DFN-8, DFN-6, etc.
     (re.compile(r"DFN-?(\d+)", re.IGNORECASE), "dfn"),
+    # TQFP-32, LQFP-48, QFP-100 (gull-wing — distinct from QFN)
+    (re.compile(r"(?:T|L)?QFP-?(\d+)", re.IGNORECASE), "qfp"),
     # SSOP-20, TSSOP-16, MSOP-8, SOP-8
     (re.compile(r"(TSSOP|SSOP|MSOP|SOP)-?(\d+)", re.IGNORECASE), "sop_family"),
     # SOT-223
     (re.compile(r"SOT-?223", re.IGNORECASE), "sot223"),
     # SOT-89
     (re.compile(r"SOT-?89", re.IGNORECASE), "sot89"),
+    # SOD-123, SOD-323, SOD-523, SOD-723, SOD-80 (2-pad diodes)
+    (re.compile(r"SOD-?(\d+)", re.IGNORECASE), "sod"),
+    # DO-214 SMD diodes: SMA/SMB/SMC (word-bounded — avoid matching e.g. 'SMART')
+    (re.compile(r"^(SMA|SMB|SMC)\b|DO-?214(AC|AA|AB)", re.IGNORECASE), "do214"),
+    # ESP8266 castellated modules
+    (re.compile(r"ESP-?(?:12[EFS]?|07)\b", re.IGNORECASE), "esp12"),
+    # MC-306 tuning-fork crystal
+    (re.compile(r"MC-?306", re.IGNORECASE), "mc306"),
+    # TO-263 / D2PAK (must precede TO-252/DPAK so 'D2PAK' wins over 'DPAK')
+    (re.compile(r"TO-?263(?:-(\d+))?|D2PAK(?:-(\d+))?|DDPAK", re.IGNORECASE), "d2pak"),
+    # TO-252 / DPAK
+    (re.compile(r"TO-?252(?:-(\d+))?|DPAK(?:-(\d+))?", re.IGNORECASE), "dpak"),
+    # ScrewTerminal_1x2_5mm, ScrewTerminal_1x3 (default 5mm pitch)
+    (re.compile(r"ScrewTerminal_1x(\d+)(?:_(\d+(?:\.\d+)?)mm)?", re.IGNORECASE), "screw"),
+    # Multiwatt-15 (L298 etc.)
+    (re.compile(r"Multiwatt-?(\d+)", re.IGNORECASE), "multiwatt"),
+    # 3mm SMD trimmer potentiometer
+    (re.compile(r"trimmer[-_]?3(?:mm|x3)?", re.IGNORECASE), "trimmer3"),
+    # MountingHole_3.2mm_M3, MountingHole_2.7mm_M2.5_Pad, NPTH variants
+    (re.compile(r"MountingHole_?(\d+(?:\.\d+)?)mm", re.IGNORECASE), "mounting_hole"),
+    # Radial electrolytic: electrolytic_10x12, CP_Radial_D10.0mm
+    (re.compile(r"electrolytic[-_]?(\d+(?:\.\d+)?)x\d|CP_Radial_D(\d+(?:\.\d+)?)",
+                re.IGNORECASE), "radial_cap"),
+    # Bare body-size 2-pad SMD: "12x12mm" (power inductors etc.)
+    (re.compile(r"^(\d+(?:\.\d+)?)x(\d+(?:\.\d+)?)(?:mm)?$", re.IGNORECASE),
+     "smd_body_2pad"),
     # BGA-NxM or BGA-N (assumes square)
     (re.compile(r"BGA-?(\d+)(?:x(\d+))?", re.IGNORECASE), "bga"),
 ]
@@ -323,6 +630,61 @@ def ipc7351_lookup(package: str, pin_count: int = 0) -> FootprintDef | None:
             n = int(m.group(2))
             count = pin_count if pin_count > 0 else n
             return make_sop(count, family=sop_type, pitch_mm=pitch_mm)
+
+        if family == "qfp":
+            n = int(m.group(1))
+            count = pin_count if pin_count > 0 else n
+            return make_qfp(count, body_mm=body_mm, pitch_mm=pitch_mm)
+
+        if family == "sod":
+            return make_sod(m.group(1))
+
+        if family == "do214":
+            variant = m.group(1)
+            if not variant:  # matched the DO-214xx alternative
+                do_map = {"AC": "SMA", "AA": "SMB", "AB": "SMC"}
+                variant = do_map.get((m.group(2) or "").upper(), "SMA")
+            return make_do214(variant)
+
+        if family == "esp12":
+            # E/F/S variants carry 6 extra bottom pads (22 total); honour an
+            # explicit pin_count when the caller knows better.
+            has_bottom = bool(re.search(r"12[EFS]", package, re.IGNORECASE))
+            default = 22 if has_bottom else 16
+            return make_esp12(pin_count if pin_count in (16, 22) else default)
+
+        if family == "mc306":
+            return make_mc306()
+
+        if family in ("dpak", "d2pak"):
+            n_str = m.group(1) or m.group(2)  # both alternatives carry a group
+            leads = int(n_str) if n_str else 3
+            return make_dpak(leads, d2=(family == "d2pak"))
+
+        if family == "screw":
+            positions = int(m.group(1))
+            pitch = float(m.group(2)) if m.group(2) else 5.0
+            return make_screw_terminal(positions, pitch)
+
+        if family == "multiwatt":
+            return make_multiwatt(int(m.group(1)))
+
+        if family == "trimmer3":
+            return make_trimmer_3mm()
+
+        if family == "mounting_hole":
+            return make_mounting_hole(float(m.group(1)))
+
+        if family == "radial_cap":
+            dia = float(m.group(1) or m.group(2))
+            return make_radial_electrolytic(dia)
+
+        if family == "smd_body_2pad":
+            # Only safe for 2-terminal parts — a bare "NxM" body size says
+            # nothing about pin layout for higher pin counts.
+            if pin_count > 2:
+                return None
+            return make_smd_2pad_body(float(m.group(1)), float(m.group(2)))
 
         if family == "sot223":
             return make_sot223()

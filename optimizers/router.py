@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import heapq
 import math
+import re
 import dataclasses
 from dataclasses import dataclass, field
 
@@ -35,6 +36,10 @@ from validators.engineering_constants import (
     LED_IF_DEFAULT,
     parse_current,
 )
+
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -237,12 +242,20 @@ def compute_net_current(net_info: NetInfo, netlist: dict) -> float:
             except (ValueError, TypeError):
                 max_current = max(max_current, LED_IF_DEFAULT)
 
-        # Voltage regulator max current
+        # Voltage regulator max current — but only on the pins that actually
+        # carry the load (IN/OUT/SW). Sense and control pins (FB, ADJ, EN,
+        # ON/OFF, SS, COMP) see microamps; attributing the full load current
+        # to them forces absurd trace widths on feedback nets.
         if ctype == "voltage_regulator":
-            try:
-                max_current = max(max_current, parse_current(props.get("max_current", "")))
-            except (ValueError, TypeError):
-                pass
+            pin_name = str(port.get("name", "")).upper()
+            is_sense_pin = bool(re.match(
+                r"^(FB|FEEDBACK|SENSE|ADJ|COMP|SS|SOFT|EN|ENABLE|ON|CTRL|NC)",
+                pin_name))
+            if not is_sense_pin:
+                try:
+                    max_current = max(max_current, parse_current(props.get("max_current", "")))
+                except (ValueError, TypeError):
+                    pass
 
     # Defaults by net class if no specific current found
     if max_current <= 0:
@@ -251,6 +264,56 @@ def compute_net_current(net_info: NetInfo, netlist: dict) -> float:
         return 0.1  # signal nets
 
     return max_current
+
+
+def compute_net_currents(netlist: dict) -> dict[str, float]:
+    """Estimate current for every net, propagating through series elements.
+
+    Per-net estimates (compute_net_current) only see components directly on
+    the net — but the full load current flows THROUGH series inductors and
+    fuses (e.g. a buck converter's L: SW node 3A → inductor → VOUT also 3A).
+    Propagate the max current across 2-pin inductor/fuse components until
+    stable.
+
+    Returns {net_id: amps}.
+    """
+    from .ratsnest import build_connectivity
+
+    nets = build_connectivity(netlist)
+    currents = {net.net_id: compute_net_current(net, netlist)
+                for net in nets}
+
+    # Map series components (inductor/fuse) to the nets their pins touch
+    elements = netlist.get("elements", [])
+    series_cids = {e["component_id"] for e in elements
+                   if e.get("element_type") == "component"
+                   and e.get("component_type") in ("inductor", "fuse")}
+    port_net: dict[str, str] = {}
+    for e in elements:
+        if e.get("element_type") == "net":
+            for pid in e.get("connected_port_ids", []):
+                port_net[pid] = e["net_id"]
+    comp_nets: dict[str, set[str]] = {}
+    for e in elements:
+        if (e.get("element_type") == "port"
+                and e.get("component_id") in series_cids
+                and e.get("port_id") in port_net):
+            comp_nets.setdefault(e["component_id"], set()).add(
+                port_net[e["port_id"]])
+
+    bridges = [tuple(nids) for nids in comp_nets.values() if len(nids) == 2]
+    for _ in range(len(bridges) + 1):  # fixpoint over chains of series parts
+        changed = False
+        for a, b in bridges:
+            peak = max(currents.get(a, 0.0), currents.get(b, 0.0))
+            for nid in (a, b):
+                if currents.get(nid, 0.0) < peak:
+                    currents[nid] = peak
+                    changed = True
+        if not changed:
+            break
+
+    return currents
 
 
 # ---------------------------------------------------------------------------
@@ -2935,7 +2998,7 @@ def generate_inner_plane(
     clearance = config.fill_clearance_mm
     thermal_gap = config.thermal_gap_mm
     thermal_spoke_w = config.thermal_spoke_width_mm
-    ANTIPAD_SEGMENTS = 16  # circle approximation segments
+    ANTIPAD_SEGMENTS = 24  # circle approximation segments (inscribed radius stays ~99.1% of target)
 
     def _circle_polygon(cx: float, cy: float, r: float) -> list[tuple[float, float]]:
         pts = []
@@ -3175,7 +3238,7 @@ def _negotiated_congestion_route(
     best_legal_count = -1
     stagnation_count = 0
 
-    print(f"  NCR: starting PathFinder ({config.ncr_max_iterations} max iterations, "
+    logger.info(f"  NCR: starting PathFinder ({config.ncr_max_iterations} max iterations, "
           f"{len(net_order)} nets)")
     t0 = _time.time()
 
@@ -3280,7 +3343,7 @@ def _negotiated_congestion_route(
                 illegal_nets.append((net, nid))
 
         elapsed = _time.time() - t0
-        print(f"  NCR iter {iteration}: {len(routed_this_iter)} routed, "
+        logger.info(f"  NCR iter {iteration}: {len(routed_this_iter)} routed, "
               f"{overused} overused cells, {len(legal_nets)} legal nets "
               f"[{elapsed:.1f}s]")
 
@@ -3328,7 +3391,7 @@ def _negotiated_congestion_route(
                     nid = net_id_map[net.net_id]
                     final_failed.append((net, nid))
 
-            print(f"  NCR converged at iteration {iteration}: "
+            logger.info(f"  NCR converged at iteration {iteration}: "
                   f"{len(final_routed)}/{len(net_order)} nets")
             return final_result, final_routed, final_failed, final_grid
 
@@ -3363,7 +3426,7 @@ def _negotiated_congestion_route(
             net_order = illegal_order + legal_order
 
     # Did not fully converge — commit best legal solution
-    print(f"  NCR: did not converge after {config.ncr_max_iterations} iterations, "
+    logger.info(f"  NCR: did not converge after {config.ncr_max_iterations} iterations, "
           f"committing best ({best_legal_count} legal nets)")
 
     # Build result by routing only the legal nets on a fresh grid
@@ -3598,7 +3661,7 @@ def _fine_grid_retry(
             still_failed.append((net, nid))
 
     if routed_count:
-        print(f"  Fine grid retry ({fine_res:.3f}mm): routed {routed_count} additional net(s)")
+        logger.info(f"  Fine grid retry ({fine_res:.3f}mm): routed {routed_count} additional net(s)")
     return still_failed
 
 
@@ -3713,7 +3776,7 @@ def _connectivity_repair(
                 result.unrouted_nets.append(net.net_id)
 
     if repaired:
-        print(f"  Connectivity repair: fixed {repaired} disconnected net(s)")
+        logger.info(f"  Connectivity repair: fixed {repaired} disconnected net(s)")
 
 
 def route_board(
@@ -3843,7 +3906,7 @@ def route_board(
         ch_signal = [n for n in ch_order if n.net_class == "signal"]
         orderings.append(ch_power + ch_signal)
         orderings.append(ch_power + list(reversed(ch_signal)))
-        print(f"  Detected {len(channels)} routing channel(s): "
+        logger.info(f"  Detected {len(channels)} routing channel(s): "
               f"capacities {[ch.capacity for ch in channels]}")
 
     # Remaining trials: random shuffles with deterministic seeds
@@ -3904,7 +3967,7 @@ def route_board(
     # try one no-pre-fill trial with the best ordering to compare
     if (config.pre_fill_enabled and config.pre_fill_fallback
             and fill_net and fill_net_int > 0 and failed_nets):
-        print(f"  Pre-fill routing: {best_count}/{len(ordered_nets)} nets — trying without pre-fill...")
+        logger.info(f"  Pre-fill routing: {best_count}/{len(ordered_nets)} nets — trying without pre-fill...")
         nf_grid = RoutingGrid(board_w, board_h, config.grid_resolution_mm)
         _setup_grid(nf_grid, placement, pad_map, config.clearance_mm, net_id_map)
         nf_result, nf_routed, nf_failed = _route_with_ordering(
@@ -3913,14 +3976,14 @@ def route_board(
             channel_pressure=channel_pressure,
         )
         if len(nf_routed) > best_count:
-            print(f"  No-prefill routes more: {len(nf_routed)} vs {best_count} — switching off pre-fill")
+            logger.info(f"  No-prefill routes more: {len(nf_routed)} vs {best_count} — switching off pre-fill")
             result = nf_result
             routed_net_ids = nf_routed
             failed_nets = nf_failed
             grid = nf_grid
             config = dataclasses.replace(config, pre_fill_enabled=False)
         else:
-            print(f"  Pre-fill kept ({best_count} >= {len(nf_routed)})")
+            logger.info(f"  Pre-fill kept ({best_count} >= {len(nf_routed)})")
 
     # Phase 2: Negotiated congestion routing (PathFinder)
     # If initial trials didn't achieve 100%, run NCR with all nets
@@ -3938,9 +4001,9 @@ def route_board(
             routed_net_ids = ncr_routed
             failed_nets = ncr_failed
             grid = ncr_grid
-            print(f"  NCR improved: {len(ncr_routed)}/{len(ordered_nets)} nets")
+            logger.info(f"  NCR improved: {len(ncr_routed)}/{len(ordered_nets)} nets")
         else:
-            print(f"  NCR did not improve ({len(ncr_routed)} vs {len(routed_net_ids)})")
+            logger.info(f"  NCR did not improve ({len(ncr_routed)} vs {len(routed_net_ids)})")
 
     # Apply trace width overrides
     result.trace_width_overrides = trace_width_overrides
@@ -4224,7 +4287,7 @@ def route_board(
             else:
                 still_failed_narrow.append((net, nid))
         if len(still_failed_narrow) < len(failed_nets):
-            print(f"  Narrow trace retry: routed {len(failed_nets) - len(still_failed_narrow)} additional net(s)")
+            logger.info(f"  Narrow trace retry: routed {len(failed_nets) - len(still_failed_narrow)} additional net(s)")
         failed_nets = still_failed_narrow
 
     # Phase 5: Fine grid retry — route failed nets on a 2× finer grid
@@ -5112,7 +5175,7 @@ def apply_copper_fills(
             break
 
     if fill_net_int == 0:
-        print(f"  Copper fill: no '{fill_net_name}' net found, skipping")
+        logger.info(f"  Copper fill: no '{fill_net_name}' net found, skipping")
         return routed
 
     # Build the grid
@@ -5196,6 +5259,8 @@ def apply_copper_fills(
 
     pwr_net_id = fill_net_id
     pwr_stitch_vias: list[dict] = []
+    pwr_plane_stubs: list[dict] = []
+    router_trace_w = config.trace_width_signal_mm
 
     # Phase 4b: Generate solid inner-layer planes for 4-layer boards.
     # Stackup convention: In1.Cu = GND plane, In2.Cu = PWR plane (if present).
@@ -5236,6 +5301,22 @@ def apply_copper_fills(
             obstacles.append((ev["x_mm"], ev["y_mm"], ev.get("diameter_mm", config.via_diameter_mm) / 2))
         for sv in stitch_vias:
             obstacles.append((sv.x_mm, sv.y_mm, config.via_diameter_mm / 2))
+        # Foreign-net routed traces are obstacles too — a through-via dropped
+        # next to one shorts it (the fine-pitch via-trace clearance failure).
+        # A power via crosses every layer, so any foreign trace counts.
+        trace_obstacles: list[tuple[float, float, float, float, float]] = []
+        for t in routing.get("traces", []):
+            if t.get("net_id") == pwr_net_id:
+                continue
+            trace_obstacles.append((t["start_x_mm"], t["start_y_mm"],
+                                    t["end_x_mm"], t["end_y_mm"],
+                                    t.get("width_mm", 0.25) / 2))
+
+        def _pt_seg_dist(px, py, ax, ay, bx, by):
+            dx, dy = bx - ax, by - ay
+            L2 = dx * dx + dy * dy
+            tt = 0.0 if L2 == 0 else max(0.0, min(1.0, ((px - ax) * dx + (py - ay) * dy) / L2))
+            return math.hypot(px - (ax + tt * dx), py - (ay + tt * dy))
 
         for ref, pi in pad_map.items():
             if pi.net_id != pwr_net_id:
@@ -5243,7 +5324,17 @@ def apply_copper_fills(
             if pi.layer == "all":
                 continue  # through-hole: already penetrates inner2
             placed = False
-            for dx, dy in [(0.0, 1.0), (0.0, -1.0), (1.0, 0.0), (-1.0, 0.0), (0.0, 0.0)]:
+            # Try the pad CENTRE first (via-in-pad) so the pad and its plane
+            # via coincide — a physical same-net connection. Fall back to a
+            # widening ring of nearby positions (with a short stub trace) so a
+            # crowded fine-pitch pad still finds a clear site.
+            candidates = [(0.0, 0.0)]
+            for radius in (0.6, 0.9, 1.3):
+                for k in range(8):
+                    ang = math.pi * k / 4.0
+                    candidates.append((round(radius * math.cos(ang), 3),
+                                       round(radius * math.sin(ang), 3)))
+            for dx, dy in candidates:
                 vx = round(pi.x_mm + dx, 4)
                 vy = round(pi.y_mm + dy, 4)
                 pos_key = (round(vx, 2), round(vy, 2))
@@ -5256,6 +5347,11 @@ def apply_copper_fills(
                         ok = False
                         break
                 if ok:
+                    for ax, ay, bx, by, th in trace_obstacles:
+                        if _pt_seg_dist(vx, vy, ax, ay, bx, by) < via_r + th + clearance:
+                            ok = False
+                            break
+                if ok:
                     existing_via_positions.add(pos_key)
                     pwr_stitch_vias.append({
                         "x_mm": vx,
@@ -5265,11 +5361,27 @@ def apply_copper_fills(
                         "net_id": pwr_net_id,
                         "net_name": pwr_net_name,
                     })
+                    # When the via is offset from the pad, add a short stub on
+                    # the pad's layer so the pad physically reaches the via.
+                    if (dx, dy) != (0.0, 0.0):
+                        pwr_plane_stubs.append({
+                            "start_x_mm": round(pi.x_mm, 4),
+                            "start_y_mm": round(pi.y_mm, 4),
+                            "end_x_mm": vx, "end_y_mm": vy,
+                            "width_mm": router_trace_w,
+                            "layer": pi.layer,
+                            "net_id": pwr_net_id,
+                            "net_name": pwr_net_name,
+                        })
                     placed = True
                     break
+            if not placed:
+                logger.warning("  Power plane: no clear via site for %s pad "
+                               "%s — may be unconnected to %s plane",
+                               pwr_net_name, ref, pwr_net_name)
 
         if pwr_stitch_vias:
-            print(f"  Power via stitching: {len(pwr_stitch_vias)} vias for {pwr_net_name}")
+            logger.info(f"  Power via stitching: {len(pwr_stitch_vias)} vias for {pwr_net_name}")
 
         # Now generate inner planes with the complete via list (routing + pwr stitching)
         all_vias = base_vias + pwr_stitch_vias
@@ -5306,6 +5418,11 @@ def apply_copper_fills(
         stitch_via_dicts.extend(pwr_stitch_vias)
     result["routing"]["vias"] = result["routing"].get("vias", []) + stitch_via_dicts
 
+    # Add power-plane connection stubs (pad → offset via)
+    if num_layers >= 4 and pwr_plane_stubs:
+        result["routing"]["traces"] = (
+            result["routing"].get("traces", []) + pwr_plane_stubs)
+
     # Remove plane nets from unrouted list (copper fills connect them)
     unrouted = result["routing"].get("unrouted_nets", [])
     plane_net_ids = {fill_net_id}
@@ -5337,7 +5454,7 @@ def apply_copper_fills(
     if not result.get("silkscreen"):
         result["silkscreen"] = _generate_silkscreen(routed, netlist, pad_map)
 
-    print(f"  Copper fill: {len(fill_regions)} regions, "
+    logger.info(f"  Copper fill: {len(fill_regions)} regions, "
           f"{sum(len(f['polygons']) for f in fill_regions)} polygons, "
           f"{len(stitch_vias)} stitching vias")
 
