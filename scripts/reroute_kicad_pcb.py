@@ -240,16 +240,25 @@ def replace_and_route(pcb_path, effort="best", max_seconds=None,
           f"plane_layers={board.get('plane_layers')} | {len(placements)} parts | {sig} signal nets",
           flush=True)
 
-    place = stages.run_placement(
-        pdir, "rep", cfg,
-        board_width_mm=board["width_mm"], board_height_mm=board["height_mm"],
-        two_sided=two_sided, plane_layers=plane_layers)
+    # From-scratch placement of a dense board can be marginal (a stray
+    # overlap/overhang on an unlucky seed), so try a few fixed seeds until one
+    # produces a feasible placement instead of failing on a random draw.
+    place = None
+    for seed in (1, 2, 3, 4, 5):
+        place = stages.run_placement(
+            pdir, "rep", cfg,
+            board_width_mm=board["width_mm"], board_height_mm=board["height_mm"],
+            two_sided=two_sided, plane_layers=plane_layers, seed=seed)
+        if place.get("success"):
+            print(f"  placement ok (seed {seed}): wire={place.get('wire_length_mm')}mm "
+                  f"crossings={place.get('crossings')}", flush=True)
+            break
+        print(f"  placement seed {seed} infeasible: "
+              f"{(place.get('violation_details') or ['?'])[0]}", flush=True)
     if not place.get("success"):
-        print(f"  PLACEMENT FAILED: {place.get('error')}", flush=True)
+        print(f"  PLACEMENT FAILED on all seeds: {place.get('error')}", flush=True)
         shutil.rmtree(tmp, ignore_errors=True); shutil.rmtree(tmpcache, ignore_errors=True)
         return place
-    print(f"  placement ok: wire={place.get('wire_length_mm')}mm "
-          f"crossings={place.get('crossings')}", flush=True)
 
     r = stages.run_route_with_retry(
         pdir, "rep", cfg, effort=effort, max_seconds=max_seconds,
