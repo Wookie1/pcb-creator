@@ -43,7 +43,10 @@
       "value": "10uF",
       "package": "0805",
       "purpose": "LDO input capacitor",
-      "specs": {"voltage_rating": "16V", "type": "ceramic"}
+      "specs": {
+        "voltage_rating": "16V",
+        "type": "ceramic"
+      }
     },
     {
       "ref": "C2",
@@ -51,7 +54,10 @@
       "value": "10uF",
       "package": "0805",
       "purpose": "LDO output capacitor",
-      "specs": {"voltage_rating": "10V", "type": "ceramic"}
+      "specs": {
+        "voltage_rating": "10V",
+        "type": "ceramic"
+      }
     },
     {
       "ref": "C3",
@@ -59,7 +65,10 @@
       "value": "100nF",
       "package": "0603",
       "purpose": "ESP module decoupling",
-      "specs": {"voltage_rating": "10V", "type": "ceramic"}
+      "specs": {
+        "voltage_rating": "10V",
+        "type": "ceramic"
+      }
     },
     {
       "ref": "R1",
@@ -95,7 +104,11 @@
       "value": "red",
       "package": "0603",
       "purpose": "Power indicator LED",
-      "specs": {"vf": "2.0V", "if": "5mA", "color": "red"}
+      "specs": {
+        "vf": "2.0V",
+        "if": "5mA",
+        "color": "red"
+      }
     },
     {
       "ref": "SW1",
@@ -130,92 +143,166 @@
     {
       "net_name": "VIN_5V",
       "net_class": "power",
-      "pins": ["J1.1", "U1.IN", "C1.1"]
+      "pins": [
+        "J1.1",
+        "U1.IN",
+        "C1.1"
+      ]
     },
     {
       "net_name": "VCC_3V3",
       "net_class": "power",
-      "pins": ["U1.OUT", "C2.1", "C3.1", "U2.VCC", "U2.EN", "R1.1", "R2.1", "R4.1", "J2.1"]
+      "pins": [
+        "U1.OUT",
+        "C2.1",
+        "C3.1",
+        "U2.VCC",
+        "R1.1",
+        "R2.1",
+        "R4.1",
+        "J2.1"
+      ]
     },
     {
       "net_name": "GND",
       "net_class": "ground",
-      "pins": ["J1.2", "U1.GND", "C1.2", "C2.2", "C3.2", "U2.GND", "R3.2", "D1.cathode", "SW1.2", "SW2.2", "J2.8", "J3.8"]
+      "pins": [
+        "J1.2",
+        "U1.GND",
+        "C1.2",
+        "C2.2",
+        "C3.2",
+        "U2.GND",
+        "R3.2",
+        "D1.cathode",
+        "SW1.2",
+        "SW2.2",
+        "J2.8",
+        "J3.8"
+      ]
     },
     {
       "net_name": "RST",
       "net_class": "signal",
-      "pins": ["U2.RST", "SW1.1", "J3.1"]
+      "pins": [
+        "U2.RST",
+        "SW1.1",
+        "J3.1"
+      ]
     },
     {
       "net_name": "EN",
       "net_class": "signal",
-      "pins": ["R1.2", "U2.EN"]
+      "pins": [
+        "R1.2",
+        "U2.EN"
+      ]
     },
     {
       "net_name": "GPIO0",
       "net_class": "signal",
-      "pins": ["U2.GPIO0", "R2.2", "SW2.1", "J2.2"]
+      "pins": [
+        "U2.GPIO0",
+        "R2.2",
+        "SW2.1",
+        "J2.2"
+      ]
     },
     {
       "net_name": "GPIO15",
       "net_class": "signal",
-      "pins": ["U2.GPIO15", "R3.1"]
+      "pins": [
+        "U2.GPIO15",
+        "R3.1"
+      ]
     },
     {
       "net_name": "GPIO2",
       "net_class": "signal",
-      "pins": ["U2.GPIO2", "J2.3"]
+      "pins": [
+        "U2.GPIO2",
+        "J2.3"
+      ]
     },
     {
       "net_name": "GPIO4",
       "net_class": "signal",
-      "pins": ["U2.GPIO4", "J2.4"]
+      "pins": [
+        "U2.GPIO4",
+        "J2.4"
+      ]
     },
     {
       "net_name": "GPIO5",
       "net_class": "signal",
-      "pins": ["U2.GPIO5", "J2.5"]
+      "pins": [
+        "U2.GPIO5",
+        "J2.5"
+      ]
     },
     {
       "net_name": "GPIO12",
       "net_class": "signal",
-      "pins": ["U2.GPIO12", "J2.6"]
+      "pins": [
+        "U2.GPIO12",
+        "J2.6"
+      ]
     },
     {
       "net_name": "GPIO13",
       "net_class": "signal",
-      "pins": ["U2.GPIO13", "J2.7"]
+      "pins": [
+        "U2.GPIO13",
+        "J2.7"
+      ]
     },
     {
       "net_name": "GPIO14",
       "net_class": "signal",
-      "pins": ["U2.GPIO14", "J3.2"]
+      "pins": [
+        "U2.GPIO14",
+        "J3.2"
+      ]
     },
     {
       "net_name": "GPIO16",
       "net_class": "signal",
-      "pins": ["U2.GPIO16", "J3.3"]
+      "pins": [
+        "U2.GPIO16",
+        "J3.3"
+      ]
     },
     {
       "net_name": "ADC",
       "net_class": "signal",
-      "pins": ["U2.ADC", "J3.4"]
+      "pins": [
+        "U2.ADC",
+        "J3.4"
+      ]
     },
     {
       "net_name": "TXD",
       "net_class": "signal",
-      "pins": ["U2.TXD", "J3.5"]
+      "pins": [
+        "U2.TXD",
+        "J3.5"
+      ]
     },
     {
       "net_name": "RXD",
       "net_class": "signal",
-      "pins": ["U2.RXD", "J3.6"]
+      "pins": [
+        "U2.RXD",
+        "J3.6"
+      ]
     },
     {
       "net_name": "PWR_LED",
       "net_class": "signal",
-      "pins": ["R4.2", "D1.anode"]
+      "pins": [
+        "R4.2",
+        "D1.anode"
+      ]
     }
   ],
   "board": {
@@ -224,9 +311,22 @@
     "layers": 2
   },
   "placement_hints": [
-    {"ref": "J1", "edge": "top"},
-    {"ref": "U2", "x_mm": 17, "y_mm": 14},
-    {"ref": "J2", "edge": "left"},
-    {"ref": "J3", "edge": "right"}
+    {
+      "ref": "J1",
+      "edge": "top"
+    },
+    {
+      "ref": "U2",
+      "x_mm": 17,
+      "y_mm": 14
+    },
+    {
+      "ref": "J2",
+      "edge": "left"
+    },
+    {
+      "ref": "J3",
+      "edge": "right"
+    }
   ]
 }

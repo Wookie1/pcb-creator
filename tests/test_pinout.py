@@ -14,6 +14,7 @@ if _validators_dir not in sys.path:
 from pinout import (
     PinInfo,
     build_pinout_from_requirements,
+    expected_pin_count,
     infer_electrical_type,
     parse_pinout,
 )
@@ -348,3 +349,73 @@ class TestPinoutDRC:
         assert errors == []
         # No warning about missing NC pin
         assert not any("pin" in w and "2" in w for w in warnings)
+
+
+# ---------------------------------------------------------------------------
+# expected_pin_count package-pattern coverage
+# ---------------------------------------------------------------------------
+
+class TestExpectedPinCount:
+    @pytest.mark.parametrize("package,expected", [
+        # SOT-23 family: -N variants must NOT fall through to bare SOT-23
+        # (\b matches at the hyphen, the original bug)
+        ("SOT-23", 3),
+        ("SOT-23-5", 5),
+        ("SOT-23-6", 6),
+        ("SOT-23-8", 8),
+        ("sot-23-5", 5),
+        ("SOT-223", 3),
+        ("SOT-89", 3),
+        # SC-70 family
+        ("SC-70-5", 5),
+        ("SOT-353", 5),
+        ("SOT-363", 6),
+        ("SC-88", 6),
+        ("SC-70", 3),
+        ("SOT-323", 3),
+        # TO power packages
+        ("TO-220", 3),
+        ("TO-220-3", 3),
+        ("TO-220-5", 5),
+        ("TO220", 3),
+        ("TO-92", 3),
+        ("TO-247", 3),
+        ("TO-252", 3),
+        ("DPAK", 3),
+        ("TO-263", 3),
+        ("D2PAK", 3),
+        # QFN with exposed pad counts the EP as the final pad (IPC-7351)
+        ("QFN-32-EP", 33),
+        ("QFN-32_EP", 33),
+        ("QFN-32", 32),
+        ("DFN-8", 8),
+        # WiFi modules: E/F variants carry 6 extra bottom pads
+        ("ESP-12F", 22),
+        ("ESP-12E", 22),
+        ("ESP-12", 16),
+        ("ESP-07", 16),
+        ("ESP-01", 8),
+        # Crystals
+        ("HC49", 2),
+        ("HC-49", 2),
+        # Regressions: existing patterns still work
+        ("TQFP-32", 32),
+        ("LQFP-48", 48),
+        ("SOIC-8", 8),
+        ("TSSOP-20", 20),
+        ("DIP-8", 8),
+        ("PDIP-28", 28),
+        ("0805", 2),
+        ("PinHeader_1x6", 6),
+        ("PinHeader_2x20", 40),
+        ("SOD-123", 2),
+    ])
+    def test_package_patterns(self, package, expected):
+        assert expected_pin_count(package) == expected
+
+    def test_specs_pin_count_wins(self):
+        assert expected_pin_count("SOT-23", {"pin_count": 6}) == 6
+
+    def test_unknown_returns_none(self):
+        assert expected_pin_count("TOTALLY-UNKNOWN-99") is None
+        assert expected_pin_count("") is None

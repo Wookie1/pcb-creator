@@ -22,9 +22,13 @@ Upload to JLCPCB and order your board
 - **Tiered component lookup** — resolves footprints and specs from KiCad library, IPC-7351B, EasyEDA/LCSC, and curated tables before falling back to LLM
 - **Parallel LLM enrichment** — remaining spec/footprint lookups run concurrently instead of sequentially
 - **4-layer PCB support** — GND and power planes on inner layers (In1.Cu/In2.Cu), antipad cutouts, power stitching vias; Freerouting routes signals on outer layers only
-- **Freerouting autorouter** — production-quality push-and-shove routing via headless mode (auto-downloads, requires Java 17+); required for 4-layer boards
-- **Built-in A\* router** — fallback for 2-layer boards
-- **IPC-2221 trace sizing** — automatic trace width calculation for current capacity
+- **Freerouting autorouter (primary engine)** — production-quality push-and-shove routing via headless mode (auto-downloads, requires Java 17+); `effort` levels (fast/normal/best), live pass-by-pass progress, and an automatic re-place-and-reroute retry when a route comes back incomplete
+- **Built-in A\* router** — 2-layer fallback used only when `PCB_ROUTER_ENGINE=builtin`
+- **Two-sided placement** — small SMD passives can move to the bottom side (`optimize_placement(two_sided=True)`); especially effective on 4-layer boards where the inner planes free both outer layers for signal
+- **Agent-driven MCP interface** — drive the pipeline from any MCP client with an incremental circuit builder, structured `next_step`/`remediation` responses, and a workflow guide (see [MCP Server](#mcp-server))
+- **Small-model friendly** — chunked netlist generation, reasoning-tag stripping, and a `PCB_MODEL_PROFILE=small` mode make the LLM steps work with local 9B–35B models
+- **Fine-pitch-aware routing** — boards with a tight-pitch part (≤0.8mm, e.g. a 0.5mm connector or QFN) automatically route at the manufacturer-minimum trace/clearance and use trace-aware power-via fanout, so escape routing doesn't trip clearance/short DRC; ordinary boards keep the more robust default rules
+- **IPC-2221 trace sizing** — automatic trace width calculation for current capacity, propagated through series inductors/fuses
 - **DRC with DFM profiles** — checks against JLCPCB standard, JLCPCB 4-layer, PCBWay, OSH Park manufacturing rules
 - **DXF board outline** — attach a DXF file to define non-rectangular board shapes
 - **Assembly drawing PDF** — print-friendly component placement reference with BOM table for manufacturing
@@ -81,7 +85,7 @@ The pipeline will:
 ## Requirements
 
 - **Python 3.11+**
-- **Java 17+** (for Freerouting autorouter — falls back to built-in router if unavailable)
+- **Java 17+** — required for the Freerouting autorouter (the default engine). Without it, set `PCB_ROUTER_ENGINE=builtin` to use the built-in A\* router (2-layer only; 4-layer boards require Freerouting)
 - **LLM API access** — any OpenAI-compatible API (OpenRouter, Ollama, oMLX, OpenAI, etc.)
 - Works with models as small as 9B parameters (tested with Qwen 3.5 9B); 27B+ recommended for complex boards
 
@@ -104,6 +108,7 @@ All settings via environment variables or `.env` file:
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `PCB_GENERATE_MODEL` | `openrouter/qwen/qwen3.5-27b` | LLM model for generation |
+| `PCB_MODEL_PROFILE` | `normal` | `small` lowers the chunked-generation threshold and batch sizes for weaker local models (≤14B dense / low-active-param MoE) |
 | `PCB_LLM_API_BASE` | *(none)* | API base URL (for local models) |
 | `PCB_LLM_API_KEY` | *(none)* | API key |
 | `PCB_ROUTER_ENGINE` | `freerouting` | `freerouting` or `builtin` |
@@ -157,13 +162,49 @@ pcb-creator run --requirements requirements.json --attach board_outline.dxf --ag
 
 ### MCP Server
 
-For MCP-compatible clients (Claude Desktop, Claude Code, etc.):
+For MCP-compatible clients (Claude Desktop, Claude Code, Cline, etc.).
+Designed to work well with small local models: every tool response carries a
+machine-readable `next_step` (the exact call to make next) and, on failure,
+`remediation` options; long operations report live progress via
+`get_project_status` (`status_hint`, `poll_again_in_s`). Call
+`get_workflow_guide()` first for the step-by-step tool order.
 
-**Tools exposed:** `design_pcb`, `get_requirements_schema`, `list_projects`, `get_project_status`, `get_drc_report`, `export_kicad`, `get_board_image`
+**Three workflows:**
 
-**Two input modes for `design_pcb`:**
-- **Structured (preferred):** Call `get_requirements_schema()` to get the JSON schema, then pass a `requirements_json` dict to `design_pcb`. Skips LLM translation — faster, cheaper, deterministic.
-- **Natural language:** Pass a plain-text `description` — translated to structured requirements via LLM automatically.
+1. **Build from scratch (recommended for agents):** `create_circuit` →
+   `add_component` (returns the pin table; validates the footprint
+   immediately) → `connect_pins` (by pin number or name, e.g. `"D1.anode"`,
+   `"U1.VCC"`) → `finalize_circuit` (full validation) → `optimize_placement`
+   → `route_board` → `run_drc` → `export_outputs`. Many small validated
+   calls — no giant netlist JSON. Rework tools: `list_circuit`,
+   `remove_component`, `disconnect_pins`, `mark_no_connect`. Components that
+   must sit at exact coordinates (edge connectors, mounting holes) are fixed
+   with `place_component` — validated immediately against board bounds and
+   other pinned parts, and never moved by the optimizer.
+2. **Import KiCad:** `import_kicad_netlist` → `verify_footprints` /
+   `provide_footprint` → placement → routing → DRC → export.
+3. **Autonomous:** `design_pcb` runs the full LLM pipeline in the background
+   (poll `get_project_status`). Prefer `requirements_json` (schema from
+   `get_requirements_schema()`) over plain text — it skips LLM translation.
+
+Boards whose components don't fit on top can use
+`optimize_placement(two_sided=True)` — the optimizer may move small SMD
+passives (R/C/diodes) to the bottom side. Connectors, ICs, LEDs, and
+through-hole parts always stay on top, and all outputs (Gerbers incl.
+B_Paste, CPL, KiCad) carry the side. Note: on 2-layer boards the bottom is
+the router's escape layer, so use two-sided to make parts FIT; prefer a
+larger board when routing completion is the problem. On **4-layer** boards
+two-sided is much more favorable: the inner layers carry GND/power planes, so
+both outer layers are free for signal and bottom-side parts route well
+(power/ground pins reach the inner planes through via-in-pad stitching). The
+optimizer flips freely on 4-layer and reluctantly on 2-layer.
+
+`route_board(effort="fast"|"normal"|"best")` trades quality vs wait time
+(~2/5/15 min caps); routing progress streams pass-by-pass from Freerouting.
+By default an incomplete route triggers one automatic re-place (extra
+clearance + congestion penalty) and re-route, keeping the better result.
+`run_drc` returns a severity-ranked summary with a remediation hint per
+failing rule (`get_drc_report(verbose=True)` for the full report).
 
 Add to your MCP client config (e.g., `claude_desktop_config.json`):
 

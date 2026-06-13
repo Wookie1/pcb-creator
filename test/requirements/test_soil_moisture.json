@@ -58,7 +58,10 @@
       "value": "100nF",
       "package": "0805",
       "purpose": "VCC decoupling",
-      "specs": {"voltage_rating": "10V", "type": "ceramic"}
+      "specs": {
+        "voltage_rating": "10V",
+        "type": "ceramic"
+      }
     },
     {
       "ref": "D1",
@@ -66,7 +69,10 @@
       "value": "red",
       "package": "0805",
       "purpose": "Power indicator LED",
-      "specs": {"vf": "2.0V", "if": "5mA"}
+      "specs": {
+        "vf": "2.0V",
+        "if": "5mA"
+      }
     },
     {
       "ref": "D2",
@@ -74,7 +80,10 @@
       "value": "green",
       "package": "0805",
       "purpose": "Digital output indicator LED",
-      "specs": {"vf": "3.2V", "if": "5mA"}
+      "specs": {
+        "vf": "3.2V",
+        "if": "5mA"
+      }
     },
     {
       "ref": "J1",
@@ -95,42 +104,72 @@
     {
       "net_name": "VCC",
       "net_class": "power",
-      "pins": ["J1.1", "U1.VCC", "C1.1", "R1.1", "R2.1", "R3.1", "RV1.1"]
+      "pins": [
+        "J1.1",
+        "U1.VCC",
+        "C1.1",
+        "R1.1",
+        "R2.1",
+        "R3.1",
+        "RV1.1"
+      ]
     },
     {
       "net_name": "GND",
       "net_class": "ground",
-      "pins": ["J1.2", "U1.GND", "C1.2", "RV1.3", "D1.cathode", "D2.cathode"]
+      "pins": [
+        "J1.2",
+        "U1.GND",
+        "C1.2",
+        "RV1.3",
+        "D1.cathode",
+        "D2.cathode",
+        "J2.2"
+      ]
     },
     {
       "net_name": "SENSOR_MID",
       "net_class": "signal",
-      "pins": ["R1.2", "J2.1", "U1.IN1-", "J1.3"]
-    },
-    {
-      "net_name": "PROBE_GND",
-      "net_class": "signal",
-      "pins": ["J2.2", "U1.GND"]
+      "pins": [
+        "R1.2",
+        "J2.1",
+        "U1.IN1-",
+        "J1.3"
+      ]
     },
     {
       "net_name": "THRESHOLD",
       "net_class": "signal",
-      "pins": ["RV1.2", "U1.IN1+"]
+      "pins": [
+        "RV1.2",
+        "U1.IN1+"
+      ]
     },
     {
       "net_name": "DOUT",
       "net_class": "signal",
-      "pins": ["U1.OUT1", "R2.2", "R4.1", "J1.4"]
+      "pins": [
+        "U1.OUT1",
+        "R2.2",
+        "R4.1",
+        "J1.4"
+      ]
     },
     {
       "net_name": "LED_DOUT",
       "net_class": "signal",
-      "pins": ["R4.2", "D2.anode"]
+      "pins": [
+        "R4.2",
+        "D2.anode"
+      ]
     },
     {
       "net_name": "PWR_LED",
       "net_class": "signal",
-      "pins": ["R3.2", "D1.anode"]
+      "pins": [
+        "R3.2",
+        "D1.anode"
+      ]
     }
   ],
   "board": {
@@ -139,8 +178,18 @@
     "layers": 2
   },
   "placement_hints": [
-    {"ref": "U1", "x_mm": 15, "y_mm": 10},
-    {"ref": "J1", "edge": "left"},
-    {"ref": "J2", "edge": "right"}
+    {
+      "ref": "U1",
+      "x_mm": 15,
+      "y_mm": 10
+    },
+    {
+      "ref": "J1",
+      "edge": "left"
+    },
+    {
+      "ref": "J2",
+      "edge": "right"
+    }
   ]
 }

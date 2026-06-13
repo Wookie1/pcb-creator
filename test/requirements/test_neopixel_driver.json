@@ -33,14 +33,14 @@
       "type": "resistor",
       "value": "10kohm",
       "package": "0805",
-      "purpose": "Gate pull-down / low-side pull-up"
+      "purpose": "Low-side pull-up to VCC (source side of level shifter)"
     },
     {
       "ref": "R2",
       "type": "resistor",
       "value": "10kohm",
       "package": "0805",
-      "purpose": "High-side pull-up to 5V"
+      "purpose": "High-side pull-up to 5V (drain side of level shifter)"
     },
     {
       "ref": "R3",
@@ -76,7 +76,7 @@
     {
       "net_name": "VCC",
       "net_class": "power",
-      "pins": ["J1.1", "U1.VCC", "C1.1", "R1.1", "R2.1", "J2.1"]
+      "pins": ["J1.1", "U1.VCC", "C1.1", "R1.1", "R2.1", "Q1.gate", "J2.1"]
     },
     {
       "net_name": "GND",
@@ -97,11 +97,6 @@
       "net_name": "DATA_OUT",
       "net_class": "signal",
       "pins": ["R3.2", "J2.2"]
-    },
-    {
-      "net_name": "GATE",
-      "net_class": "signal",
-      "pins": ["Q1.gate", "U1.VCC"]
     }
   ],
   "board": {
