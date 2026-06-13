@@ -114,6 +114,10 @@ All settings via environment variables or `.env` file:
 | `PCB_LLM_API_KEY` | *(none)* | API key |
 | `PCB_ROUTER_ENGINE` | `freerouting` | `freerouting` or `builtin` |
 | `PCB_FREEROUTING_TIMEOUT` | `300` | Freerouting timeout (seconds) |
+| `PCB_FREEROUTING_HEAP_MB` | *(auto: ~55% RAM, 1024–6144)* | JVM max-heap cap for Freerouting; prevents OOM-killing the host on dense boards |
+| `PCB_ESCAPE_FANOUT` | `false` | Pre-generate dog-bone escapes for single-row fine-pitch parts as protected wiring before routing |
+| `PCB_OPTIMIZER_ITERATIONS` | *(auto: 200×movable, ≤8000)* | Override the SA placement iteration cap |
+| `PCB_CUSTOM_FOOTPRINT_DIR` | *(none)* | Global writable dir for agent-registered custom footprints (tier 0) |
 | `PCB_MAX_REWORK` | `5` | Max LLM rework attempts per step |
 | `PCB_SKIP_QA` | `false` | Skip per-step LLM QA reviews (validators still run) |
 | `PCB_LLM_TIMEOUT` | `1800` | LLM request timeout in seconds |
