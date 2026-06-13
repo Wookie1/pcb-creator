@@ -621,6 +621,8 @@ Grid-based A* with 8-connected movement (orthogonal + 45° diagonal) on a 0.25mm
 
 **Validation:** 5 checks — schema, trace-to-trace clearance, via clearance, connectivity (union-find), no-shorts.
 
+**Segment-aware connectivity (`_check_connectivity`):** the per-net union-find connects pads, vias, and trace endpoints to any point lying *along* a same-net, same-layer trace **segment**, not just at coincident endpoints. This matters because Freerouting freely produces T-junctions (a branch trace teeing into a trunk's interior), mid-trace via drops, and pads sitting under a trace — all real electrical connections that endpoint-only matching missed, splitting a genuinely-routed multi-pad net into false "disconnected groups" (observed on morgan: Freerouting reported ~98% routed while the validator flagged `net_5v`/`net_3v3` etc. as disconnected). Layer matching is preserved (a top pad still needs a via to reach a bottom trace), so the change only removes *false* disconnects — a genuinely unreached pad is still flagged. Regression tests in `tests/test_connectivity_junctions.py`.
+
 ### Post-Routing Approval Gate
 
 Two modes depending on how the pipeline is invoked:

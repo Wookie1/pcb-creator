@@ -266,47 +266,63 @@ def _check_connectivity(routed: dict, netlist: dict | None) -> tuple[list[str], 
         grid_res = routing.get("config", {}).get("grid_resolution_mm", 0.25)
         snap = max(0.3, grid_res * 1.5)
 
-        # Collect all trace endpoints for this net
         net_traces = [t for t in traces if t.get("net_id") == net_id]
         net_vias = [v for v in vias if v.get("net_id") == net_id]
 
-        trace_points: list[tuple[float, float, str]] = []
+        # Each trace segment: raw endpoints + layer + a canonical union node
+        # (its rounded start, already unioned to its end). Connectivity is
+        # SEGMENT-aware, not endpoint-only: a pad / via / other trace endpoint
+        # that lands anywhere ALONG a segment (a T-junction, a mid-trace via
+        # drop, a pad under the trace) is a real electrical connection. Matching
+        # only coincident endpoints (the old behaviour) split genuinely-routed
+        # multi-pad nets into false "disconnected groups".
+        segs: list[tuple[float, float, float, float, str, tuple]] = []
         for t in net_traces:
-            p1 = (round(t["start_x_mm"], 2), round(t["start_y_mm"], 2), t["layer"])
-            p2 = (round(t["end_x_mm"], 2), round(t["end_y_mm"], 2), t["layer"])
-            trace_points.append(p1)
-            trace_points.append(p2)
+            L = t.get("layer", "top")
+            p1 = (round(t["start_x_mm"], 2), round(t["start_y_mm"], 2), L)
+            p2 = (round(t["end_x_mm"], 2), round(t["end_y_mm"], 2), L)
             union(p1, p2)
+            segs.append((t["start_x_mm"], t["start_y_mm"],
+                         t["end_x_mm"], t["end_y_mm"], L, p1))
 
-        # Vias connect points across layers
-        for v in net_vias:
-            p1 = (round(v["x_mm"], 2), round(v["y_mm"], 2), v.get("from_layer", "top"))
-            p2 = (round(v["x_mm"], 2), round(v["y_mm"], 2), v.get("to_layer", "bottom"))
-            union(p1, p2)
-            # Also connect to nearby trace endpoints
-            for tp in trace_points:
-                if math.hypot(tp[0] - p1[0], tp[1] - p1[1]) < snap:
-                    union(p1, tp)
-                    union(p2, tp)
+        def _layer_ok(layer_a: str, layer_b: str) -> bool:
+            return layer_a == layer_b or layer_a == "all" or layer_b == "all"
 
-        # Collect via endpoints for connectivity matching
+        def _connect_to_segs(pt: tuple) -> None:
+            """Union a point to every same-net trace segment it lies on/near
+            (layer-matched). The point joins each such segment's component."""
+            px, py, pl = pt
+            for ax, ay, bx, by, sl, anchor in segs:
+                if not _layer_ok(pl, sl):
+                    continue
+                if _point_to_segment_distance(px, py, ax, ay, bx, by) < snap:
+                    union(pt, anchor)
+
+        # Trace-trace junctions: an endpoint of one segment lying on another.
+        for ax, ay, bx, by, sl, _anchor in segs:
+            _connect_to_segs((round(ax, 2), round(ay, 2), sl))
+            _connect_to_segs((round(bx, 2), round(by, 2), sl))
+
+        # Vias span layers, and attach to traces on either layer they touch.
         via_points: list[tuple[float, float, str]] = []
         for v in net_vias:
-            via_points.append((round(v["x_mm"], 2), round(v["y_mm"], 2), v.get("from_layer", "top")))
-            via_points.append((round(v["x_mm"], 2), round(v["y_mm"], 2), v.get("to_layer", "bottom")))
+            vx, vy = v["x_mm"], v["y_mm"]
+            pf = (round(vx, 2), round(vy, 2), v.get("from_layer", "top"))
+            pt_ = (round(vx, 2), round(vy, 2), v.get("to_layer", "bottom"))
+            union(pf, pt_)
+            _connect_to_segs(pf)
+            _connect_to_segs(pt_)
+            via_points.append(pf)
+            via_points.append(pt_)
 
-        # Connect pads to nearby trace endpoints and via endpoints
-        # "all" layer (through-hole pads) matches any copper layer
-        all_conn_points = trace_points + via_points
+        # Pads attach to any same-net trace segment they lie on (layer-matched,
+        # "all" = through-hole matches any copper layer) and to via endpoints.
         for pad_pos in pads:
-            for cp in all_conn_points:
-                layers_match = (
-                    cp[2] == pad_pos[2] or
-                    pad_pos[2] == "all" or
-                    cp[2] == "all"
-                )
-                if layers_match and math.hypot(cp[0] - pad_pos[0], cp[1] - pad_pos[1]) < snap:
-                    union(pad_pos, cp)
+            _connect_to_segs(pad_pos)
+            for vp in via_points:
+                if (_layer_ok(pad_pos[2], vp[2])
+                        and math.hypot(vp[0] - pad_pos[0], vp[1] - pad_pos[1]) < snap):
+                    union(pad_pos, vp)
 
         # Copper fill connectivity: all pads on a fill layer are connected via the pour
         if net_id in fill_nets:
