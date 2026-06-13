@@ -211,12 +211,71 @@ def finish(pcb_path, effort="best", max_seconds=2400, plane_layers=None):
     return r
 
 
+def replace_and_route(pcb_path, effort="best", max_seconds=None,
+                      plane_layers=1, two_sided=False):
+    """FULL re-placement + feedback-retry routing — the only path that
+    exercises escape halos (A) and localized re-place (C). Rebuilds the netlist
+    from the board, SA-places from scratch (so the escape-halo term runs), then
+    routes via run_route_with_retry (so an incomplete first route triggers a
+    focused re-place around the unrouted components)."""
+    cfg = OrchestratorConfig.from_env(base_dir=REPO)
+    cfg.router_engine = "freerouting"
+    tmpcache = Path(tempfile.mkdtemp(prefix="rr-cache-"))
+    configure_lookup(kicad_index=None, cache=ComponentCache(str(tmpcache / "c.json")))
+
+    board, comps, placements = parse_pcb(pcb_path)
+    if plane_layers in (0, 1, 2):
+        board["plane_layers"] = plane_layers
+    netlist = build_netlist("rep", comps)
+
+    tmp = Path(tempfile.mkdtemp(prefix="reroute-rep-"))
+    pdir = tmp / "rep"; pdir.mkdir(parents=True)
+    (pdir / "rep_netlist.json").write_text(json.dumps(netlist))
+    (pdir / "rep_requirements.json").write_text(json.dumps(
+        {"board": board, "manufacturing": {"manufacturer": "jlcpcb_4layer"}}))
+
+    sig = sum(1 for e in netlist["elements"]
+              if e.get("element_type") == "net" and e.get("net_class") == "signal")
+    print(f"  board {board['width_mm']}x{board['height_mm']}mm {board['layers']}-layer "
+          f"plane_layers={board.get('plane_layers')} | {len(placements)} parts | {sig} signal nets",
+          flush=True)
+
+    place = stages.run_placement(
+        pdir, "rep", cfg,
+        board_width_mm=board["width_mm"], board_height_mm=board["height_mm"],
+        two_sided=two_sided, plane_layers=plane_layers)
+    if not place.get("success"):
+        print(f"  PLACEMENT FAILED: {place.get('error')}", flush=True)
+        shutil.rmtree(tmp, ignore_errors=True); shutil.rmtree(tmpcache, ignore_errors=True)
+        return place
+    print(f"  placement ok: wire={place.get('wire_length_mm')}mm "
+          f"crossings={place.get('crossings')}", flush=True)
+
+    r = stages.run_route_with_retry(
+        pdir, "rep", cfg, effort=effort, max_seconds=max_seconds,
+        log=lambda m: print("  [route]", m, flush=True))
+    print(f"  -> completion {r.get('completion_pct')}%  retried={r.get('retried')}  "
+          f"unrouted={len(r.get('unrouted_nets', []))}", flush=True)
+    for a in r.get("attempts", []):
+        print(f"     attempt: completion={a.get('completion_pct')}% "
+              f"routed={a.get('routed_nets')}/{a.get('total_nets')}", flush=True)
+    if r.get("unrouted_nets"):
+        print(f"     still unrouted: {r['unrouted_nets'][:12]}", flush=True)
+    shutil.rmtree(tmp, ignore_errors=True); shutil.rmtree(tmpcache, ignore_errors=True)
+    return r
+
+
 if __name__ == "__main__":
     args = [a for a in sys.argv[1:] if not a.startswith("--")]
     pcb = args[0] if args else "morgan_carrier_v11.kicad_pcb"
     effort = args[1] if len(args) > 1 else "fast"
     pl = 1 if "--plane1" in sys.argv else None
-    if "--incremental" in sys.argv:
+    if "--replace" in sys.argv:
+        print(f"=== FULL re-place + feedback-retry route (tests A+C), effort={effort}"
+              f"{', plane_layers=1' if pl else ''} ===")
+        replace_and_route(pcb, effort=effort, plane_layers=(pl if pl is not None else 1),
+                          two_sided="--two-sided" in sys.argv)
+    elif "--incremental" in sys.argv:
         print(f"=== INCREMENTAL finish (keep existing routing), effort={effort}"
               f"{', plane_layers=1' if pl else ''} ===")
         finish(pcb, effort=effort, plane_layers=pl)
