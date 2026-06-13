@@ -274,12 +274,104 @@ def replace_and_route(pcb_path, effort="best", max_seconds=None,
     return r
 
 
+def reopt_and_route(pcb_path, effort="best", max_seconds=None, plane_layers=1):
+    """Isolate enhancement A (escape halo) starting from the board's EXISTING
+    placement.
+
+    The imported hand-placement is invalid under our SA model (custom/mis-typed
+    footprints resolve to conservative fallbacks → ~14 spurious overlaps/edge
+    violations), so `optimize_placement` — whose move gate is global — cannot
+    budge from it. We therefore REPAIR first (anchors pinned, board-matched
+    clearance → minimal nudges to make it model-valid), then run two optimize
+    passes from that same repaired start differing ONLY in escape_weight (0 vs
+    6) and route both at the same effort. The delta is purely A's effect, on a
+    placement that stays far closer to the real board than the from-scratch
+    `--replace` grid. Caveat: the repair step itself moves a few parts."""
+    from optimizers.placement_optimizer import (
+        optimize_placement, repair_placement, SAConfig, _footprint_min_pitch,
+        find_placement_violations,
+    )
+    cfg = OrchestratorConfig.from_env(base_dir=REPO)
+    cfg.router_engine = "freerouting"
+    tmpcache = Path(tempfile.mkdtemp(prefix="rr-cache-"))
+    configure_lookup(kicad_index=None, cache=ComponentCache(str(tmpcache / "c.json")))
+
+    board, comps, placements = parse_pcb(pcb_path)
+    if plane_layers in (0, 1, 2):
+        board["plane_layers"] = plane_layers
+    netlist = build_netlist("reo", comps)
+    pc = {}
+    for e in netlist["elements"]:
+        if e.get("element_type") == "port":
+            pc[e["component_id"]] = pc.get(e["component_id"], 0) + 1
+    d2c = {e.get("designator"): e.get("component_id")
+           for e in netlist["elements"] if e.get("element_type") == "component"}
+
+    def _route(placement, label):
+        tmp = Path(tempfile.mkdtemp(prefix="reopt-")); pdir = tmp / "reo"
+        pdir.mkdir(parents=True)
+        (pdir / "reo_netlist.json").write_text(json.dumps(netlist))
+        (pdir / "reo_placement.json").write_text(json.dumps(placement))
+        (pdir / "reo_requirements.json").write_text(json.dumps(
+            {"board": board, "manufacturing": {"manufacturer": "jlcpcb_4layer"}}))
+        r = stages.run_routing(pdir, "reo", cfg, effort=effort,
+                               max_seconds=max_seconds,
+                               log=lambda m: print(f"  [{label}]", m, flush=True))
+        print(f"  -> {label}: completion {r.get('completion_pct')}%  "
+              f"unrouted={len(r.get('unrouted_nets', []))}", flush=True)
+        if r.get("unrouted_nets"):
+            print(f"     unrouted: {r['unrouted_nets'][:12]}", flush=True)
+        shutil.rmtree(tmp, ignore_errors=True)
+        return r
+
+    sig = sum(1 for e in netlist["elements"]
+              if e.get("element_type") == "net" and e.get("net_class") == "signal")
+    print(f"  board {board['width_mm']}x{board['height_mm']}mm {board['layers']}-layer "
+          f"plane_layers={board.get('plane_layers')} | {len(placements)} parts | "
+          f"{sig} signal nets", flush=True)
+
+    CLEAR = 0.2  # board-matched clearance (morgan is a 0.127mm fine-pitch fab)
+
+    # Pin anchors (connectors + high-pin/fine-pitch parts) at their existing
+    # spots so repair/optimize keep the board's I/O and the FPC where they are.
+    reo_pl = json.loads(json.dumps(placements))
+    anchors = 0
+    for p in reo_pl:
+        pins = pc.get(d2c.get(p["designator"]), 0)
+        pitch = _footprint_min_pitch(p.get("package", ""), pins)
+        if (p.get("component_type") == "connector" or pins >= 8
+                or (pitch is not None and pitch < 0.8)):
+            p["placement_source"] = "user"
+            anchors += 1
+
+    v0 = find_placement_violations(
+        {"board": board, "placements": reo_pl}, netlist, clearance=CLEAR)["count"]
+    repaired = repair_placement(
+        {"version": "1.0", "project_name": "reo", "board": dict(board),
+         "placements": reo_pl}, netlist, clearance=CLEAR, seed=1)
+    v1 = find_placement_violations(repaired, netlist, clearance=CLEAR)["count"]
+    print(f"  pinned {anchors} anchor(s); repaired model-violations "
+          f"{v0}→{v1} (clearance {CLEAR}mm)", flush=True)
+
+    for esc in (0.0, 6.0):
+        pl = optimize_placement(
+            json.loads(json.dumps(repaired)), netlist,
+            SAConfig(seed=1, escape_weight=esc, escape_track_pitch_mm=0.254,
+                     congestion_weight=2.0, min_clearance_mm=CLEAR))
+        _route(pl, f"escape_weight={esc}")
+    shutil.rmtree(tmpcache, ignore_errors=True)
+
+
 if __name__ == "__main__":
     args = [a for a in sys.argv[1:] if not a.startswith("--")]
     pcb = args[0] if args else "morgan_carrier_v11.kicad_pcb"
     effort = args[1] if len(args) > 1 else "fast"
     pl = 1 if "--plane1" in sys.argv else None
-    if "--replace" in sys.argv:
+    if "--reopt" in sys.argv:
+        print(f"=== A-isolation: existing placement vs escape-halo re-opt, "
+              f"effort={effort}{', plane_layers=1' if pl else ''} ===")
+        reopt_and_route(pcb, effort=effort, plane_layers=(pl if pl is not None else 1))
+    elif "--replace" in sys.argv:
         print(f"=== FULL re-place + feedback-retry route (tests A+C), effort={effort}"
               f"{', plane_layers=1' if pl else ''} ===")
         replace_and_route(pcb, effort=effort, plane_layers=(pl if pl is not None else 1),
