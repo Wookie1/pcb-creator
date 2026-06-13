@@ -129,7 +129,7 @@
         "end_x_mm": {"type": "number"},
         "end_y_mm": {"type": "number"},
         "width_mm": {"type": "number", "exclusiveMinimum": 0},
-        "layer": {"type": "string", "enum": ["top", "bottom"]},
+        "layer": {"type": "string", "enum": ["top", "bottom", "inner1", "inner2"]},
         "net_id": {"type": "string"},
         "net_name": {"type": "string"}
       }
@@ -142,8 +142,8 @@
         "y_mm": {"type": "number"},
         "drill_mm": {"type": "number", "exclusiveMinimum": 0},
         "diameter_mm": {"type": "number", "exclusiveMinimum": 0},
-        "from_layer": {"type": "string", "enum": ["top", "bottom"]},
-        "to_layer": {"type": "string", "enum": ["top", "bottom"]},
+        "from_layer": {"type": "string", "enum": ["top", "bottom", "inner1", "inner2"]},
+        "to_layer": {"type": "string", "enum": ["top", "bottom", "inner1", "inner2"]},
         "net_id": {"type": "string"},
         "net_name": {"type": "string"}
       }
