@@ -591,6 +591,18 @@ def get_workflow_guide() -> dict:
                     "'routing_progress' and 'status_hint' show live progress)",
         "on_failure": "Read 'routing_error'; re-run optimize_placement with a "
                       "larger board, then route_board again.",
+        "if_incomplete": (
+            "If the route comes back valid but <100% (or DRC shows disconnected "
+            "nets), do NOT just enlarge the board — that rarely helps. In order: "
+            "(1) route_board(keep_existing=True) to INCREMENTALLY finish the "
+            "residual — the autorouter is nondeterministic, so finishing the few "
+            "remaining nets while protecting the routed majority usually closes "
+            "them; (2) on a 4-layer board, re-run optimize_placement with "
+            "plane_layers=1 (frees a 3rd signal layer) or plane_layers=0 (all "
+            "inner layers signal) to add routing CAPACITY, then route again — "
+            "this is the lever for dense / fine-pitch-connector boards; "
+            "(3) only then consider a larger board. A handful of fine-pitch "
+            "fanout nets may finish best by hand."),
     }
     return {
         "workflows": {
@@ -1781,6 +1793,17 @@ def route_board(project_name: str, effort: str = "normal",
     use it to finish a partly-routed board (e.g. one imported from KiCad or a
     prior incomplete route) instead of redoing it. Placement is not changed
     (so existing traces stay valid) and auto_retry is ignored.
+
+    IF A ROUTE FINISHES <100% (or DRC reports disconnected nets): the autorouter
+    is nondeterministic, so first call route_board(keep_existing=True) to finish
+    the residual nets while protecting the routed majority — this reliably
+    closes the last few. If it still won't complete on a 4-layer board, the
+    bottleneck is usually routing CAPACITY, not placement: re-run
+    optimize_placement with plane_layers=1 (3rd signal layer) or plane_layers=0
+    (all inner layers signal) and route again. Enlarging the board rarely helps
+    a dense / fine-pitch board. (Advanced: set PCB_ESCAPE_FANOUT=true to
+    pre-generate dog-bone escapes for single-row fine-pitch parts as protected
+    wiring before routing.)
 
     Requires a placement — call optimize_placement first.
 
