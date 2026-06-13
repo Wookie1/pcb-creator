@@ -714,6 +714,14 @@ def run_routing(project_dir: Path, project_name: str, config,
             routed = apply_copper_fills(routed, netlist_data, RouterConfig(**router_kwargs))
         except Exception as exc:
             _log(f"  Freerouting FAILED: {exc}")
+            # The built-in A* router is 2-layer only; falling back on a 4-layer
+            # board would silently route just the outer layers and report an
+            # incomplete result. Surface the real failure instead.
+            if num_layers > 2:
+                return {"success": False,
+                        "error": f"Freerouting failed on a {num_layers}-layer "
+                                 f"board and the built-in router cannot route "
+                                 f">2 layers: {exc}"}
             _log("  Falling back to built-in router")
 
     if routed is None:
