@@ -204,6 +204,8 @@ def run_placement(
     congestion_weight: float = 0.0,
     two_sided: bool | None = None,
     plane_layers: int | None = None,
+    escape_weight: float | None = None,
+    focus_components: list[str] | None = None,
 ) -> dict:
     """Deterministic grid placement → repair → SA optimize.
 
@@ -351,9 +353,19 @@ def run_placement(
     # the optimizer use it freely (low penalty, just a slight top preference
     # for assembly cost).
     bottom_penalty = 0.5 if num_layers >= 4 else 4.0
+    # Escape-halo (enhancement A): size the fanout annulus to the board's actual
+    # routing rules (trace + clearance). Dense/fine-pitch parts self-qualify;
+    # focus_components (the routing-feedback lever C) reserve extra space even
+    # if not intrinsically dense.
+    rk = _build_router_kwargs(project_dir, project_name)
+    track_pitch = (rk.get("trace_width_signal_mm", 0.25)
+                   + rk.get("clearance_mm", 0.2))
     sa = SAConfig(seed=seed, min_clearance_mm=clearance,
                   congestion_weight=congestion_weight,
-                  two_sided=two_sided, bottom_penalty=bottom_penalty)
+                  two_sided=two_sided, bottom_penalty=bottom_penalty,
+                  escape_track_pitch_mm=track_pitch,
+                  escape_weight=(6.0 if escape_weight is None else escape_weight),
+                  focus_components=tuple(focus_components or ()))
     placement = optimize_placement(placement, netlist, sa)
 
     placement_path.write_text(json.dumps(placement, indent=2))
@@ -746,17 +758,46 @@ def _attempt_summary(result: dict) -> dict:
              "total_nets", "via_count", "trace_length_mm", "unrouted_nets")}
 
 
+def _components_for_unrouted(project_dir: Path, project_name: str,
+                             unrouted: list[str]) -> set[str]:
+    """Designators touched by the unrouted nets — the region to re-space.
+
+    Maps unrouted net names/ids back to their connected components so the
+    routing-feedback retry can apply a *localized* escape-halo boost there
+    (enhancement C) instead of a blunt global clearance bump.
+    """
+    if not unrouted:
+        return set()
+    netlist_path = _p(project_dir, project_name, "netlist")
+    if not netlist_path.exists():
+        return set()
+    try:
+        from optimizers.ratsnest import build_connectivity
+        nets = build_connectivity(_load(netlist_path))
+    except Exception:
+        return set()
+    target = set(unrouted)
+    out: set[str] = set()
+    for n in nets:
+        if n.name in target or n.net_id in target:
+            out.update(n.designators)
+    return out
+
+
 def run_route_with_retry(project_dir: Path, project_name: str, config,
                          progress_callback=None, log=None,
                          effort: str = "normal", max_seconds: int | None = None,
                          allow_grow: bool = False) -> dict:
     """Route with one placement→routing feedback retry.
 
-    If the first route is incomplete or invalid, re-place once with +0.5mm
-    component clearance, the congestion cost term enabled, and a different
-    seed (or a 10% larger board when allow_grow=True), then re-route at the
-    same effort. Keeps whichever attempt routed better; the result carries
-    both attempts' stats under 'attempts'.
+    If the first route is incomplete or invalid, re-place once and re-route at
+    the same effort. The re-placement focuses on the components touched by the
+    unrouted nets: it gives them an enlarged escape halo (localized fanout
+    reservation, enhancement C) plus the congestion term, on a different seed
+    (or a 10% larger board when allow_grow=True). If no unrouted region can be
+    identified it falls back to the old blunt +0.5mm global clearance bump.
+    Keeps whichever attempt routed better; the result carries both attempts'
+    stats under 'attempts'.
     """
     _log = log or (lambda *_a: None)
     first = run_routing(project_dir, project_name, config,
@@ -768,12 +809,21 @@ def run_route_with_retry(project_dir: Path, project_name: str, config,
         first["attempts"] = [_attempt_summary(first)]
         return first
 
-    _log(f"  Route incomplete ({first.get('completion_pct', 0)}%) — "
-         "re-placing with extra clearance and congestion penalty, then re-routing")
+    focus = sorted(_components_for_unrouted(
+        project_dir, project_name, first.get("unrouted_nets", []) or []))
+    if focus:
+        _log(f"  Route incomplete ({first.get('completion_pct', 0)}%) — re-placing "
+             f"with an enlarged escape halo around {len(focus)} component(s) near "
+             f"the {len(first.get('unrouted_nets', []))} unrouted net(s), then re-routing")
+    else:
+        _log(f"  Route incomplete ({first.get('completion_pct', 0)}%) — "
+             "re-placing with extra clearance and congestion penalty, then re-routing")
     if progress_callback is not None:
         try:
             progress_callback({"phase": "replace_retry",
-                               "detail": "re-placing with extra clearance"})
+                               "detail": (f"re-placing around {len(focus)} unrouted "
+                                          f"component(s)" if focus
+                                          else "re-placing with extra clearance")})
         except Exception:
             pass
 
@@ -798,8 +848,12 @@ def run_route_with_retry(project_dir: Path, project_name: str, config,
         project_dir, project_name, config,
         board_width_mm=bw, board_height_mm=bh,
         seed=(config.optimizer_seed or 0) + 1,
-        extra_clearance_mm=0.5,
+        # Localized escape-halo boost where routing failed (C). Only fall back
+        # to the blunt global clearance bump when we can't pin down a region.
+        extra_clearance_mm=0.0 if focus else 0.5,
         congestion_weight=2.0,
+        escape_weight=12.0 if focus else None,
+        focus_components=focus or None,
     )
     if not place_result.get("success"):
         _log(f"  Retry re-place failed: {place_result.get('error')}")

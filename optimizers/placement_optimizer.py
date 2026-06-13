@@ -52,6 +52,19 @@ class SAConfig:
     grouping_weight: float = 2.0    # functional grouping affinity
     congestion_weight: float = 0.0  # pad-density penalty (escape-route proxy);
                                     # 0 = off, enabled by the routing retry loop
+    escape_weight: float = 6.0      # escape-halo penalty: keep foreign pads out
+                                    # of the fanout channel a dense/fine-pitch
+                                    # part needs to escape. Self-gating — only
+                                    # parts that exceed the pin/pitch threshold
+                                    # (or are listed in focus_components) get a
+                                    # halo, so it is a no-op on simple boards.
+    escape_track_pitch_mm: float = 0.4  # trace_width + clearance; sizes the
+                                    # fanout annulus (set from the board's rules)
+    focus_components: tuple[str, ...] = ()  # designators to give an enlarged
+                                    # escape halo even if not intrinsically dense
+                                    # — the routing-feedback retry lever (C):
+                                    # localizes spacing to the unrouted region
+                                    # instead of a blunt global clearance bump
     two_sided: bool = False         # allow flipping small SMD passives to the
                                     # bottom side (layer-flip SA move)
     bottom_penalty: float = 4.0     # cost per bottom-side component — on a
@@ -268,6 +281,115 @@ def _congestion_cost(
     return cost
 
 
+# ---- Escape-halo / fanout reservation (enhancement A) -------------------
+#
+# A dense or fine-pitch part needs a clear channel on its escape edges to fan
+# its pins out — roughly `escapes × (trace + clearance)` of perimeter. Nothing
+# reserves it today, so neighbours crowd the pin rows and the autorouter has
+# nowhere to take the escapes (the morgan/CN1 plateau). We compute a per-part
+# fanout demand and penalize foreign pads that intrude into an escape halo
+# sized to that demand. The halo radius comes from the classic fanout-annulus
+# bound: to lay `N` tracks at pitch `p` around a part you need a clear ring of
+# circumference `N·p`, i.e. radius ≥ `N·p / 2π`, measured beyond the body.
+
+ESCAPE_PIN_THRESHOLD = 8         # parts with this many pins get a reserved halo
+ESCAPE_PITCH_THRESHOLD_MM = 0.8  # ...as do fine-pitch parts below this pitch
+
+
+def _footprint_min_pitch(package: str, pin_count: int) -> float | None:
+    """Nearest-neighbour pad pitch of a footprint, or None if unknown."""
+    from .pad_geometry import get_footprint_def
+    fp = get_footprint_def(package, pin_count)
+    if fp is None or len(fp.pin_offsets) < 2:
+        return None
+    pts = list(fp.pin_offsets.values())
+    return min(
+        (math.hypot(pts[i][0] - pts[j][0], pts[i][1] - pts[j][1])
+         for i in range(len(pts)) for j in range(i + 1, len(pts))),
+        default=None)
+
+
+def _build_escape_halos(
+    nets: list[NetInfo],
+    packages: dict[str, tuple[str, int]],
+    footprints: dict[str, tuple[float, float]],
+    config: SAConfig,
+) -> dict[str, float]:
+    """Per-component escape-halo radius (mm), only for parts that need one.
+
+    A part qualifies when it has many pins, is fine-pitch, or is explicitly
+    listed in config.focus_components (the routing-feedback lever). Returns
+    {} for ordinary boards so the cost term is a pure no-op there.
+    """
+    # Fanout demand = number of distinct nets leaving the part to OTHER parts.
+    leaving: dict[str, int] = {}
+    for net in nets:
+        comps = set(net.designators)
+        if len(comps) < 2:
+            continue  # net internal to one part needs no escape channel
+        for d in comps:
+            leaving[d] = leaving.get(d, 0) + 1
+
+    focus = set(config.focus_components)
+    track = max(config.escape_track_pitch_mm, 0.1)
+    specs: dict[str, float] = {}
+    for des, (pkg, pins) in packages.items():
+        pitch = _footprint_min_pitch(pkg, pins)
+        is_focus = des in focus
+        dense = (pins >= ESCAPE_PIN_THRESHOLD
+                 or (pitch is not None and pitch < ESCAPE_PITCH_THRESHOLD_MM))
+        if not (dense or is_focus):
+            continue
+        demand = max(pins, leaving.get(des, 0))
+        w, h = footprints.get(des, (2.0, 2.0))
+        half = max(w, h) / 2.0
+        ring = demand * track / (2.0 * math.pi)
+        halo = half + ring
+        if is_focus:
+            # Localized reservation bump — replaces the old global +0.5mm
+            # clearance retry with spacing applied exactly where routing failed.
+            halo += max(track * 4.0, 1.0)
+        specs[des] = halo
+    return specs
+
+
+def _escape_halo_cost(
+    positions: dict[str, tuple[float, float]],
+    packages: dict[str, tuple[str, int]],
+    layers: dict[str, str] | None,
+    escape_halos: dict[str, float],
+    th_map: dict[str, bool],
+) -> float:
+    """Penalty for foreign pads intruding into a dense part's escape halo.
+
+    Layer-aware: a foreign part only contends for the escape channel if it
+    shares a routing layer (same side, or either part is through-hole). The
+    penalty scales with intrusion depth and the foreign part's pin count
+    (more pads = more copper blocking the channel), normalized by halo radius
+    so parts of different demand contribute on a comparable scale.
+    """
+    cost = 0.0
+    for hd, halo_r in escape_halos.items():
+        hp = positions.get(hd)
+        if hp is None or halo_r <= 0:
+            continue
+        hx, hy = hp
+        h_th = th_map.get(hd, False)
+        h_layer = layers.get(hd, "top") if layers else "top"
+        for des, (x, y) in positions.items():
+            if des == hd:
+                continue
+            f_th = th_map.get(des, False)
+            f_layer = layers.get(des, "top") if layers else "top"
+            if not (h_th or f_th or h_layer == f_layer):
+                continue
+            dist = math.hypot(x - hx, y - hy)
+            if dist < halo_r:
+                foreign_pins = packages.get(des, ("", 2))[1]
+                cost += (halo_r - dist) / halo_r * foreign_pins
+    return cost
+
+
 def _quality_cost(
     positions: dict[str, tuple[float, float]],
     config: SAConfig,
@@ -276,6 +398,8 @@ def _quality_cost(
     grouping_pairs: list[tuple[str, str]],
     packages: dict[str, tuple[str, int]] | None = None,
     layers: dict[str, str] | None = None,
+    escape_halos: dict[str, float] | None = None,
+    th_map: dict[str, bool] | None = None,
 ) -> float:
     """Weighted sum of the placement-quality terms (proximity/crystal/grouping).
 
@@ -293,6 +417,9 @@ def _quality_cost(
     if packages and config.congestion_weight > 0:
         cost += config.congestion_weight * _congestion_cost(positions, packages,
                                                             layers=layers)
+    if escape_halos and config.escape_weight > 0 and packages:
+        cost += config.escape_weight * _escape_halo_cost(
+            positions, packages, layers, escape_halos, th_map or {})
     if layers and config.two_sided and config.bottom_penalty > 0:
         cost += config.bottom_penalty * sum(
             1 for l in layers.values() if l == "bottom")
@@ -416,6 +543,23 @@ def optimize_placement(
         if flip_eligible:
             logger.info(f"  Two-sided: {len(flip_eligible)} flip-eligible passives")
 
+    # Escape halos (enhancement A): which parts get a reserved fanout channel,
+    # and how big. Empty on ordinary boards → the escape term is a no-op. The
+    # through-hole map is precomputed once so the layer-conflict test in the SA
+    # hot loop stays a dict lookup rather than a footprint resolution.
+    escape_halos: dict[str, float] = {}
+    th_map: dict[str, bool] = {}
+    if config.escape_weight > 0:
+        from .pad_geometry import get_footprint_def, is_through_hole_package
+        for des, (pkg, pc) in packages.items():
+            th_map[des] = is_through_hole_package(pkg, get_footprint_def(pkg, pc))
+        escape_halos = _build_escape_halos(nets, packages, footprints, config)
+        if escape_halos:
+            logger.info(f"  Escape halos: {len(escape_halos)} dense/fine-pitch "
+                        f"part(s) reserve a fanout channel"
+                        + (f" ({len(config.focus_components)} routing-focused)"
+                           if config.focus_components else ""))
+
     # Compute iteration count
     iterations = _compute_iterations(len(movable), config.max_iterations)
 
@@ -430,7 +574,7 @@ def optimize_placement(
         config.wire_weight * initial_wire
         + config.crossing_weight * initial_cross
         + _quality_cost(positions, config, decoupling, crystal_assocs, grouping_pairs, packages,
-                        layers=layers)
+                        layers=layers, escape_halos=escape_halos, th_map=th_map)
     )
 
     # SA state
@@ -495,7 +639,7 @@ def optimize_placement(
             config.wire_weight * ev_wire
             + config.crossing_weight * ev_cross
             + _quality_cost(new_pos, config, decoupling, crystal_assocs, grouping_pairs, packages,
-                            layers=new_layers)
+                            layers=new_layers, escape_halos=escape_halos, th_map=th_map)
         )
 
         # Accept or reject
