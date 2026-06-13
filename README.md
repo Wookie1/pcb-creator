@@ -34,6 +34,7 @@ Upload to JLCPCB and order your board
 - **Assembly drawing PDF** — print-friendly component placement reference with BOM table for manufacturing
 - **Manufacturer-ready output** — Gerber RS-274X, Excellon drill, BOM CSV, pick-and-place CSV, assembly PDF, STEP 3D model
 - **Interactive board viewer** — HTML/SVG visualization with traces, copper fills, component hover tooltips, DRC results
+- **Incremental routing** — `route_board(keep_existing=True)` protects the current routing as fixed wiring and routes only the UNROUTED nets, so the tool *finishes* a partly-routed (or KiCad-imported) board instead of redoing it
 - **KiCad export/import** — export to KiCad for manual editing, re-import to continue the pipeline
 
 ## Quick Start

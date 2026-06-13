@@ -127,6 +127,7 @@ def route_with_freerouting(
     dsn_config: dict | None = None,
     progress_callback=None,
     max_passes: int = 20,
+    fixed_routing: dict | None = None,
 ) -> dict:
     """Route a PCB using Freerouting.
 
@@ -189,6 +190,10 @@ def route_with_freerouting(
     dsn_cfg = dict(cfg)
     dsn_cfg["exclude_nets"] = exclude_nets or []
     dsn_cfg["net_widths"] = net_widths
+    # Incremental routing: existing traces/vias emitted as protected wiring so
+    # Freerouting keeps them and routes only the unrouted nets.
+    if fixed_routing:
+        dsn_cfg["fixed_routing"] = fixed_routing
 
     with tempfile.TemporaryDirectory(prefix="pcb-freeroute-") as tmpdir:
         dsn_path = Path(tmpdir) / "input.dsn"

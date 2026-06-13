@@ -1756,7 +1756,7 @@ def optimize_placement(
 @mcp.tool()
 def route_board(project_name: str, effort: str = "normal",
                 max_seconds: int | None = None, auto_retry: bool = True,
-                allow_grow: bool = False) -> dict:
+                allow_grow: bool = False, keep_existing: bool = False) -> dict:
     """Start routing the placed board (deterministic). Returns immediately.
 
     Routing runs on a background thread. Poll get_project_status(project_name)
@@ -1776,9 +1776,15 @@ def route_board(project_name: str, effort: str = "normal",
     better result. allow_grow additionally permits a 10% board-size increase
     for that retry.
 
+    keep_existing=True does INCREMENTAL routing: the project's current routed
+    board is kept as protected wiring and only the UNROUTED nets are routed —
+    use it to finish a partly-routed board (e.g. one imported from KiCad or a
+    prior incomplete route) instead of redoing it. Placement is not changed
+    (so existing traces stay valid) and auto_retry is ignored.
+
     Requires a placement — call optimize_placement first.
 
-    Example: route_board("my_board", effort="fast")
+    Example: route_board("my_board", effort="best", keep_existing=True)
     """
     if effort not in ("fast", "normal", "best"):
         return fail(
@@ -1832,9 +1838,26 @@ def route_board(project_name: str, effort: str = "normal",
             if job and job["state"] == "running":
                 job["progress"] = p
 
+    # Incremental: protect the existing routed traces/vias and route only the
+    # unrouted nets. Read before the worker so a missing/empty board is caught.
+    fixed_routing = None
+    if keep_existing:
+        existing = _read_project_json(project_name, "_routed.json")
+        rt = (existing or {}).get("routing", {})
+        if rt.get("traces") or rt.get("vias"):
+            fixed_routing = {"traces": rt.get("traces", []),
+                             "vias": rt.get("vias", [])}
+
     def _worker() -> None:
         try:
-            if auto_retry:
+            if keep_existing:
+                # No re-placement (would invalidate existing traces); route
+                # only the remaining nets with the rest held as protected wiring.
+                result = stages.run_routing(pdir, project_name, config,
+                                            progress_callback=_on_progress,
+                                            effort=effort, max_seconds=max_seconds,
+                                            fixed_routing=fixed_routing)
+            elif auto_retry:
                 result = stages.run_route_with_retry(
                     pdir, project_name, config,
                     progress_callback=_on_progress,

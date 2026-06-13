@@ -529,7 +529,8 @@ ROUTING_EFFORT = {
 
 def run_routing(project_dir: Path, project_name: str, config,
                 progress_callback=None, log=None,
-                effort: str = "normal", max_seconds: int | None = None) -> dict:
+                effort: str = "normal", max_seconds: int | None = None,
+                fixed_routing: dict | None = None) -> dict:
     """Route the board: Freerouting (if configured) or built-in A* (2-layer only).
 
     Reads <project>_placement.json + <project>_netlist.json, writes
@@ -624,6 +625,7 @@ def run_routing(project_dir: Path, project_name: str, config,
                 dsn_config=dsn_config,
                 progress_callback=progress_callback,
                 max_passes=eff["max_passes"],
+                fixed_routing=fixed_routing,
             )
             try:
                 routed = route_with_freerouting(
@@ -658,6 +660,28 @@ def run_routing(project_dir: Path, project_name: str, config,
         rc = RouterConfig(**router_kwargs)
         rc.ncr_progress_callback = progress_callback
         routed = route_board(placement_data, netlist_data, rc)
+
+    # Incremental safety net: never lose the caller's protected wiring. If
+    # Freerouting echoed it (normal case) the union dedupes to a no-op; if it
+    # wrote an empty/short SES (degenerate "nothing to route") we restore the
+    # existing traces/vias so the board is never worse than before.
+    if fixed_routing and routed is not None:
+        rt = routed.setdefault("routing", {})
+        def _tk(t):
+            return (t.get("net_name") or t.get("net_id"), t.get("layer"),
+                    round(t.get("start_x_mm", 0), 3), round(t.get("start_y_mm", 0), 3),
+                    round(t.get("end_x_mm", 0), 3), round(t.get("end_y_mm", 0), 3))
+        seen_t = {_tk(t) for t in rt.get("traces", [])}
+        for t in fixed_routing.get("traces", []):
+            if _tk(t) not in seen_t:
+                rt.setdefault("traces", []).append(t); seen_t.add(_tk(t))
+        def _vk(v):
+            return (v.get("net_name") or v.get("net_id"),
+                    round(v.get("x_mm", 0), 3), round(v.get("y_mm", 0), 3))
+        seen_v = {_vk(v) for v in rt.get("vias", [])}
+        for v in fixed_routing.get("vias", []):
+            if _vk(v) not in seen_v:
+                rt.setdefault("vias", []).append(v); seen_v.add(_vk(v))
 
     # Persist the design rules the board was ACTUALLY routed to, so the DRC
     # checks against the same clearance/widths the router used (otherwise the

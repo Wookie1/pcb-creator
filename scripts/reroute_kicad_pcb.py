@@ -169,10 +169,59 @@ def run(pcb_path, fine_pitch_enabled):
     return r
 
 
+def finish(pcb_path, effort="best", max_seconds=2400, plane_layers=None):
+    """INCREMENTAL: keep the .kicad_pcb's existing routing as protected wiring
+    and route only the UNROUTED nets (finish the board instead of redoing it)."""
+    cfg = OrchestratorConfig.from_env(base_dir=REPO)
+    cfg.router_engine = "freerouting"
+    tmpcache = Path(tempfile.mkdtemp(prefix="rr-cache-"))
+    configure_lookup(kicad_index=None, cache=ComponentCache(str(tmpcache / "c.json")))
+
+    board, comps, placements = parse_pcb(pcb_path)
+    if plane_layers in (0, 1, 2):
+        board["plane_layers"] = plane_layers
+    netlist = build_netlist("inc", comps)
+    placement = {"version": "1.0", "project_name": "inc",
+                 "board": board, "placements": placements}
+
+    # Import the existing routing (traces/vias) from the .kicad_pcb.
+    from exporters.kicad_importer import import_kicad_pcb
+    base = {"version": "1.0", "project_name": "inc", "board": board,
+            "placements": placements, "routing": {"traces": [], "vias": []}}
+    existing = import_kicad_pcb(pcb_path, base, netlist)
+    er = existing.get("routing", {})
+    fixed = {"traces": er.get("traces", []), "vias": er.get("vias", [])}
+    print(f"  existing routing: {len(fixed['traces'])} traces, "
+          f"{len(fixed['vias'])} vias (protected)", flush=True)
+
+    tmp = Path(tempfile.mkdtemp(prefix="reroute-inc-"))
+    pdir = tmp / "inc"; pdir.mkdir(parents=True)
+    (pdir / "inc_netlist.json").write_text(json.dumps(netlist))
+    (pdir / "inc_placement.json").write_text(json.dumps(placement))
+    (pdir / "inc_requirements.json").write_text(json.dumps(
+        {"board": board, "manufacturing": {"manufacturer": "jlcpcb_4layer"}}))
+
+    r = stages.run_routing(pdir, "inc", cfg, effort=effort, max_seconds=max_seconds,
+                           fixed_routing=fixed, log=lambda m: print("  [route]", m, flush=True))
+    print(f"  -> completion {r.get('completion_pct')}%  unrouted={len(r.get('unrouted_nets', []))}",
+          flush=True)
+    if r.get("unrouted_nets"):
+        print(f"     still unrouted: {r['unrouted_nets'][:12]}", flush=True)
+    shutil.rmtree(tmp, ignore_errors=True); shutil.rmtree(tmpcache, ignore_errors=True)
+    return r
+
+
 if __name__ == "__main__":
-    pcb = sys.argv[1] if len(sys.argv) > 1 else "morgan_carrier_v11.kicad_pcb"
-    _EFFORT = sys.argv[2] if len(sys.argv) > 2 else "fast"
-    print(f"=== OLD coarse rules (fine-pitch disabled), effort={_EFFORT} ===")
-    run(pcb, fine_pitch_enabled=False)
-    print(f"=== NEW fine-pitch-aware rules, effort={_EFFORT} ===")
-    run(pcb, fine_pitch_enabled=True)
+    args = [a for a in sys.argv[1:] if not a.startswith("--")]
+    pcb = args[0] if args else "morgan_carrier_v11.kicad_pcb"
+    effort = args[1] if len(args) > 1 else "fast"
+    pl = 1 if "--plane1" in sys.argv else None
+    if "--incremental" in sys.argv:
+        print(f"=== INCREMENTAL finish (keep existing routing), effort={effort}"
+              f"{', plane_layers=1' if pl else ''} ===")
+        finish(pcb, effort=effort, plane_layers=pl)
+    else:
+        print(f"=== OLD coarse rules (fine-pitch disabled), effort={effort} ===")
+        run(pcb, fine_pitch_enabled=False)
+        print(f"=== NEW fine-pitch-aware rules, effort={effort} ===")
+        run(pcb, fine_pitch_enabled=True)

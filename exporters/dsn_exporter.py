@@ -91,6 +91,45 @@ def _dsn_header(project_name: str) -> str:
     return f'(pcb "{project_name}"\n  (parser\n    (string_quote ")\n    (host_cad "pcb-creator")\n    (host_version "1.0")\n  )\n  (resolution mm 1000)\n  (unit mm)\n'
 
 
+_ROUTED_TO_DSN_LAYER = {"top": "F.Cu", "bottom": "B.Cu",
+                        "inner1": "In1.Cu", "inner2": "In2.Cu"}
+
+
+def _dsn_wiring(routing: dict, exclude_names: set) -> str:
+    """Emit existing traces/vias as PROTECTED Specctra wiring.
+
+    Freerouting keeps ``(type protect)`` wires fixed and routes only the
+    remaining ratsnest — this is how the tool finishes a partly-routed board
+    instead of redoing it. Coordinates/widths are decimal mm (DSN native).
+    Plane/fill nets in ``exclude_names`` are skipped.
+    """
+    traces = routing.get("traces", [])
+    vias = routing.get("vias", [])
+    if not traces and not vias:
+        return "  (wiring)\n"
+    lines = ["  (wiring"]
+    for t in traces:
+        name = t.get("net_name") or t.get("net_id") or ""
+        if not name or name in exclude_names:
+            continue
+        layer = _ROUTED_TO_DSN_LAYER.get(t.get("layer", "top"), "F.Cu")
+        w = t.get("width_mm", TRACE_WIDTH_SIGNAL_MM)
+        lines.append(
+            f'    (wire (path {layer} {_fmt(w)} '
+            f'{_fmt(t["start_x_mm"])} {_fmt(t["start_y_mm"])} '
+            f'{_fmt(t["end_x_mm"])} {_fmt(t["end_y_mm"])}) '
+            f'(net "{name}") (type protect))')
+    for v in vias:
+        name = v.get("net_name") or v.get("net_id") or ""
+        if not name or name in exclude_names:
+            continue
+        lines.append(
+            f'    (via Via_Default {_fmt(v["x_mm"])} {_fmt(v["y_mm"])} '
+            f'(net "{name}") (type protect))')
+    lines.append("  )")
+    return "\n".join(lines) + "\n"
+
+
 # Ordered copper layer names by board layer count (inner layers signal by default)
 _COPPER_LAYERS_BY_COUNT: dict[int, list[str]] = {
     1: ["F.Cu"],
@@ -459,7 +498,7 @@ def export_dsn(
             net_widths=cfg.get("net_widths"),
             default_width=cfg.get("trace_width_mm", TRACE_WIDTH_SIGNAL_MM),
         ),
-        "  (wiring)\n",
+        _dsn_wiring(cfg.get("fixed_routing") or {}, set(exclude_nets)),
         ")\n",
     ]
 
