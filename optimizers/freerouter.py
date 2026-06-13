@@ -267,6 +267,7 @@ def route_with_freerouting(
         # heartbeat counter advance even when Freerouting emits nothing.
         deadline = t0 + timeout_s
         next_beat = t0 + _HEARTBEAT_INTERVAL_S
+        timed_out = False
         while True:
             try:
                 proc.wait(timeout=min(1.0, max(0.05, deadline - time.monotonic())))
@@ -274,19 +275,39 @@ def route_with_freerouting(
             except subprocess.TimeoutExpired:
                 now = time.monotonic()
                 if now >= deadline:
-                    proc.kill()
-                    proc.wait()
-                    raise RuntimeError(
-                        f"Freerouting timed out after {timeout_s}s. "
-                        "Try increasing PCB_FREEROUTING_TIMEOUT or simplifying the board."
-                    )
+                    # Ask Freerouting to stop and flush whatever it has routed
+                    # so far (SIGTERM), so a long board yields a PARTIAL route
+                    # to inspect instead of nothing. Routing completes in the
+                    # first pass; later passes only optimize, so the partial is
+                    # usually fully or nearly routed.
+                    timed_out = True
+                    proc.terminate()
+                    try:
+                        proc.wait(timeout=20)
+                    except subprocess.TimeoutExpired:
+                        proc.kill()
+                        proc.wait()
+                    break
                 if now >= next_beat:
                     _emit()
                     next_beat = now + _HEARTBEAT_INTERVAL_S
         for r in readers:
             r.join(timeout=5)
 
-        if proc.returncode != 0:
+        if timed_out:
+            if ses_path.exists() and ses_path.stat().st_size > 0:
+                logger.warning(
+                    "Freerouting timed out after %ss — importing the partial "
+                    "route it had written (some nets may be unrouted).", timeout_s)
+                # Fall through to SES import below.
+            else:
+                raise RuntimeError(
+                    f"Freerouting timed out after {timeout_s}s with no partial "
+                    "result written. Lower the routing effort, give it more time "
+                    "(PCB_FREEROUTING_TIMEOUT), add a signal layer, or simplify "
+                    "the board."
+                )
+        elif proc.returncode != 0:
             stderr_snippet = "".join(stderr_tail)[-500:] or "no error output"
             raise RuntimeError(f"Freerouting failed (exit code {proc.returncode}): {stderr_snippet}")
 
