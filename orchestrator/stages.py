@@ -629,6 +629,31 @@ def run_routing(project_dir: Path, project_name: str, config,
                 if best_pwr[1]:
                     exclude_nets.append(best_pwr[1])
                     _log(f"  Excluding power plane net from routing: {best_pwr[1]} ({best_pwr[0]} pins)")
+            # Fine-pitch escape fanout (opt-in): pre-route dog-bone escapes for
+            # single-row fine-pitch parts and hand them to Freerouting as
+            # protected wiring, so it only routes from comfortable-pitch
+            # breakout vias. Only on a fresh route (an incremental caller's
+            # fixed_routing already carries the existing escapes).
+            if getattr(config, "escape_fanout", False) and fixed_routing is None:
+                try:
+                    from optimizers.escape_router import (
+                        generate_escape_routing, EscapeConfig,
+                    )
+                    ecfg = EscapeConfig(
+                        trace_width_mm=router_kwargs.get("trace_width_signal_mm", 0.127),
+                        clearance_mm=router_kwargs.get("clearance_mm", 0.127),
+                        via_diameter_mm=router_kwargs.get("via_diameter_mm", 0.45),
+                        via_drill_mm=router_kwargs.get("via_drill_mm", 0.2),
+                    )
+                    escapes = generate_escape_routing(
+                        placement_data, netlist_data, ecfg,
+                        exclude_nets=tuple(exclude_nets))
+                    if escapes["traces"]:
+                        _log(f"  Fine-pitch escape fanout: pre-routed "
+                             f"{len(escapes['vias'])} pin escape(s) as protected wiring")
+                        fixed_routing = escapes
+                except Exception as exc:
+                    _log(f"  Escape fanout skipped: {exc}")
             eff = ROUTING_EFFORT.get(effort, ROUTING_EFFORT["normal"])
             timeout_s = max_seconds or eff["timeout_s"] or config.freerouting_timeout_s
             fr_kwargs = dict(

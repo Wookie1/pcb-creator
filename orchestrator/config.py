@@ -72,6 +72,10 @@ class OrchestratorConfig:
     router_engine: str = "freerouting"  # "freerouting" or "builtin"
     freerouting_jar_path: Path | None = None
     freerouting_timeout_s: int = 300
+    # Pre-generate dog-bone escape fanout for single-row fine-pitch parts and
+    # hand it to Freerouting as protected wiring (see optimizers/escape_router).
+    # Opt-in (PCB_ESCAPE_FANOUT=true) while it is validated on real routes.
+    escape_fanout: bool = False
 
     # Optimizer settings
     enable_optimizer: bool = True
@@ -137,6 +141,9 @@ class OrchestratorConfig:
         config.router_engine = os.environ.get(
             "PCB_ROUTER_ENGINE", config.router_engine
         )
+        config.escape_fanout = os.environ.get(
+            "PCB_ESCAPE_FANOUT", str(config.escape_fanout)
+        ).lower() in ("1", "true", "yes")
         jar_env = os.environ.get("PCB_FREEROUTING_JAR")
         config.freerouting_jar_path = Path(jar_env) if jar_env else None
         timeout_env = os.environ.get("PCB_FREEROUTING_TIMEOUT")

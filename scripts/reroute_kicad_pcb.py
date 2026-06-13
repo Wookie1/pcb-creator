@@ -212,7 +212,7 @@ def finish(pcb_path, effort="best", max_seconds=2400, plane_layers=None):
 
 
 def replace_and_route(pcb_path, effort="best", max_seconds=None,
-                      plane_layers=1, two_sided=False):
+                      plane_layers=1, two_sided=False, escape_fanout=False):
     """FULL re-placement + feedback-retry routing — the only path that
     exercises escape halos (A) and localized re-place (C). Rebuilds the netlist
     from the board, SA-places from scratch (so the escape-halo term runs), then
@@ -220,6 +220,7 @@ def replace_and_route(pcb_path, effort="best", max_seconds=None,
     focused re-place around the unrouted components)."""
     cfg = OrchestratorConfig.from_env(base_dir=REPO)
     cfg.router_engine = "freerouting"
+    cfg.escape_fanout = escape_fanout
     tmpcache = Path(tempfile.mkdtemp(prefix="rr-cache-"))
     configure_lookup(kicad_index=None, cache=ComponentCache(str(tmpcache / "c.json")))
 
@@ -274,7 +275,8 @@ def replace_and_route(pcb_path, effort="best", max_seconds=None,
     return r
 
 
-def reopt_and_route(pcb_path, effort="best", max_seconds=None, plane_layers=1):
+def reopt_and_route(pcb_path, effort="best", max_seconds=None, plane_layers=1,
+                    escape_fanout=False):
     """Isolate enhancement A (escape halo) starting from the board's EXISTING
     placement.
 
@@ -293,6 +295,7 @@ def reopt_and_route(pcb_path, effort="best", max_seconds=None, plane_layers=1):
     )
     cfg = OrchestratorConfig.from_env(base_dir=REPO)
     cfg.router_engine = "freerouting"
+    cfg.escape_fanout = escape_fanout
     tmpcache = Path(tempfile.mkdtemp(prefix="rr-cache-"))
     configure_lookup(kicad_index=None, cache=ComponentCache(str(tmpcache / "c.json")))
 
@@ -367,15 +370,18 @@ if __name__ == "__main__":
     pcb = args[0] if args else "morgan_carrier_v11.kicad_pcb"
     effort = args[1] if len(args) > 1 else "fast"
     pl = 1 if "--plane1" in sys.argv else None
+    esc = "--escape" in sys.argv
     if "--reopt" in sys.argv:
         print(f"=== A-isolation: existing placement vs escape-halo re-opt, "
-              f"effort={effort}{', plane_layers=1' if pl else ''} ===")
-        reopt_and_route(pcb, effort=effort, plane_layers=(pl if pl is not None else 1))
+              f"effort={effort}{', plane_layers=1' if pl else ''}"
+              f"{', escape-fanout' if esc else ''} ===")
+        reopt_and_route(pcb, effort=effort, plane_layers=(pl if pl is not None else 1),
+                        escape_fanout=esc)
     elif "--replace" in sys.argv:
         print(f"=== FULL re-place + feedback-retry route (tests A+C), effort={effort}"
-              f"{', plane_layers=1' if pl else ''} ===")
+              f"{', plane_layers=1' if pl else ''}{', escape-fanout' if esc else ''} ===")
         replace_and_route(pcb, effort=effort, plane_layers=(pl if pl is not None else 1),
-                          two_sided="--two-sided" in sys.argv)
+                          two_sided="--two-sided" in sys.argv, escape_fanout=esc)
     elif "--incremental" in sys.argv:
         print(f"=== INCREMENTAL finish (keep existing routing), effort={effort}"
               f"{', plane_layers=1' if pl else ''} ===")
