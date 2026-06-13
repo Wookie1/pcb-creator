@@ -112,12 +112,14 @@ def _dsn_structure(board: dict, config: dict) -> str:
 
     copper_layers = _COPPER_LAYERS_BY_COUNT.get(num_layers, _COPPER_LAYERS_BY_COUNT[2])
 
-    # For 4-layer boards, inner layers are solid copper planes — Freerouting should
-    # only route signal traces on the outer layers. List only outer layers as
-    # signal layers; inner layers are omitted from structure (but kept in via padstacks
-    # so through-vias still connect all layers).
-    _INNER_LAYERS = {"In1.Cu", "In2.Cu"}
-    routing_layers = [l for l in copper_layers if l not in _INNER_LAYERS]
+    # Inner PLANE layers are omitted from the routable set (Freerouting routes
+    # only signal layers; planes are solid pours, still in via padstacks so
+    # through-vias connect all layers). plane_layers controls how many inner
+    # layers are planes: 2 (default) = In1+In2 planes; 1 = In1 plane only, so
+    # In2.Cu is a routable SIGNAL layer; 0 = all inner layers signal.
+    plane_layers = config.get("plane_layers", 2 if num_layers >= 4 else 0)
+    _plane_set = set(["In1.Cu", "In2.Cu"][:plane_layers])
+    routing_layers = [l for l in copper_layers if l not in _plane_set]
 
     lines = ["  (structure"]
     for lname in routing_layers:

@@ -5118,6 +5118,21 @@ def _build_output(
 # Standalone copper fill for externally-routed boards (e.g., Freerouting)
 # ---------------------------------------------------------------------------
 
+def inner_plane_count(board: dict) -> int:
+    """How many inner layers are solid PLANES (vs signal routing layers).
+
+    Stackup convention (4-layer): In1.Cu is the first plane (GND), In2.Cu the
+    second (power). board["plane_layers"] in {0,1,2} overrides; default 2 on a
+    4-layer board (both inner = planes, the historical behaviour), 0 otherwise.
+    plane_layers=1 frees In2.Cu for SIGNAL routing (GND plane only), roughly
+    50%% more signal capacity for dense boards; power is then routed as traces.
+    """
+    n = int(board.get("layers", 2))
+    if n < 4:
+        return 0
+    return max(0, min(2, int(board.get("plane_layers", 2))))
+
+
 def apply_copper_fills(
     routed: dict,
     netlist: dict,
@@ -5266,13 +5281,15 @@ def apply_copper_fills(
     # Stackup convention: In1.Cu = GND plane, In2.Cu = PWR plane (if present).
     # PWR plane requires a designated power net; fall back to GND if not found.
     num_layers = board.get("layers", 2)
-    if num_layers >= 4:
+    pl = inner_plane_count(board)
+    if pl >= 1:
         placements_list = routed.get("placements", [])
 
-        # Identify inner2 power net first (most-connected non-GND power net)
+        # Identify inner2 power net first (most-connected non-GND power net).
+        # Only when In2 is actually a PLANE (pl>=2); otherwise power is routed.
         pwr_net_name = fill_net_name
         best_count = 0
-        for net in all_nets:
+        for net in (all_nets if pl >= 2 else []):
             if net.get("net_class") == "power" and net.get("net_id") != fill_net_id:
                 cnt = len(net.get("connected_port_ids", []))
                 if cnt > best_count:
@@ -5318,7 +5335,7 @@ def apply_copper_fills(
             tt = 0.0 if L2 == 0 else max(0.0, min(1.0, ((px - ax) * dx + (py - ay) * dy) / L2))
             return math.hypot(px - (ax + tt * dx), py - (ay + tt * dy))
 
-        for ref, pi in pad_map.items():
+        for ref, pi in (pad_map.items() if pl >= 2 else []):
             if pi.net_id != pwr_net_id:
                 continue
             if pi.layer == "all":
@@ -5396,15 +5413,16 @@ def apply_copper_fills(
         )
         fill_regions.append(gnd_plane)
 
-        # Inner layer 2 → power plane
-        pwr_plane = generate_inner_plane(
-            board, placements_list, pad_map, all_vias,
-            layer="inner2",
-            net_id=pwr_net_id,
-            net_name=pwr_net_name,
-            config=config,
-        )
-        fill_regions.append(pwr_plane)
+        # Inner layer 2 → power plane (only when In2 is a plane, not signal)
+        if pl >= 2:
+            pwr_plane = generate_inner_plane(
+                board, placements_list, pad_map, all_vias,
+                layer="inner2",
+                net_id=pwr_net_id,
+                net_name=pwr_net_name,
+                config=config,
+            )
+            fill_regions.append(pwr_plane)
 
     # Phase 5: Update the routed dict
     result = _copy.deepcopy(routed)
@@ -5414,19 +5432,19 @@ def apply_copper_fills(
 
     # Add stitching vias (GND outer-layer + power plane SMD stitching)
     stitch_via_dicts = [v.to_dict() for v in stitch_vias]
-    if num_layers >= 4:
+    if pl >= 2:
         stitch_via_dicts.extend(pwr_stitch_vias)
     result["routing"]["vias"] = result["routing"].get("vias", []) + stitch_via_dicts
 
     # Add power-plane connection stubs (pad → offset via)
-    if num_layers >= 4 and pwr_plane_stubs:
+    if pl >= 2 and pwr_plane_stubs:
         result["routing"]["traces"] = (
             result["routing"].get("traces", []) + pwr_plane_stubs)
 
     # Remove plane nets from unrouted list (copper fills connect them)
     unrouted = result["routing"].get("unrouted_nets", [])
-    plane_net_ids = {fill_net_id}
-    if num_layers >= 4:
+    plane_net_ids = {fill_net_id} if pl >= 1 else set()
+    if pl >= 2:
         plane_net_ids.add(pwr_net_id)
     if any(n in plane_net_ids for n in unrouted) and fill_regions:
         unrouted = [n for n in unrouted if n not in plane_net_ids]

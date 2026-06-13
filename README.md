@@ -21,7 +21,7 @@ Upload to JLCPCB and order your board
 - **Multi-turn design planning** — the LLM proposes a design, asks clarifying questions, and looks up real component specs; iterate until the plan is right, then proceed to generation
 - **Tiered component lookup** — resolves footprints and specs from KiCad library, IPC-7351B, EasyEDA/LCSC, and curated tables before falling back to LLM
 - **Parallel LLM enrichment** — remaining spec/footprint lookups run concurrently instead of sequentially
-- **4-layer PCB support** — GND and power planes on inner layers (In1.Cu/In2.Cu), antipad cutouts, power stitching vias; Freerouting routes signals on outer layers only
+- **4-layer PCB support** — GND and power planes on inner layers (In1.Cu/In2.Cu), antipad cutouts, power stitching vias. `board.plane_layers` (or `optimize_placement(plane_layers=...)`) chooses the stackup: 2 = both inner planes (default, route on outer layers); 1 = GND plane + In2 used as a 3rd **signal** layer for dense/many-signal boards; 0 = all-signal inner
 - **Freerouting autorouter (primary engine)** — production-quality push-and-shove routing via headless mode (auto-downloads, requires Java 17+); `effort` levels (fast/normal/best), live pass-by-pass progress, and an automatic re-place-and-reroute retry when a route comes back incomplete
 - **Built-in A\* router** — 2-layer fallback used only when `PCB_ROUTER_ENGINE=builtin`
 - **Two-sided placement** — small SMD passives can move to the bottom side (`optimize_placement(two_sided=True)`); especially effective on 4-layer boards where the inner planes free both outer layers for signal

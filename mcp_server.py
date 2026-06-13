@@ -1648,6 +1648,7 @@ def optimize_placement(
     board_height_mm: float | None = None,
     seed: int | None = None,
     two_sided: bool = False,
+    plane_layers: int | None = None,
 ) -> dict:
     """Place components deterministically and optimize the layout (no LLM).
 
@@ -1666,11 +1667,18 @@ def optimize_placement(
     how small a board can be. CAUTION: on 2-layer boards the bottom is the
     router's escape layer, so bottom-side parts can REDUCE routing
     completion; prefer a larger board when routing (not fit) is the problem.
-    Connectors, ICs, LEDs, and through-hole parts always stay on top. The
-    choice persists for re-placements.
+    Connectors, ICs, LEDs, and through-hole parts always stay on top.
+
+    plane_layers (4-layer boards only) sets how many inner layers are solid
+    PLANES: 2 (default) = In1 GND + In2 power planes, 2 signal layers (best
+    power integrity); 1 = In1 GND plane only, In2 becomes a 3rd SIGNAL layer
+    (power routed as traces) — use for dense / many-signal boards (e.g. a
+    fine-pitch connector with lots of GPIO) that won't route on 2 signal
+    layers; 0 = all inner layers signal. Persists for re-placements.
 
     Example: optimize_placement("my_board", board_width_mm=45,
-                                board_height_mm=18, two_sided=True)
+                                board_height_mm=18, two_sided=True,
+                                plane_layers=1)
     """
     from orchestrator import stages
 
@@ -1695,6 +1703,7 @@ def optimize_placement(
             board_height_mm=board_height_mm,
             seed=seed,
             two_sided=two_sided or None,
+            plane_layers=plane_layers,
         )
     except Exception as exc:
         return fail(f"Placement failed: {exc}")

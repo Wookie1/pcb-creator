@@ -203,6 +203,7 @@ def run_placement(
     extra_clearance_mm: float = 0.0,
     congestion_weight: float = 0.0,
     two_sided: bool | None = None,
+    plane_layers: int | None = None,
 ) -> dict:
     """Deterministic grid placement → repair → SA optimize.
 
@@ -304,6 +305,32 @@ def run_placement(
             except Exception:
                 pass
     placement.setdefault("board", {})["two_sided"] = two_sided
+
+    # Inner-layer stackup (4-layer): how many inner layers are PLANES vs signal.
+    # Resolve from requirements (board.plane_layers); default 2 (both planes).
+    # Carried on the placement board so routing uses the same stackup.
+    if num_layers >= 4:
+        pl = 2
+        if plane_layers in (0, 1, 2):
+            pl = int(plane_layers)
+        else:
+            req_path = _p(project_dir, project_name, "requirements")
+            if req_path.exists():
+                try:
+                    rpl = _load(req_path).get("board", {}).get("plane_layers")
+                    if rpl in (0, 1, 2):
+                        pl = int(rpl)
+                except Exception:
+                    pass
+            # else reuse an existing placement's stackup choice
+            elif placement_path.exists():
+                try:
+                    epl = _load(placement_path).get("board", {}).get("plane_layers")
+                    if epl in (0, 1, 2):
+                        pl = int(epl)
+                except Exception:
+                    pass
+        placement["board"]["plane_layers"] = pl
 
     # Repair overlaps/boundary, then optimize.  Thread the seed through both
     # so a given seed yields a fully reproducible placement.
@@ -558,22 +585,26 @@ def run_routing(project_dir: Path, project_name: str, config,
     if config.router_engine == "freerouting":
         try:
             from optimizers.freerouter import route_with_freerouting
+            from optimizers.router import inner_plane_count
             engine = "freerouting"
             _log("  Engine: Freerouting")
+            plane_layers = inner_plane_count(placement_data.get("board", {}))
             dsn_config = {
                 "trace_width_mm": router_kwargs.get("trace_width_signal_mm", 0.25),
                 "clearance_mm": router_kwargs.get("clearance_mm", 0.2),
                 "via_drill_mm": router_kwargs.get("via_drill_mm", 0.3),
                 "via_diameter_mm": router_kwargs.get("via_diameter_mm", 0.6),
                 "num_layers": num_layers,
+                "plane_layers": plane_layers,
             }
             if num_layers > 2:
-                _log(f"  Layer count: {num_layers} (inner layers routed as signal)")
-            # For 4-layer boards also exclude the power plane net (inner2)
-            # so Freerouting doesn't try to route it — the plane fill handles it.
-            # Pick the most-connected non-GND power net for inner2 (usually VCC/3V3).
+                _log(f"  Layer count: {num_layers}, inner plane layers: {plane_layers} "
+                     f"({2 - plane_layers if num_layers >= 4 else 0} inner signal layer(s))")
+            # GND is delivered by copper fill/plane → never routed point-to-point.
+            # The power net is excluded ONLY when In2 is a plane (plane_layers>=2);
+            # with an inner signal layer it is routed as traces instead.
             exclude_nets = ["GND"]
-            if num_layers >= 4:
+            if plane_layers >= 2:
                 best_pwr: tuple[int, str] = (0, "")
                 for elem in netlist_data.get("elements", []):
                     if (elem.get("element_type") == "net"
