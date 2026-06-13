@@ -74,10 +74,70 @@ _ROUTE_LOCK = threading.Lock()
 _DESIGN_JOBS: dict[str, dict] = {}
 _DESIGN_LOCK = threading.Lock()
 
+# Footprint lookup globals — initialised once by _init_lookup() in main().
+# Per-project custom indexes are built lazily in _get_project_custom_index().
+_KICAD_INDEX: "Any | None" = None   # KiCadLibraryIndex for the system KiCad library
+_CACHE: "Any | None" = None          # ComponentCache
+_CUSTOM_INDICES: dict[str, "Any"] = {}   # project_name → KiCadLibraryIndex
+_CUSTOM_LOCK = threading.Lock()
+
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+def _init_lookup() -> None:
+    """Initialise footprint resolution at MCP server startup.
+
+    Builds the system KiCad library index (if PCB_KICAD_LIBRARY_PATH is set)
+    and the component cache, then calls configure_lookup() so every subsequent
+    pad-map / placement call has real footprint data.  Without this, the KiCad
+    tier is silently skipped even when the env var is configured.
+    """
+    global _KICAD_INDEX, _CACHE
+    from orchestrator.cache import ComponentCache
+    from optimizers.pad_geometry import configure_lookup
+
+    config = OrchestratorConfig.from_env(base_dir=_repo_root)
+    _CACHE = ComponentCache(config.component_cache_path)
+
+    if config.kicad_library_path:
+        from exporters.kicad_mod_parser import KiCadLibraryIndex
+        _KICAD_INDEX = KiCadLibraryIndex(config.kicad_library_path)
+
+    configure_lookup(kicad_index=_KICAD_INDEX, cache=_CACHE, custom_index=None)
+
+
+def _get_project_custom_index(project_name: str) -> "Any | None":
+    """Return (building lazily) a KiCadLibraryIndex for the project's custom
+    footprints directory, or None if it does not exist.
+
+    The directory is ``<project_dir>/custom-footprints.pretty/``.  Agents write
+    .kicad_mod files there via ``register_custom_footprint``; the index is
+    invalidated on every write so new files are visible immediately.
+    """
+    custom_dir = _project_dir(project_name) / "custom-footprints.pretty"
+    if not custom_dir.is_dir():
+        return None
+    with _CUSTOM_LOCK:
+        if project_name not in _CUSTOM_INDICES:
+            from exporters.kicad_mod_parser import KiCadLibraryIndex
+            _CUSTOM_INDICES[project_name] = KiCadLibraryIndex(custom_dir)
+        return _CUSTOM_INDICES[project_name]
+
+
+def _activate_project_lookup(project_name: str) -> None:
+    """Update the module-level footprint lookup to include this project's
+    custom footprints as tier 0.
+
+    Call this at the start of any tool that performs footprint resolution
+    (optimize_placement, export_outputs, design_pcb worker thread) so that
+    agent-registered footprints are visible to the placement engine.
+    """
+    from optimizers.pad_geometry import configure_lookup
+    custom = _get_project_custom_index(project_name)
+    configure_lookup(kicad_index=_KICAD_INDEX, cache=_CACHE, custom_index=custom)
 
 def _get_projects_dir() -> Path:
     """Resolve the persistent projects directory."""
@@ -236,6 +296,9 @@ def design_pcb(
                 job["progress"] = p
 
     def _worker() -> None:
+        # Activate project-local custom footprints (tier 0) so the pipeline
+        # finds any agent-registered .kicad_mod files during placement/export.
+        _activate_project_lookup(project_name)
         try:
             result = _design_pcb_sync(
                 description, project_name, requirements_json, settings,
@@ -1219,6 +1282,7 @@ def verify_footprints(project_name: str) -> dict:
         )
 
     _ensure_lookup_configured()
+    _activate_project_lookup(project_name)
     from validators.verify_footprints import verify_footprints as _verify
 
     unresolved = _verify(netlist)
@@ -1707,7 +1771,10 @@ def optimize_placement(
             ],
         )
 
-    _ensure_lookup_configured()
+    # Activate project-local custom footprints (tier 0) before placement so
+    # agent-registered .kicad_mod files are visible to the placement engine.
+    _activate_project_lookup(project_name)
+
     try:
         result = stages.run_placement(
             pdir, project_name, _get_config(),
@@ -2013,6 +2080,10 @@ def export_outputs(project_name: str) -> dict:
                                 {"project_name": project_name})],
         )
 
+    # Activate project-local custom footprints so Gerber export uses the same
+    # footprint geometry as placement/routing.
+    _activate_project_lookup(project_name)
+
     try:
         result = stages.run_export(pdir, project_name, _get_config())
     except Exception as exc:
@@ -2022,6 +2093,314 @@ def export_outputs(project_name: str) -> dict:
         return fail(result.get("error", "Export failed."), data=result)
     return ok(result, "Done — the ZIP package is ready for manufacturer upload. "
                       "Optionally call get_board_image for a final visual check.")
+
+
+# ---------------------------------------------------------------------------
+# Component pre-positioning (pin edge connectors before auto-placement)
+# ---------------------------------------------------------------------------
+
+@mcp.tool()
+def set_component_positions(
+    project_name: str,
+    positions: list[dict],
+    board_width_mm: float | None = None,
+    board_height_mm: float | None = None,
+) -> dict:
+    """Pre-position components with placement_source='user' so optimize_placement
+    treats them as fixed anchors and only moves everything else.
+
+    Use this BEFORE optimize_placement to lock edge connectors (FFC ZIF,
+    terminal blocks, headers, debug ports) at their spec-defined board positions.
+    The SA optimizer skips components with placement_source='user', so they stay
+    exactly where you put them.
+
+    If no placement file exists yet for the project, a full grid placement is
+    generated automatically from the netlist and then the specified components
+    are pinned.  Call import_kicad_netlist first to ensure a netlist is available.
+
+    Args:
+        project_name:    Project slug.
+        positions:       List of component position dicts, each with:
+                           "designator"   (str, required) — e.g. "J1", "U3"
+                           "x_mm"         (float, required) — X from board origin
+                           "y_mm"         (float, required) — Y from board origin
+                           "rotation_deg" (int, optional, default 0)
+                           "layer"        (str, optional, "top" or "bottom", default "top")
+        board_width_mm:  Board width (mm). Required when no placement exists yet.
+        board_height_mm: Board height (mm). Required when no placement exists yet.
+
+    Returns:
+        {success: True, pinned_count: int, total_components: int,
+         placement_path: str, notes: [str]}
+        or {success: False, error: str}
+    """
+    pdir = _project_dir(project_name)
+    if not pdir.exists():
+        return {"success": False, "error": f"Project '{project_name}' not found. Run import_kicad_netlist first."}
+
+    netlist_path = pdir / f"{project_name}_netlist.json"
+    placement_path = pdir / f"{project_name}_placement.json"
+
+    if not netlist_path.exists():
+        return {"success": False, "error": "No netlist found — run import_kicad_netlist first."}
+
+    # Load or generate placement
+    if placement_path.exists():
+        placement = json.loads(placement_path.read_text())
+    else:
+        # Need board dimensions to generate a seed placement
+        bw = board_width_mm
+        bh = board_height_mm
+        if bw is None or bh is None:
+            return {
+                "success": False,
+                "error": (
+                    "No existing placement found and board_width_mm/board_height_mm not provided. "
+                    "Supply board dimensions so a seed placement can be generated, or call "
+                    "optimize_placement first and then call set_component_positions."
+                ),
+            }
+        from optimizers.initial_placement import generate_grid_placement
+        netlist = json.loads(netlist_path.read_text())
+        _activate_project_lookup(project_name)
+        placement = generate_grid_placement(netlist, bw, bh, project_name)
+        if placement is None:
+            return {"success": False, "error": "Could not generate seed placement — check that the netlist has components with resolvable footprints."}
+
+    # Build a lookup from designator → placement item index
+    des_index: dict[str, int] = {
+        item["designator"]: i
+        for i, item in enumerate(placement.get("placements", []))
+    }
+
+    notes = []
+    pinned = []
+
+    for pos in positions:
+        des = pos.get("designator", "")
+        if not des:
+            notes.append("Skipped entry with no designator.")
+            continue
+
+        x = pos.get("x_mm")
+        y = pos.get("y_mm")
+        if x is None or y is None:
+            notes.append(f"Skipped {des}: x_mm or y_mm missing.")
+            continue
+
+        if des not in des_index:
+            notes.append(f"Warning: {des} not found in placement — it may not be in the netlist.")
+            continue
+
+        idx = des_index[des]
+        placement["placements"][idx]["x_mm"] = float(x)
+        placement["placements"][idx]["y_mm"] = float(y)
+        placement["placements"][idx]["rotation_deg"] = int(pos.get("rotation_deg", 0))
+        placement["placements"][idx]["layer"] = pos.get("layer", "top")
+        placement["placements"][idx]["placement_source"] = "user"
+        pinned.append(des)
+
+    placement_path.write_text(json.dumps(placement, indent=2))
+
+    return {
+        "success": True,
+        "pinned_count": len(pinned),
+        "pinned_designators": pinned,
+        "total_components": len(placement.get("placements", [])),
+        "placement_path": str(placement_path),
+        "notes": notes,
+        "next_step": (
+            "Call optimize_placement — pinned components will stay fixed; "
+            "all other components will be placed around them."
+        ),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Footprint coverage assessment and custom footprint registration
+# ---------------------------------------------------------------------------
+
+@mcp.tool()
+def check_footprint_coverage(
+    components: list[dict],
+    project_name: str | None = None,
+) -> dict:
+    """Check footprint library coverage for a BOM before launching placement.
+
+    Run this BEFORE design_pcb / optimize_placement to identify which components
+    need custom footprints.  Components that miss all resolution tiers will cause
+    placement failures or silent perimeter-approximation fallbacks that produce
+    wrong pad geometry.
+
+    Resolution tiers checked (in order):
+      0. project-local custom footprints (if project_name given and has any)
+      1. system KiCad library (~50 K authoritative footprints)
+      2. IPC-7351B parametric (QFN, BGA, SOP, TSSOP, DFN, …)
+      3. local component cache (prior EasyEDA / LLM lookups)
+      4. built-in approximations
+
+    Args:
+        components:   List of component dicts, each with:
+                        "reference"  (str, required) — designator, e.g. "U1"
+                        "package"    (str, required) — package name, e.g. "QFN-32"
+                        "pin_count"  (int, required) — number of pins
+                        "value"      (str, optional) — component value / part number
+        project_name: Optional project slug.  When given, project-local custom
+                      footprints registered via register_custom_footprint are
+                      checked as tier 0.
+
+    Returns:
+        {
+          "coverage": {"total": int, "resolved": int, "custom_needed": int},
+          "resolved": [
+            {"reference": "R1", "package": "0402", "pin_count": 2, "tier": "kicad_library"},
+            ...
+          ],
+          "custom_needed": [
+            {"reference": "U1", "package": "QFN-48", "pin_count": 48,
+             "value": "STM32F4",
+             "notes": "Not found in KiCad library, IPC-7351B, cache, or built-ins. "
+                      "Create a .kicad_mod and register via register_custom_footprint."},
+            ...
+          ],
+        }
+    """
+    from optimizers.pad_geometry import check_footprint_tier
+
+    custom = _get_project_custom_index(project_name) if project_name else None
+
+    resolved = []
+    custom_needed = []
+
+    for comp in components:
+        ref = comp.get("reference", "?")
+        pkg = comp.get("package", "")
+        pins = int(comp.get("pin_count", 0))
+        val = comp.get("value", "")
+
+        if not pkg:
+            custom_needed.append({
+                "reference": ref,
+                "package": "",
+                "pin_count": pins,
+                "value": val,
+                "notes": "No package specified — cannot resolve footprint.",
+            })
+            continue
+
+        tier = check_footprint_tier(pkg, pins, custom_index=custom)
+
+        if tier is not None:
+            resolved.append({
+                "reference": ref,
+                "package": pkg,
+                "pin_count": pins,
+                "tier": tier,
+            })
+        else:
+            custom_needed.append({
+                "reference": ref,
+                "package": pkg,
+                "pin_count": pins,
+                "value": val,
+                "notes": (
+                    f"Package '{pkg}' with {pins} pins not found in any tier "
+                    "(KiCad library, IPC-7351B, cache, built-ins). "
+                    "Create a .kicad_mod and call register_custom_footprint."
+                ),
+            })
+
+    return {
+        "coverage": {
+            "total": len(components),
+            "resolved": len(resolved),
+            "custom_needed": len(custom_needed),
+        },
+        "resolved": resolved,
+        "custom_needed": custom_needed,
+    }
+
+
+@mcp.tool()
+def register_custom_footprint(
+    project_name: str,
+    package_name: str,
+    kicad_mod_content: str,
+) -> dict:
+    """Register a custom .kicad_mod footprint for a project.
+
+    Writes the footprint to the project's ``custom-footprints.pretty/``
+    directory, where it is searched BEFORE the system KiCad library (tier 0).
+    After registration, check_footprint_coverage, optimize_placement, and
+    export_outputs will find it automatically.
+
+    The project directory is created if it does not yet exist, so footprints
+    can be pre-registered before the full pipeline runs.
+
+    Args:
+        project_name:      Project slug (lowercase letters, digits, underscores).
+        package_name:      Package identifier matching what the netlist uses
+                           (e.g. "QFN-48", "MY_CONNECTOR_4P").  Case-insensitive
+                           during lookup.  The .kicad_mod filename is derived
+                           from this (non-alphanumeric chars → underscores).
+        kicad_mod_content: Full .kicad_mod file content in KiCad S-expression
+                           format.  Must start with ``(footprint`` or
+                           ``(module``.
+
+    Returns:
+        {success: True, path: str, package_name: str}
+        or {success: False, error: str}
+    """
+    # Basic content sanity check
+    stripped = kicad_mod_content.strip()
+    if not (stripped.startswith("(footprint") or stripped.startswith("(module")):
+        return {
+            "success": False,
+            "error": (
+                "kicad_mod_content must be a valid KiCad S-expression starting "
+                "with '(footprint ...' or '(module ...'. Got: "
+                + stripped[:60]
+            ),
+        }
+
+    # Build a filesystem-safe filename from the package name
+    safe_name = re.sub(r"[^a-zA-Z0-9_\-\.]", "_", package_name).strip("_")
+    if not safe_name:
+        return {"success": False, "error": f"Cannot derive a safe filename from package_name '{package_name}'."}
+
+    # Ensure the project custom-footprints.pretty directory exists
+    custom_dir = _project_dir(project_name) / "custom-footprints.pretty"
+    try:
+        custom_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        return {"success": False, "error": f"Could not create custom footprint directory: {exc}"}
+
+    # Write the .kicad_mod file
+    fp_path = custom_dir / f"{safe_name}.kicad_mod"
+    try:
+        fp_path.write_text(kicad_mod_content)
+    except OSError as exc:
+        return {"success": False, "error": f"Could not write footprint file: {exc}"}
+
+    # Invalidate (or build) the cached index for this project so the new file
+    # is visible on the next lookup without a server restart.
+    with _CUSTOM_LOCK:
+        if project_name in _CUSTOM_INDICES:
+            _CUSTOM_INDICES[project_name].invalidate()
+        else:
+            from exporters.kicad_mod_parser import KiCadLibraryIndex
+            _CUSTOM_INDICES[project_name] = KiCadLibraryIndex(custom_dir)
+
+    return {
+        "success": True,
+        "path": str(fp_path),
+        "package_name": package_name,
+        "message": (
+            f"Registered '{package_name}' as tier-0 custom footprint for project "
+            f"'{project_name}'. It will be found by check_footprint_coverage and "
+            "optimize_placement immediately."
+        ),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -2040,7 +2419,11 @@ def main():
         os.getcwd()
     except FileNotFoundError:
         os.chdir("/tmp")
-    _ensure_lookup_configured()
+
+    # Initialise footprint lookup globals so the KiCad library tier is active
+    # for all placement/export calls in this server process.
+    _init_lookup()
+
     mcp.run()
 
 

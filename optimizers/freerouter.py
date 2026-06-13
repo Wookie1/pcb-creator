@@ -6,6 +6,7 @@ Auto-downloads the Freerouting JAR to ~/.cache/pcb-creator/ on first use.
 
 from __future__ import annotations
 
+import os
 import re
 import shutil
 import subprocess
@@ -38,6 +39,35 @@ FREEROUTING_DOWNLOAD_URL = (
 DEFAULT_CACHE_DIR = Path.home() / ".cache" / "pcb-creator"
 
 
+def _default_heap_mb() -> int:
+    """Pick a safe JVM max-heap (MB) for Freerouting.
+
+    Freerouting 2.x grows memory aggressively on dense boards (observed >25 GB
+    on a 73-component 4-layer board).  With no cap the JVM will exhaust system
+    RAM and the OS OOM-kills the process — an opaque "crash" that looks like a
+    routing failure.  Capping the heap makes the JVM raise a catchable
+    OutOfMemoryError instead, so route_with_freerouting can return a clear,
+    actionable message (board too congested → add a routing layer / re-place).
+
+    Default: env PCB_FREEROUTING_HEAP_MB if set, else ~55% of total RAM clamped
+    to [1024, 6144] MB, leaving headroom for the OS, the MCP server, and other
+    concurrent agents on small hosts (e.g. an 8 GB Raspberry Pi 5).
+    """
+    env = os.environ.get("PCB_FREEROUTING_HEAP_MB")
+    if env:
+        try:
+            return max(512, int(env))
+        except ValueError:
+            pass
+    try:
+        page_size = os.sysconf("SC_PAGE_SIZE")
+        phys_pages = os.sysconf("SC_PHYS_PAGES")
+        total_mb = (page_size * phys_pages) // (1024 * 1024)
+        return max(1024, min(6144, int(total_mb * 0.55)))
+    except (ValueError, OSError, AttributeError):
+        return 2048
+
+
 # ---------------------------------------------------------------------------
 # Environment checks
 # ---------------------------------------------------------------------------
@@ -47,10 +77,24 @@ def ensure_java() -> str:
 
     Raises RuntimeError if Java is not found.
     """
+    # Try common Java paths first (MCP server may have restricted PATH)
+    for candidate in ["/usr/bin/java", "/usr/local/bin/java", "/opt/java/bin/java"]:
+        if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+            try:
+                result = subprocess.run(
+                    [candidate, "-version"],
+                    capture_output=True, text=True, timeout=10,
+                )
+                if result.returncode == 0:
+                    return candidate
+            except subprocess.TimeoutExpired:
+                pass
+
+    # Fall back to shutil.which
     java_bin = shutil.which("java")
     if not java_bin:
         raise RuntimeError(
-            "Java not found. Freerouting requires Java 17+.\n"
+            "Java not found. Freerouting requires Java 17+.\\n"
             "Install from: https://adoptium.net/ or run: brew install temurin"
         )
 
@@ -128,6 +172,7 @@ def route_with_freerouting(
     progress_callback=None,
     max_passes: int = 20,
     fixed_routing: dict | None = None,
+    heap_mb: int | None = None,
 ) -> dict:
     """Route a PCB using Freerouting.
 
@@ -151,6 +196,11 @@ def route_with_freerouting(
             every ~10s as a heartbeat (the 'heartbeat' counter always
             increases, so pollers see forward motion even between passes).
         max_passes: Freerouting -mp value (max optimization passes).
+        fixed_routing: existing traces/vias to protect as {type protect} wiring
+            (incremental routing); Freerouting routes only the remaining nets.
+        heap_mb: JVM max-heap cap in MB.  None → auto (see _default_heap_mb).
+            Prevents Freerouting's unbounded memory growth from OOM-killing the
+            host on dense boards; instead it surfaces as a clear error.
 
     Returns:
         Routed dict compatible with route_board() output format.
@@ -208,12 +258,16 @@ def route_with_freerouting(
         # Excluded nets are already omitted from the DSN, so Freerouting routes
         # all nets present in the file. The -inc flag would RESTRICT routing to
         # only those nets — the opposite of what we want.
-        cmd = [java_bin, "-Djava.awt.headless=true",
+        # -Xmx caps the heap so a runaway board raises OutOfMemoryError (caught
+        # below) instead of OOM-killing the host.
+        heap = heap_mb if heap_mb is not None else _default_heap_mb()
+        cmd = [java_bin, f"-Xmx{heap}m", "-Djava.awt.headless=true",
                "-jar", str(jar), "-de", str(dsn_path), "-do", str(ses_path),
                "-mp", str(max_passes),
                "-mt", "1"]  # -mt 1: single-thread optimization (avoids clearance bugs)
 
-        logger.info(f"  Running Freerouting (timeout={timeout_s}s, max_passes={max_passes})...")
+        logger.info(f"  Running Freerouting (timeout={timeout_s}s, "
+                    f"max_passes={max_passes}, heap={heap}MB)...")
 
         # 3. Run Freerouting with stdout streaming for live pass progress.
         t0 = time.monotonic()
@@ -313,7 +367,21 @@ def route_with_freerouting(
                     "the board."
                 )
         elif proc.returncode != 0:
-            stderr_snippet = "".join(stderr_tail)[-500:] or "no error output"
+            # Detect out-of-memory: the JVM may report OutOfMemoryError in its
+            # output, or be OS OOM-killed (exit -9 / 137). Surface a clear,
+            # actionable message instead of an opaque "routing failed".
+            combined = "".join(stderr_tail)
+            if ("OutOfMemoryError" in combined
+                    or "java.lang.OutOfMemory" in combined
+                    or proc.returncode in (137, -9)):
+                raise RuntimeError(
+                    f"Freerouting ran out of memory (heap cap {heap}MB). The board "
+                    "is too congested to route on the available signal layers. Add "
+                    "a routing layer (e.g. make an inner layer signal instead of a "
+                    "plane via plane_layers), loosen placement density, or raise "
+                    "PCB_FREEROUTING_HEAP_MB if the host has spare RAM."
+                )
+            stderr_snippet = combined[-500:] or "no error output"
             raise RuntimeError(f"Freerouting failed (exit code {proc.returncode}): {stderr_snippet}")
 
         if not ses_path.exists():

@@ -303,7 +303,7 @@ def _kicad_export_html(routed: dict | None, netlist: dict | None) -> str:
       out += `  (general (thickness 1.6) (legacy_teardrops no))\\n  (paper "A4")\\n`;
 
       // Layers
-      const numLayers = (routed.board || {}).layers || 2;
+      const numLayers = (routed.board || {{}}).layers || 2;
       const innerLayersSexpr = numLayers >= 4 ? `    (1 "In1.Cu" signal)\\n    (2 "In2.Cu" signal)\\n` : '';
       out += `  (layers\\n    (0 "F.Cu" signal)\\n${{innerLayersSexpr}}    (31 "B.Cu" signal)\\n`;
       out += `    (36 "B.SilkS" user "B.Silkscreen")\\n    (37 "F.SilkS" user "F.Silkscreen")\\n`;

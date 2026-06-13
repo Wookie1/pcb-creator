@@ -251,13 +251,21 @@ def run_placement(
 
     placement_path = _p(project_dir, project_name, "placement")
 
-    # Resolve board dimensions
+    # Resolve board dimensions and preserve any user-pinned positions + layer count
+    # from an existing placement before we regenerate the grid seed.
     bw, bh = board_width_mm, board_height_mm
-    if (bw is None or bh is None) and placement_path.exists():
+    user_pinned: dict[str, dict] = {}  # designator → placement item with placement_source=="user"
+    existing_layers: int = 2           # default; overridden if existing placement has more
+    if placement_path.exists():
         try:
-            existing_board = _load(placement_path).get("board", {})
+            existing_pl = _load(placement_path)
+            existing_board = existing_pl.get("board", {})
             bw = bw or existing_board.get("width_mm")
             bh = bh or existing_board.get("height_mm")
+            existing_layers = existing_board.get("layers", 2)
+            for item in existing_pl.get("placements", []):
+                if item.get("placement_source") == "user":
+                    user_pinned[item["designator"]] = item
         except Exception:
             pass
     if bw is None or bh is None:
@@ -283,8 +291,26 @@ def run_placement(
     if placement is None:
         return {"success": False, "error": "No components with resolvable footprints"}
 
-    # Apply agent-set placement pins (place_component): fixed position,
-    # marked placement_source=user so repair/optimize never move them.
+    # Re-inject user-pinned positions captured from the existing placement file
+    # (e.g. set via set_component_positions, which writes the placement directly)
+    # so repair + SA optimise around them rather than discarding them. Only the
+    # fields the user set are overwritten; footprint_width/height come from the
+    # freshly resolved footprint def. (num_layers was already applied by
+    # generate_grid_placement above, so no separate layer-count restore needed.)
+    if user_pinned:
+        for item in placement["placements"]:
+            pin = user_pinned.get(item["designator"])
+            if pin is None:
+                continue
+            item["x_mm"] = pin["x_mm"]
+            item["y_mm"] = pin["y_mm"]
+            item["rotation_deg"] = pin.get("rotation_deg", item["rotation_deg"])
+            item["layer"] = pin.get("layer", item["layer"])
+            item["placement_source"] = "user"
+
+    # Apply agent-set placement pins (place_component store): fixed position,
+    # marked placement_source=user so repair/optimize never move them. Applied
+    # last so the explicit place_component store is authoritative.
     pins = load_placement_pins(project_dir, project_name)
     if pins:
         for item in placement.get("placements", []):
@@ -688,7 +714,7 @@ def run_routing(project_dir: Path, project_name: str, config,
             routed = apply_copper_fills(routed, netlist_data, RouterConfig(**router_kwargs))
         except Exception as exc:
             _log(f"  Freerouting FAILED: {exc}")
-            return {"success": False, "error": f"Freerouting failed: {exc}"}
+            _log("  Falling back to built-in router")
 
     if routed is None:
         from optimizers.router import route_board, RouterConfig

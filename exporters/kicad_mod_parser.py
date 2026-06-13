@@ -201,6 +201,19 @@ class KiCadLibraryIndex:
 
         return fp
 
+    def invalidate(self) -> None:
+        """Reset the lazy index so the next lookup rebuilds from disk.
+
+        Call this after writing new .kicad_mod files into the library root so
+        that subsequent ``get_footprint`` calls see the new files.
+        """
+        self._index = None
+
+    @property
+    def root(self) -> Path:
+        """The root directory this index scans."""
+        return self._root
+
     @property
     def size(self) -> int:
         """Number of entries in the index (builds index if needed)."""

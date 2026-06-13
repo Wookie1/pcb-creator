@@ -125,10 +125,23 @@ def _is_keepout_package(package: str) -> bool:
 # ---------- Helpers ----------
 
 def _compute_iterations(n_movable: int, max_override: int | None) -> int:
-    """Compute iteration count scaled to the number of movable components."""
+    """Compute iteration count scaled to the number of movable components.
+
+    The upper bound is 8 000 iterations — enough for good placement quality on
+    boards up to ~70 components while keeping runtime under ~30 s on a Pi 5
+    (ARM Cortex-A76, single core).  The old cap of 50 000 caused the Pi to
+    hang for minutes on dense boards.
+
+    The stagnation_limit (default 500) in SAConfig provides an early-exit if
+    the optimizer hasn't improved in 500 consecutive iterations, so typical
+    runs finish well under the cap.
+
+    Override with PCB_OPTIMIZER_ITERATIONS env var or by passing an explicit
+    SAConfig(max_iterations=N) for more control.
+    """
     if max_override is not None:
         return max_override
-    return max(2000, min(50000, n_movable * 1000))
+    return max(2000, min(8000, n_movable * 200))
 
 
 def _get_bounding_box(
@@ -1160,26 +1173,36 @@ def repair_placement(
         pin_count = comp_pin_counts.get(cid, 2)
         packages[des] = (pkg, pin_count)
 
-    # In repair mode, only pin components that are within board boundaries.
-    # "placement_source: user" is set by the agent/LLM on components it
-    # considers important — but if they're outside the board we must still
-    # move them. Bounds use PAD extents (not just the body) so a connector
-    # whose pins overhang the edge is treated as out of bounds.
+    # Pin user-placed components (always) and keepout packages.
+    #  - User pins: snap an out-of-bounds centre to the nearest valid in-bounds
+    #    position first (same clamp as the movable pre-pass), then hold it —
+    #    preserves the agent's intent even when the exact position is slightly
+    #    out of bounds, and stops the SA loop treating it as free to move.
+    #  - Keepouts (mounting holes / fiducials): position is mechanically fixed
+    #    by the enclosure, so pin them where they sit when already in bounds.
     for item in items:
         des = item["designator"]
+        pkg = packages.get(des, ("", 2))[0]
+        is_user = item.get("placement_source") == "user"
+        is_keepout = _is_keepout_package(pkg)
+        if not (is_user or is_keepout):
+            continue
         x, y = positions[des]
         fw, fh = footprints[des]
         rot = rotations[des]
-        pkg, pin_count = packages.get(des, ("", 2))
-        if pkg:
-            xmin, ymin, xmax, ymax = _get_pad_extent_box(x, y, fw, fh, rot, pkg, pin_count)
-        else:
-            xmin, ymin, xmax, ymax = _get_bounding_box(x, y, fw, fh, rot)
-        within_bounds = (xmin >= 0 and ymin >= 0
-                         and xmax <= board_w and ymax <= board_h)
-        if within_bounds and (item.get("placement_source") == "user"
-                              or _is_keepout_package(pkg)):
-            pinned.add(des)  # agent-placed/keepout AND within bounds → respect it
+        if rot in (90, 270):
+            fw, fh = fh, fw
+        hw, hh = fw / 2, fh / 2
+        margin = BOARD_EDGE_CLEARANCE_MM
+        nx = max(hw + margin, min(board_w - hw - margin, x))
+        ny = max(hh + margin, min(board_h - hh - margin, y))
+        within = (nx == x and ny == y)
+        if is_user:
+            if not within:
+                positions[des] = (round(nx, 2), round(ny, 2))
+            pinned.add(des)
+        elif within:  # keepout already in bounds → respect its fixed position
+            pinned.add(des)
 
     movable = [d for d in positions if d not in pinned]
     if not movable:
@@ -1343,6 +1366,14 @@ def repair_placement(
     for item in result["placements"]:
         des = item["designator"]
         if des in pinned:
+            # Write back any boundary-snapping we applied to this component's
+            # centre position (best_pos[des] holds the snapped value; for
+            # already-in-bounds items it equals the original and this is a
+            # no-op).  placement_source is intentionally left unchanged so
+            # "user" pins stay "user" after a boundary snap.
+            item["x_mm"] = round(best_pos[des][0], 2)
+            item["y_mm"] = round(best_pos[des][1], 2)
+            item["rotation_deg"] = best_rot[des]
             continue
         old_pos = positions[des]
         old_rot = rotations[des]

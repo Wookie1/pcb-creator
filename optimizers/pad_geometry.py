@@ -21,22 +21,34 @@ from typing import Any
 
 _default_kicad_index: Any | None = None
 _default_cache: Any | None = None
+_default_custom_index: Any | None = None
 
 
 def configure_lookup(
     *,
     kicad_index: Any | None = None,
     cache: Any | None = None,
+    custom_index: Any | None = None,
 ) -> None:
     """Set module-level defaults for the tiered footprint lookup.
 
-    Called once at application startup (CLI or GUI).  All subsequent calls to
-    ``get_footprint_def`` and ``build_pad_map`` will use these unless the
-    caller provides explicit overrides.
+    Called once at application startup (CLI or GUI) and optionally again
+    per-project to activate a project-local custom footprint index.  All
+    subsequent calls to ``get_footprint_def``, ``build_pad_map``, and
+    ``check_footprint_tier`` will use these unless the caller provides
+    explicit overrides.
+
+    Args:
+        kicad_index:   KiCadLibraryIndex instance for the system KiCad library.
+        cache:         ComponentCache instance for the local JSON cache.
+        custom_index:  KiCadLibraryIndex instance for project-local custom
+                       footprints.  Searched BEFORE the system KiCad library
+                       (tier 0) so agent-registered footprints always win.
     """
-    global _default_kicad_index, _default_cache
+    global _default_kicad_index, _default_cache, _default_custom_index
     _default_kicad_index = kicad_index
     _default_cache = cache
+    _default_custom_index = custom_index
 
 
 def get_default_cache() -> Any | None:
@@ -271,12 +283,16 @@ def get_footprint_def(
     package: str,
     pin_count: int,
     *,
+    custom_index: object | None = None,
     kicad_index: object | None = None,
     cache: object | None = None,
 ) -> FootprintDef | None:
     """Return pad offsets for a package using tiered resolution.
 
     Lookup order (pure data — no network I/O):
+      0. Project-local custom footprints — agent-registered .kicad_mod files
+         written via register_custom_footprint().  Always wins over system libs
+         so project-specific overrides are respected.
       1. KiCad .kicad_mod library — real-world footprints from the official
          KiCad library, community-maintained and datasheet-verified (~50K pkgs)
       2. IPC-7351B parametric — algorithmic generation per the IPC land
@@ -290,12 +306,23 @@ def get_footprint_def(
     fallback (those involve network I/O) and ``_generate_fallback_footprint``.
     """
     # Fall back to module-level defaults set by configure_lookup()
+    if custom_index is None:
+        custom_index = _default_custom_index
     if kicad_index is None:
         kicad_index = _default_kicad_index
     if cache is None:
         cache = _default_cache
 
-    # --- Tier 1: KiCad library (most authoritative) ---
+    # --- Tier 0: project-local custom footprints (agent-registered) ---
+    if custom_index is not None:
+        try:
+            fp = custom_index.get_footprint(package, pin_count)
+            if fp is not None:
+                return fp
+        except Exception:
+            pass
+
+    # --- Tier 1: KiCad library (most authoritative system library) ---
     if kicad_index is not None:
         try:
             fp = kicad_index.get_footprint(package, pin_count)
@@ -377,6 +404,69 @@ def _normalize_package(package: str) -> str | None:
     head = package.split("_", 1)[0]
     if head and head != package:
         return head
+
+    return None
+
+
+def check_footprint_tier(
+    package: str,
+    pin_count: int,
+    *,
+    custom_index: object | None = None,
+    kicad_index: object | None = None,
+    cache: object | None = None,
+) -> str | None:
+    """Return which resolution tier resolves *package*, or ``None`` if all miss.
+
+    Used by ``check_footprint_coverage`` to classify each BOM line without
+    actually running placement.  The returned tier string is one of:
+    ``'custom'`` | ``'kicad_library'`` | ``'ipc7351'`` | ``'cache'`` |
+    ``'builtin'`` | ``None`` (no tier resolved).
+
+    Args:
+        package:      Package name as it appears in the netlist / BOM.
+        pin_count:    Number of pins; used to validate the match (0 = skip check).
+        custom_index: Project-local KiCadLibraryIndex (tier 0).
+        kicad_index:  System KiCadLibraryIndex (tier 1).
+        cache:        ComponentCache instance (tier 3).
+    """
+    if custom_index is None:
+        custom_index = _default_custom_index
+    if kicad_index is None:
+        kicad_index = _default_kicad_index
+    if cache is None:
+        cache = _default_cache
+
+    if custom_index is not None:
+        try:
+            if custom_index.get_footprint(package, pin_count) is not None:
+                return "custom"
+        except Exception:
+            pass
+
+    if kicad_index is not None:
+        try:
+            if kicad_index.get_footprint(package, pin_count) is not None:
+                return "kicad_library"
+        except Exception:
+            pass
+
+    try:
+        from optimizers.ipc7351 import ipc7351_lookup
+        if ipc7351_lookup(package, pin_count) is not None:
+            return "ipc7351"
+    except ImportError:
+        pass
+
+    if cache is not None:
+        try:
+            if cache.get_footprint(package) is not None:
+                return "cache"
+        except Exception:
+            pass
+
+    if _builtin_footprint_def(package, pin_count) is not None:
+        return "builtin"
 
     return None
 
