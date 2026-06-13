@@ -46,6 +46,25 @@ def _validate_schema(routed: dict) -> list[str]:
 # 2. Trace-to-trace clearance
 # ---------------------------------------------------------------------------
 
+def _copper_stack(num_layers: int) -> list[str]:
+    """Copper layers in physical order, top → inner1 → … → bottom."""
+    if num_layers <= 2:
+        return ["top", "bottom"]
+    return ["top"] + [f"inner{i}" for i in range(1, num_layers - 1)] + ["bottom"]
+
+
+def _via_spanned_layers(from_layer: str, to_layer: str,
+                        stack: list[str]) -> list[str]:
+    """Every copper layer a via crosses, inclusive. A through-via (top↔bottom)
+    spans all inner layers too, so traces on those layers connect to it."""
+    try:
+        i, j = stack.index(from_layer), stack.index(to_layer)
+    except ValueError:
+        return [from_layer, to_layer]
+    lo, hi = min(i, j), max(i, j)
+    return stack[lo:hi + 1]
+
+
 def _point_to_segment_distance(
     px: float, py: float,
     ax: float, ay: float, bx: float, by: float,
@@ -205,6 +224,19 @@ def _check_connectivity(routed: dict, netlist: dict | None) -> tuple[list[str], 
     vias = routing.get("vias", [])
     unrouted = set(routing.get("unrouted_nets", []))
 
+    # Copper stack order (top → inner1 → … → bottom), used to expand a via to
+    # every layer it spans. Prefer the board's layer count; fall back to the
+    # highest innerN actually present in the routing.
+    num_layers = routed.get("board", {}).get("layers")
+    if not num_layers:
+        seen = ({t.get("layer") for t in traces}
+                | {v.get("from_layer") for v in vias}
+                | {v.get("to_layer") for v in vias})
+        inner_idx = [int(s[5:]) for s in seen
+                     if isinstance(s, str) and s.startswith("inner") and s[5:].isdigit()]
+        num_layers = (max(inner_idx) + 2) if inner_idx else 2
+    stack = _copper_stack(int(num_layers))
+
     # Identify nets connected by copper fill (all pads on fill layer(s) are connected)
     fill_nets: dict[str, set[str]] = {}  # net_id -> set of layers with fill
     inner_plane_nets: dict[str, set[str]] = {}  # net_id -> set of inner-plane layers
@@ -303,17 +335,24 @@ def _check_connectivity(routed: dict, netlist: dict | None) -> tuple[list[str], 
             _connect_to_segs((round(ax, 2), round(ay, 2), sl))
             _connect_to_segs((round(bx, 2), round(by, 2), sl))
 
-        # Vias span layers, and attach to traces on either layer they touch.
+        # Vias span EVERY copper layer between from_layer and to_layer, not just
+        # the two endpoints — a through-via (top↔bottom) physically passes
+        # through inner1/inner2, so an inner-layer trace landing on it is
+        # connected. (Missing this falsely splits nets routed on inner signal
+        # layers, e.g. plane_layers=0 boards.)
         via_points: list[tuple[float, float, str]] = []
         for v in net_vias:
             vx, vy = v["x_mm"], v["y_mm"]
-            pf = (round(vx, 2), round(vy, 2), v.get("from_layer", "top"))
-            pt_ = (round(vx, 2), round(vy, 2), v.get("to_layer", "bottom"))
-            union(pf, pt_)
-            _connect_to_segs(pf)
-            _connect_to_segs(pt_)
-            via_points.append(pf)
-            via_points.append(pt_)
+            spanned = _via_spanned_layers(
+                v.get("from_layer", "top"), v.get("to_layer", "bottom"), stack)
+            hub = None
+            for L in spanned:
+                p = (round(vx, 2), round(vy, 2), L)
+                if hub is None:
+                    hub = p
+                union(hub, p)
+                _connect_to_segs(p)
+                via_points.append(p)
 
         # Pads attach to any same-net trace segment they lie on (layer-matched,
         # "all" = through-hole matches any copper layer) and to via endpoints.

@@ -106,6 +106,40 @@ class TestTJunction:
         assert errs, "a pad with no trace must still be flagged disconnected"
 
 
+class TestInnerLayerVia:
+    def test_through_via_connects_inner_layer_trace(self):
+        """On a 4-layer board, a net routed pad(top)→through-via→inner1 trace→
+        through-via→pad(top) must validate connected: a top↔bottom via spans
+        inner1, so the inner-layer trace attaches to it. (Regression for the
+        plane_layers=0 false-disconnects: signals on inner layers.)"""
+        routed, netlist, p1, p2, p3 = _build_three_pad_board()
+        routed["board"]["layers"] = 4
+        # Route net_n's three pads as a chain on inner1, bridged by through-vias
+        # at each pad. The inner1 traces never touch top; only the vias do.
+        routed["routing"]["traces"] = [
+            _trace(p1.x_mm, p1.y_mm, p2.x_mm, p2.y_mm, "net_n", "inner1"),
+            _trace(p2.x_mm, p2.y_mm, p3.x_mm, p3.y_mm, "net_n", "inner1"),
+        ]
+        routed["routing"]["vias"] = [
+            {"x_mm": p.x_mm, "y_mm": p.y_mm, "drill_mm": 0.3, "diameter_mm": 0.6,
+             "from_layer": "top", "to_layer": "bottom", "net_id": "net_n"}
+            for p in (p1, p2, p3)
+        ]
+        assert not _disconnected_errors(_validate(routed, netlist))
+
+    def test_inner_trace_without_via_still_flagged(self):
+        """A top pad with only an inner-layer trace and NO via to reach it is
+        genuinely disconnected — the spanning logic must not invent a via."""
+        routed, netlist, p1, p2, p3 = _build_three_pad_board()
+        routed["board"]["layers"] = 4
+        routed["routing"]["traces"] = [
+            _trace(p1.x_mm, p1.y_mm, p2.x_mm, p2.y_mm, "net_n", "inner1"),
+            _trace(p2.x_mm, p2.y_mm, p3.x_mm, p3.y_mm, "net_n", "inner1"),
+        ]
+        routed["routing"]["vias"] = []  # no vias → top pads never reach inner1
+        assert _disconnected_errors(_validate(routed, netlist))
+
+
 class TestViaMidTrace:
     def test_via_dropped_on_trace_interior_connects_layers(self):
         """A via landing mid-trace (not at an endpoint) bridges to a bottom
