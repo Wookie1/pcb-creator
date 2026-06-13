@@ -11,6 +11,10 @@ from pathlib import Path
 
 import jsonschema
 
+import logging
+
+logger = logging.getLogger(__name__)
+
 # Minimum component-to-component clearance in mm
 MIN_CLEARANCE_MM = 0.5
 

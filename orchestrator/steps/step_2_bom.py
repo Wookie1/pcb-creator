@@ -8,6 +8,10 @@ from pathlib import Path
 from .base import StepBase, StepResult
 from .step_1_schematic import extract_json
 
+import logging
+
+logger = logging.getLogger(__name__)
+
 
 class BOMStep(StepBase):
     @property
@@ -44,7 +48,7 @@ class BOMStep(StepBase):
 
         for attempt in range(1, max_rework + 1):
             # 1. Generate or rework BOM
-            print(f"  [Attempt {attempt}/{max_rework}] Generating BOM...")
+            logger.info(f"  [Attempt {attempt}/{max_rework}] Generating BOM...")
             if attempt == 1:
                 prompt = self.prompt_builder.render(
                     "bom_generate",
@@ -88,11 +92,11 @@ class BOMStep(StepBase):
                 self.project.update_status(
                     self.step_number, "REWORK_IN_PROGRESS", rework_count=attempt
                 )
-                print(f"  [Attempt {attempt}] Failed to extract JSON from response")
+                logger.info(f"  [Attempt {attempt}] Failed to extract JSON from response")
                 if raw_response:
-                    print(f"    Response length: {len(raw_response)} chars")
-                    print(f"    First 200 chars: {raw_response[:200]}")
-                    print(f"    Last 200 chars: {raw_response[-200:]}")
+                    logger.info(f"    Response length: {len(raw_response)} chars")
+                    logger.info(f"    First 200 chars: {raw_response[:200]}")
+                    logger.info(f"    Last 200 chars: {raw_response[-200:]}")
                     debug_path = self.project.get_output_path(
                         f"debug_bom_attempt_{attempt}.txt"
                     )
@@ -100,12 +104,12 @@ class BOMStep(StepBase):
                 continue
 
             output_path = self.project.write_output(output_filename, bom_text)
-            print(f"  Saved {output_filename}")
+            logger.info(f"  Saved {output_filename}")
 
             # 3. Run validator
             validator_result = self._run_validator(output_path, netlist_path)
             last_validator_result = validator_result
-            print(
+            logger.info(
                 f"  Validator: {'VALID' if validator_result['valid'] else 'INVALID'}"
                 f" ({len(validator_result.get('errors', []))} errors,"
                 f" {len(validator_result.get('warnings', []))} warnings)"
@@ -118,14 +122,14 @@ class BOMStep(StepBase):
                 self.project.update_status(
                     self.step_number, "QA_FAILED", rework_count=attempt
                 )
-                print(f"  Validation failed, will rework...")
+                logger.info(f"  Validation failed, will rework...")
                 for err in issues:
-                    print(f"    - {err}")
+                    logger.info(f"    - {err}")
                 continue
 
             # 5. LLM QA review (skippable when config.skip_qa is set)
             if self.config.skip_qa:
-                print(f"  QA review skipped (skip_qa mode)")
+                logger.info(f"  QA review skipped (skip_qa mode)")
                 qa_report = {
                     "step": self.step_number,
                     "step_name": self.step_name,
@@ -141,7 +145,7 @@ class BOMStep(StepBase):
                     qa_report=qa_report,
                 )
 
-            print(f"  Running QA review...")
+            logger.info(f"  Running QA review...")
             self.project.update_status(self.step_number, "AWAITING_QA")
 
             qa_prompt = self.prompt_builder.render(
@@ -166,7 +170,7 @@ class BOMStep(StepBase):
                 qa_report = json.loads(extract_json(qa_raw))
             except Exception as e:
                 # If QA response parsing fails, treat validator pass as sufficient
-                print(f"  QA response parsing failed ({e}), accepting validator pass")
+                logger.info(f"  QA response parsing failed ({e}), accepting validator pass")
                 qa_report = {
                     "step": self.step_number,
                     "step_name": self.step_name,
@@ -178,7 +182,7 @@ class BOMStep(StepBase):
             # 6. Handle QA result
             validator_clean = not validator_result.get("errors")
             if not qa_report.get("passed", False) and validator_clean:
-                print(f"  QA: OVERRIDDEN — validator passed cleanly, treating QA issues as warnings")
+                logger.info(f"  QA: OVERRIDDEN — validator passed cleanly, treating QA issues as warnings")
                 qa_report["passed"] = True
                 qa_report["summary"] = (
                     f"Validator passed. QA raised concerns (overridden): "
@@ -188,7 +192,7 @@ class BOMStep(StepBase):
             if qa_report.get("passed", False):
                 self.project.write_quality(qa_report)
                 self.project.update_status(self.step_number, "COMPLETE")
-                print(f"  QA: PASSED — {qa_report.get('summary', '')}")
+                logger.info(f"  QA: PASSED — {qa_report.get('summary', '')}")
                 return StepResult(
                     success=True,
                     output_path=str(output_path),
@@ -203,9 +207,9 @@ class BOMStep(StepBase):
             self.project.update_status(
                 self.step_number, "QA_FAILED", rework_count=attempt
             )
-            print(f"  QA: FAILED — {qa_report.get('summary', '')}")
+            logger.info(f"  QA: FAILED — {qa_report.get('summary', '')}")
             for issue in issues:
-                print(f"    - {issue}")
+                logger.info(f"    - {issue}")
 
         # Exhausted rework attempts
         self.project.update_status(

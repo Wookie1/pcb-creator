@@ -16,6 +16,10 @@ from .config import OrchestratorConfig
 from .llm.litellm_client import LiteLLMClient
 from .prompts.builder import PromptBuilder
 
+import logging
+
+logger = logging.getLogger(__name__)
+
 
 def render_board_png(
     routed: dict,
@@ -150,19 +154,19 @@ def run_vision_review(
 
     # Auto-approve if routing is 100% and DRC passes with no errors
     if completion >= 100.0 and drc_passed and drc_errors == 0:
-        print("    Pre-check: 100% routed, 0 DRC errors — auto-approved")
+        logger.info("    Pre-check: 100% routed, 0 DRC errors — auto-approved")
         return "approved"
 
     # Auto-escalate if routing < 100% — no point asking vision
     if completion < 100.0:
-        print(f"    Pre-check: {completion:.1f}% routed — escalating to human review")
+        logger.info(f"    Pre-check: {completion:.1f}% routed — escalating to human review")
         return "escalated"
 
     # Render board image
     try:
         png_bytes = render_board_png(routed, netlist, bom)
     except Exception as e:
-        print(f"    Board render failed: {e} — escalating to human review")
+        logger.info(f"    Board render failed: {e} — escalating to human review")
         return "escalated"
 
     # Build review prompt
@@ -183,7 +187,7 @@ def run_vision_review(
     # Review loop
     max_attempts = config.vision_max_review_attempts
     for attempt in range(1, max_attempts + 1):
-        print(f"    Vision review attempt {attempt}/{max_attempts}...")
+        logger.info(f"    Vision review attempt {attempt}/{max_attempts}...")
         try:
             response = vision_llm.generate_with_vision(
                 system_prompt="",
@@ -193,14 +197,14 @@ def run_vision_review(
                 temperature=0.0,
             )
         except Exception as e:
-            print(f"    Vision LLM call failed: {e}")
+            logger.info(f"    Vision LLM call failed: {e}")
             continue
 
         decision, details = _parse_decision(response)
         if decision == "approve":
             return "approved"
 
-        print(f"    Changes requested: {details}")
+        logger.info(f"    Changes requested: {details}")
 
-    print(f"    Max review attempts ({max_attempts}) exhausted — escalating to human review")
+    logger.info(f"    Max review attempts ({max_attempts}) exhausted — escalating to human review")
     return "escalated"

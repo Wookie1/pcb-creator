@@ -2,6 +2,7 @@
 
 import argparse
 import json
+import logging
 import sys
 from pathlib import Path
 
@@ -16,6 +17,8 @@ from .config import OrchestratorConfig
 
 
 def main(argv: list[str] | None = None) -> int:
+    # Pipeline modules log progress via logging (stderr) — surface it for CLI users.
+    logging.basicConfig(level=logging.INFO, format="%(message)s", stream=sys.stderr)
     parser = argparse.ArgumentParser(
         prog="pcb-creator",
         description="AI-driven PCB design with deterministic orchestration",

@@ -82,5 +82,30 @@ def verify_footprints(netlist: dict) -> list[dict]:
                     "name, or supply geometry via provide_footprint."
                 ),
             })
+            continue
+
+        # The footprint must cover every port's pin number. Pins without pad
+        # geometry silently fall back to the component CENTER in
+        # build_pad_map — phantom stacked pads that the router is forced to
+        # route into, producing unroutable nets and false shorts.
+        port_pins = {e.get("pin_number")
+                     for e in netlist.get("elements", [])
+                     if e.get("element_type") == "port"
+                     and e.get("component_id") == cid}
+        missing = [str(p) for p in sorted(port_pins - set(fp.pin_offsets))]
+        if missing:
+            issues.append({
+                "designator": des,
+                "package": pkg,
+                "pin_count": pin_count,
+                "reason": (
+                    f"footprint for '{pkg}' has {len(fp.pin_offsets)} pads "
+                    f"but the component has ports on pin(s) "
+                    f"{', '.join(missing[:8])}"
+                    + ("..." if len(missing) > 8 else "") + " with no pad. "
+                    "Correct the package name (or pin numbering), or supply "
+                    "full geometry via provide_footprint."
+                ),
+            })
 
     return issues

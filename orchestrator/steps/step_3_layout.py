@@ -8,6 +8,10 @@ from pathlib import Path
 from .base import StepBase, StepResult
 from .step_1_schematic import extract_json
 
+import logging
+
+logger = logging.getLogger(__name__)
+
 
 # Default board size if not specified in requirements
 DEFAULT_BOARD_WIDTH_MM = 50
@@ -90,7 +94,7 @@ class LayoutStep(StepBase):
 
         for attempt in range(1, max_rework + 1):
             # 1. Generate or rework placement
-            print(f"  [Attempt {attempt}/{max_rework}] Generating placement...")
+            logger.info(f"  [Attempt {attempt}/{max_rework}] Generating placement...")
             if attempt == 1:
                 prompt = self.prompt_builder.render(
                     "layout_generate",
@@ -141,11 +145,11 @@ class LayoutStep(StepBase):
                 self.project.update_status(
                     self.step_number, "REWORK_IN_PROGRESS", rework_count=attempt
                 )
-                print(f"  [Attempt {attempt}] Failed to extract JSON from response")
+                logger.info(f"  [Attempt {attempt}] Failed to extract JSON from response")
                 if raw_response:
-                    print(f"    Response length: {len(raw_response)} chars")
-                    print(f"    First 200 chars: {raw_response[:200]}")
-                    print(f"    Last 200 chars: {raw_response[-200:]}")
+                    logger.info(f"    Response length: {len(raw_response)} chars")
+                    logger.info(f"    First 200 chars: {raw_response[:200]}")
+                    logger.info(f"    Last 200 chars: {raw_response[-200:]}")
                     debug_path = self.project.get_output_path(
                         f"debug_layout_attempt_{attempt}.txt"
                     )
@@ -167,12 +171,12 @@ class LayoutStep(StepBase):
                 placement_text = json.dumps(placement_data, indent=2)
 
             output_path = self.project.write_output(output_filename, placement_text)
-            print(f"  Saved {output_filename}")
+            logger.info(f"  Saved {output_filename}")
 
             # 3. Run validator
             validator_result = self._run_validator(output_path, netlist_path)
             last_validator_result = validator_result
-            print(
+            logger.info(
                 f"  Validator: {'VALID' if validator_result['valid'] else 'INVALID'}"
                 f" ({len(validator_result.get('errors', []))} errors,"
                 f" {len(validator_result.get('warnings', []))} warnings)"
@@ -187,7 +191,7 @@ class LayoutStep(StepBase):
                     or "past" in e.lower() and "board edge" in e.lower()
                 ]
                 if overlap_errors:
-                    print(f"  Validation found {len(overlap_errors)} overlap/boundary errors, attempting repair...")
+                    logger.info(f"  Validation found {len(overlap_errors)} overlap/boundary errors, attempting repair...")
                     try:
                         import sys as _sys
                         _sys.path.insert(0, str(self.config.base_dir))
@@ -202,7 +206,7 @@ class LayoutStep(StepBase):
                         output_path = self.project.write_output(output_filename, repaired_text)
                         validator_result = self._run_validator(output_path, netlist_path)
                         last_validator_result = validator_result
-                        print(
+                        logger.info(
                             f"  Post-repair validator: "
                             f"{'VALID' if validator_result['valid'] else 'INVALID'}"
                             f" ({len(validator_result.get('errors', []))} errors,"
@@ -218,12 +222,12 @@ class LayoutStep(StepBase):
                             self.project.update_status(
                                 self.step_number, "QA_FAILED", rework_count=attempt
                             )
-                            print(f"  Repair incomplete, will rework...")
+                            logger.info(f"  Repair incomplete, will rework...")
                             for err in issues:
-                                print(f"    - {err}")
+                                logger.info(f"    - {err}")
                             continue
                     except Exception as e:
-                        print(f"  Repair failed ({e}), will rework...")
+                        logger.info(f"  Repair failed ({e}), will rework...")
                         issues = validator_result["errors"]
                         previous_output = placement_text
                         self.project.update_status(
@@ -237,18 +241,18 @@ class LayoutStep(StepBase):
                     self.project.update_status(
                         self.step_number, "QA_FAILED", rework_count=attempt
                     )
-                    print(f"  Validation failed, will rework...")
+                    logger.info(f"  Validation failed, will rework...")
                     for err in issues:
-                        print(f"    - {err}")
+                        logger.info(f"    - {err}")
                     continue
 
             # Print warnings
             for w in validator_result.get("warnings", []):
-                print(f"  Warning: {w}")
+                logger.info(f"  Warning: {w}")
 
             # 5. LLM QA review (skippable when config.skip_qa is set)
             if self.config.skip_qa:
-                print(f"  QA review skipped (skip_qa mode)")
+                logger.info(f"  QA review skipped (skip_qa mode)")
                 qa_report = {
                     "step": self.step_number,
                     "step_name": self.step_name,
@@ -264,7 +268,7 @@ class LayoutStep(StepBase):
                     qa_report=qa_report,
                 )
 
-            print(f"  Running QA review...")
+            logger.info(f"  Running QA review...")
             self.project.update_status(self.step_number, "AWAITING_QA")
 
             qa_prompt = self.prompt_builder.render(
@@ -288,7 +292,7 @@ class LayoutStep(StepBase):
                 )
                 qa_report = json.loads(extract_json(qa_raw))
             except Exception as e:
-                print(f"  QA response parsing failed ({e}), accepting validator pass")
+                logger.info(f"  QA response parsing failed ({e}), accepting validator pass")
                 qa_report = {
                     "step": self.step_number,
                     "step_name": self.step_name,
@@ -300,7 +304,7 @@ class LayoutStep(StepBase):
             # 6. Handle QA result
             validator_clean = not validator_result.get("errors")
             if not qa_report.get("passed", False) and validator_clean:
-                print(f"  QA: OVERRIDDEN — validator passed cleanly, treating QA issues as warnings")
+                logger.info(f"  QA: OVERRIDDEN — validator passed cleanly, treating QA issues as warnings")
                 qa_report["passed"] = True
                 qa_report["summary"] = (
                     f"Validator passed. QA raised concerns (overridden): "
@@ -310,7 +314,7 @@ class LayoutStep(StepBase):
             if qa_report.get("passed", False):
                 self.project.write_quality(qa_report)
                 self.project.update_status(self.step_number, "COMPLETE")
-                print(f"  QA: PASSED — {qa_report.get('summary', '')}")
+                logger.info(f"  QA: PASSED — {qa_report.get('summary', '')}")
 
                 return StepResult(
                     success=True,
@@ -326,9 +330,9 @@ class LayoutStep(StepBase):
             self.project.update_status(
                 self.step_number, "QA_FAILED", rework_count=attempt
             )
-            print(f"  QA: FAILED — {qa_report.get('summary', '')}")
+            logger.info(f"  QA: FAILED — {qa_report.get('summary', '')}")
             for issue in issues:
-                print(f"    - {issue}")
+                logger.info(f"    - {issue}")
 
         # Last resort fallbacks for persistent overlap failures
         if last_validator_result.get("errors"):
@@ -347,7 +351,7 @@ class LayoutStep(StepBase):
                 # Fallback 1: Grow board 20% and re-run repair on LLM placement
                 if previous_output:
                     try:
-                        print(f"  Fallback 1: growing board by 20% and re-running repair...")
+                        logger.info(f"  Fallback 1: growing board by 20% and re-running repair...")
                         placement_data = json.loads(previous_output)
                         if "board" in placement_data:
                             placement_data["board"]["width_mm"] = round(
@@ -360,7 +364,7 @@ class LayoutStep(StepBase):
                         repaired_text = json.dumps(repaired, indent=2)
                         output_path = self.project.write_output(output_filename, repaired_text)
                         validator_result = self._run_validator(output_path, netlist_path)
-                        print(
+                        logger.info(
                             f"  Post-grow repair: "
                             f"{'VALID' if validator_result['valid'] else 'INVALID'}"
                             f" ({len(validator_result.get('errors', []))} errors)"
@@ -369,13 +373,13 @@ class LayoutStep(StepBase):
                             self.project.update_status(self.step_number, "COMPLETE")
                             return StepResult(success=True, output_path=str(output_path))
                     except Exception as e:
-                        print(f"  Board grow fallback failed: {e}")
+                        logger.info(f"  Board grow fallback failed: {e}")
 
                 # Fallback 2: Deterministic grid placement + SA repair
                 try:
                     grown_w = round(board_width * 1.3, 1)
                     grown_h = round(board_height * 1.3, 1)
-                    print(f"  Fallback 2: deterministic grid placement ({grown_w}x{grown_h}mm)...")
+                    logger.info(f"  Fallback 2: deterministic grid placement ({grown_w}x{grown_h}mm)...")
                     from optimizers.initial_placement import generate_grid_placement_json
                     det_text = generate_grid_placement_json(
                         netlist_content, grown_w, grown_h,
@@ -389,7 +393,7 @@ class LayoutStep(StepBase):
                         repaired_text = json.dumps(repaired, indent=2)
                         output_path = self.project.write_output(output_filename, repaired_text)
                         validator_result = self._run_validator(output_path, netlist_path)
-                        print(
+                        logger.info(
                             f"  Deterministic + repair: "
                             f"{'VALID' if validator_result['valid'] else 'INVALID'}"
                             f" ({len(validator_result.get('errors', []))} errors)"
@@ -398,7 +402,7 @@ class LayoutStep(StepBase):
                             self.project.update_status(self.step_number, "COMPLETE")
                             return StepResult(success=True, output_path=str(output_path))
                 except Exception as e:
-                    print(f"  Deterministic fallback failed: {e}")
+                    logger.info(f"  Deterministic fallback failed: {e}")
 
         # Exhausted rework attempts
         self.project.update_status(
@@ -478,7 +482,7 @@ class LayoutStep(StepBase):
                 corrections += 1
 
         if corrections > 0:
-            print(f"  Corrected {corrections} footprint dimensions from pad geometry")
+            logger.info(f"  Corrected {corrections} footprint dimensions from pad geometry")
 
         return json.dumps(placement, indent=2)
 
@@ -526,24 +530,24 @@ class LayoutStep(StepBase):
                 break
 
         if not dxf_filename:
-            print("  Warning: outline_type is 'dxf' but no board_outline DXF attachment found")
+            logger.info("  Warning: outline_type is 'dxf' but no board_outline DXF attachment found")
             return None, default_width, default_height
 
         dxf_path = self.project.project_dir / dxf_filename
         if not dxf_path.exists():
-            print(f"  Warning: DXF file not found: {dxf_path}")
+            logger.info(f"  Warning: DXF file not found: {dxf_path}")
             return None, default_width, default_height
 
         try:
             from exporters.dxf_parser import parse_board_outline
             vertices, width, height = parse_board_outline(dxf_path)
-            print(f"  DXF outline: {len(vertices)} vertices, {width}x{height}mm")
+            logger.info(f"  DXF outline: {len(vertices)} vertices, {width}x{height}mm")
             return vertices, width, height
         except ImportError:
-            print("  Warning: ezdxf not installed, cannot parse DXF outline")
+            logger.info("  Warning: ezdxf not installed, cannot parse DXF outline")
             return None, default_width, default_height
         except Exception as e:
-            print(f"  Warning: DXF parsing failed: {e}")
+            logger.info(f"  Warning: DXF parsing failed: {e}")
             return None, default_width, default_height
 
     @staticmethod
@@ -608,7 +612,7 @@ class LayoutStep(StepBase):
             return width, height
 
         if user_specified:
-            print(
+            logger.info(
                 f"  Warning: user-specified board ({width}x{height}mm = {current_area:.0f}mm²) "
                 f"may be tight for {len(components)} components "
                 f"(component area: {total_area:.0f}mm², recommended: {target_area:.0f}mm²)"
@@ -625,7 +629,7 @@ class LayoutStep(StepBase):
         new_w = max(new_w, min_dim)
         new_h = max(new_h, min_dim)
 
-        print(
+        logger.info(
             f"  Auto-sized board: {width}x{height}mm → {new_w}x{new_h}mm "
             f"({len(components)} components, {total_area:.0f}mm² footprint area)"
         )

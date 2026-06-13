@@ -35,6 +35,10 @@ except ImportError:
 from drc_checks import run_all_drc_checks
 from pinout import build_pinout_from_requirements, expected_pin_count
 
+import logging
+
+logger = logging.getLogger(__name__)
+
 
 # Maps component_type to expected designator prefix(es)
 DESIGNATOR_MAP = {
@@ -374,23 +378,30 @@ def _check_port_completeness(
             cid = elem.get("component_id", "")
             port_counts[cid] = port_counts.get(cid, 0) + 1
 
-    # Build package -> specs lookup from requirements (match by package string
-    # since the LLM may assign different designators than requirements refs)
+    # Build specs lookups from requirements: by package string (the LLM may
+    # assign different designators than requirements refs) AND by ref, so a
+    # spec's authoritative pin_count still applies when the LLM renamed the
+    # package (e.g. "TQFP-32" -> "LQFP-32").
     pkg_specs: dict[str, dict] = {}
+    ref_specs: dict[str, dict] = {}
     if requirements:
         for comp in requirements.get("components", []):
             pkg = comp.get("package", "")
+            ref = comp.get("ref", "")
             specs = comp.get("specs", {})
-            if pkg and specs:
-                pkg_specs[pkg] = specs
+            if specs:
+                if pkg:
+                    pkg_specs[pkg] = specs
+                if ref:
+                    ref_specs[ref] = specs
 
     for cid, comp in components.items():
         designator = comp.get("designator", cid)
         package = comp.get("package", "")
         actual = port_counts.get(cid, 0)
 
-        # Look up specs by package name
-        specs = pkg_specs.get(package)
+        # Look up specs by package name, falling back to the designator/ref
+        specs = pkg_specs.get(package) or ref_specs.get(designator)
         expected = expected_pin_count(package, specs)
 
         if expected is None:

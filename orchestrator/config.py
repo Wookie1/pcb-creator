@@ -49,6 +49,11 @@ class OrchestratorConfig:
     # Workflow settings
     max_rework_attempts: int = 5
 
+    # Model profile: "normal" for capable models (27B+ dense), "small" for
+    # weaker ones (≤14B dense or low-active-parameter MoE). "small" switches
+    # to chunked netlist generation earlier and uses smaller per-call batches.
+    model_profile: str = "normal"
+
     # Export settings
     export_kicad: Path | bool | None = None  # True = auto path, Path = specific path
 
@@ -116,6 +121,9 @@ class OrchestratorConfig:
         config.max_rework_attempts = int(
             os.environ.get("PCB_MAX_REWORK", str(config.max_rework_attempts))
         )
+        profile = os.environ.get("PCB_MODEL_PROFILE", config.model_profile).lower()
+        if profile in ("small", "normal"):
+            config.model_profile = profile
         config.skip_qa = os.environ.get(
             "PCB_SKIP_QA", "false"
         ).lower() in ("true", "1", "yes")

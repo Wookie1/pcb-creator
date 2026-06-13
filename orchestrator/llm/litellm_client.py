@@ -16,6 +16,41 @@ from .base import LLMClient
 litellm.drop_params = True
 
 
+def truncate_repetition(text: str, window: int = 100, min_repeats: int = 3,
+                        max_period: int = 4000) -> str:
+    """Cut degenerate LLM output where a >window-char span starts repeating
+    `min_repeats`+ times consecutively.
+
+    Small models can fall into a loop, emitting the same chunk until the token
+    budget is exhausted. Detection: a `window`-char probe that recurs at
+    distance p (the period) with the whole period repeating consecutively.
+    Returns the text up to one copy of the repeated unit, so a valid JSON
+    prefix survives for repair. Returns the input unchanged when no
+    repetition is found.
+    """
+    n = len(text)
+    if n < window * min_repeats:
+        return text
+    i = 0
+    while i + window <= n:
+        probe = text[i:i + window]
+        hit = text.find(probe, i + 1, i + 1 + max_period + window)
+        if hit != -1:
+            period = hit - i
+            unit = text[i:i + period]
+            repeats = 1
+            j = i + period
+            while j + period <= n and text[j:j + period] == unit:
+                repeats += 1
+                j += period
+            # Require a substantial repeated span to avoid clipping JSON that
+            # legitimately contains a few identical short fragments.
+            if repeats >= min_repeats and period * repeats >= max(300, window * min_repeats):
+                return text[:i + period]
+        i += window
+    return text
+
+
 class LiteLLMClient(LLMClient):
     def __init__(
         self,
@@ -53,7 +88,7 @@ class LiteLLMClient(LLMClient):
                     "LLM call failed (attempt %d/%d), retrying in %ds: %s",
                     attempt, self._max_retries, delay, e,
                 )
-                print(f"    [LLM] Transient error (attempt {attempt}/{self._max_retries}), "
+                logger.info(f"    [LLM] Transient error (attempt {attempt}/{self._max_retries}), "
                       f"retrying in {delay}s: {e}")
                 time.sleep(delay)
 
@@ -102,7 +137,7 @@ class LiteLLMClient(LLMClient):
                 iteration, finish_reason, len(chunk), len(accumulated),
                 self.model, max_tokens, prompt_tokens, completion_tokens,
             )
-            print(
+            logger.info(
                 f"    [LLM] iter={iteration} finish={finish_reason!r} "
                 f"chunk={len(chunk)} total={len(accumulated)} "
                 f"tokens(in={prompt_tokens} out={completion_tokens})"
@@ -114,7 +149,7 @@ class LiteLLMClient(LLMClient):
                         "LLM stopped early with only %d chars (finish_reason=stop). "
                         "Output may be truncated.", len(accumulated)
                     )
-                    print(
+                    logger.info(
                         f"    [LLM] WARNING: model stopped early with only {len(accumulated)} chars "
                         f"(finish_reason=stop, completion_tokens={completion_tokens}). "
                         f"Output likely truncated."
@@ -124,7 +159,7 @@ class LiteLLMClient(LLMClient):
             # Output was truncated — ask the model to continue
             logger.info("Continuation %d: output truncated at %d chars, requesting more...",
                         iteration + 1, len(accumulated))
-            print(f"    [LLM] finish=length — requesting continuation {iteration + 1}...")
+            logger.info(f"    [LLM] finish=length — requesting continuation {iteration + 1}...")
             messages.append({"role": "assistant", "content": chunk})
             messages.append({"role": "user", "content": "Continue exactly where you left off. Do not repeat any content."})
 
@@ -146,6 +181,18 @@ class LiteLLMClient(LLMClient):
             accumulated = partial_output
         else:
             accumulated = self.generate(system_prompt, user_prompt, max_tokens, temperature)
+
+        # Degenerate-output guard: small models can loop, repeating the same
+        # block until they exhaust the token budget (observed: 111K chars of
+        # repeated nets). Truncate at the start of the repetition so the
+        # valid prefix can still be salvaged by JSON repair.
+        truncated = truncate_repetition(accumulated)
+        if len(truncated) < len(accumulated):
+            logger.warning(
+                "Degenerate LLM output: repetition detected at %d/%d chars — truncating.",
+                len(truncated), len(accumulated),
+            )
+            accumulated = truncated
 
         # Check if output looks like truncated JSON (object or array)
         max_continuations = 3
@@ -191,7 +238,7 @@ class LiteLLMClient(LLMClient):
                 "generate_long continuation %d: accumulated=%d expected_min=%d",
                 cont + 1, len(stripped), expected_min_length,
             )
-            print(
+            logger.info(
                 f"    [generate_long] cont={cont + 1} partial={len(stripped)} "
                 f"expected_min={expected_min_length}"
             )
@@ -212,10 +259,20 @@ class LiteLLMClient(LLMClient):
                 "generate_long continuation %d: got %d chars, total now %d",
                 cont + 1, len(chunk), len(accumulated),
             )
-            print(
+            logger.info(
                 f"    [generate_long] cont={cont + 1} got={len(chunk)} "
                 f"finish={finish!r} tokens_out={completion_tokens} total={len(accumulated)}"
             )
+            # A looping model won't recover via more continuations — truncate
+            # to the pre-repetition prefix and stop asking for more.
+            truncated = truncate_repetition(accumulated)
+            if len(truncated) < len(accumulated):
+                logger.warning(
+                    "Degenerate continuation: repetition at %d/%d chars — stopping.",
+                    len(truncated), len(accumulated),
+                )
+                accumulated = truncated
+                break
 
         return accumulated
 

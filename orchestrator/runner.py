@@ -7,6 +7,10 @@ from pathlib import Path
 from .config import OrchestratorConfig
 from .project import ProjectManager
 
+import logging
+
+logger = logging.getLogger(__name__)
+
 
 def run_workflow(
     requirements_path: Path,
@@ -33,7 +37,7 @@ def run_workflow(
     prompt_builder = PromptBuilder(config.base_dir)
 
     # Step 0: Requirements
-    print(f"\n[Step 0: Requirements]")
+    logger.info(f"\n[Step 0: Requirements]")
     step0 = RequirementsStep(project, llm, prompt_builder, config)
     result = step0.execute(
         requirements_path=requirements_path,
@@ -41,53 +45,53 @@ def run_workflow(
     )
 
     if not result.success:
-        print(f"  FAILED: {result.error}")
+        logger.info(f"  FAILED: {result.error}")
         return False
 
-    print(f"  Created {result.output_path}")
-    print(f"  COMPLETE\n")
+    logger.info(f"  Created {result.output_path}")
+    logger.info(f"  COMPLETE\n")
 
     # Step 1: Schematic/Netlist
-    print(f"[Step 1: Schematic/Netlist]")
+    logger.info(f"[Step 1: Schematic/Netlist]")
     review_llm = LiteLLMClient(config.review_model, api_base=config.api_base, api_key=config.api_key, timeout=config.llm_timeout)
     step1 = SchematicStep(project, llm, prompt_builder, config)
     # Use review model for QA if different from generate model
     result = step1.execute()
 
     if not result.success:
-        print(f"\n  BLOCKED: {result.error}")
+        logger.info(f"\n  BLOCKED: {result.error}")
         _print_blocked(project_name, 1, "Schematic/Netlist", result.error)
         return False
 
-    print(f"  COMPLETE\n")
+    logger.info(f"  COMPLETE\n")
 
     # Step 2: Component Selection (BOM)
-    print(f"[Step 2: Component Selection]")
+    logger.info(f"[Step 2: Component Selection]")
     step2 = BOMStep(project, llm, prompt_builder, config)
     result = step2.execute()
 
     if not result.success:
-        print(f"\n  BLOCKED: {result.error}")
+        logger.info(f"\n  BLOCKED: {result.error}")
         _print_blocked(project_name, 2, "Component Selection", result.error)
         return False
 
-    print(f"  COMPLETE\n")
+    logger.info(f"  COMPLETE\n")
 
     # Step 3: Board Layout (Placement)
-    print(f"[Step 3: Board Layout]")
+    logger.info(f"[Step 3: Board Layout]")
     step3 = LayoutStep(project, llm, prompt_builder, config)
     result = step3.execute()
 
     if not result.success:
-        print(f"\n  BLOCKED: {result.error}")
+        logger.info(f"\n  BLOCKED: {result.error}")
         _print_blocked(project_name, 3, "Board Layout", result.error)
         return False
 
-    print(f"  COMPLETE\n")
+    logger.info(f"  COMPLETE\n")
 
     # Post-placement optimization
     if config.enable_optimizer and result.success:
-        print(f"[Optimizer: Placement SA]")
+        logger.info(f"[Optimizer: Placement SA]")
         import sys as _sys
         _sys.path.insert(0, str(config.base_dir))
         from optimizers.placement_optimizer import optimize_placement, SAConfig
@@ -121,23 +125,23 @@ def run_workflow(
         from validators.validate_placement import validate_placement as run_validation
         val_result = run_validation(str(placement_path), str(netlist_path))
         if not val_result["valid"]:
-            print(f"  WARNING: Optimized placement failed validation — reverting")
+            logger.info(f"  WARNING: Optimized placement failed validation — reverting")
             for err in val_result["errors"]:
-                print(f"    - {err}")
+                logger.info(f"    - {err}")
             placement_path.write_text(pre_opt_data)
-            print(f"  Reverted to pre-optimization placement")
+            logger.info(f"  Reverted to pre-optimization placement")
         else:
             n_total = len(optimized.get("placements", []))
             n_fids = sum(
                 1 for p in optimized.get("placements", [])
                 if p.get("component_type") == "fiducial"
             )
-            print(f"  Validation: PASSED ({n_total} components, {n_fids} fiducials)")
+            logger.info(f"  Validation: PASSED ({n_total} components, {n_fids} fiducials)")
 
-        print()
+        logger.info("")
 
     # Step 4: Routing
-    print(f"[Step 4: Routing]")
+    logger.info(f"[Step 4: Routing]")
     import sys as _sys
     _sys.path.insert(0, str(config.base_dir))
     from . import stages
@@ -149,7 +153,7 @@ def run_workflow(
         project.project_dir, project_name, config, log=print
     )
     if not route_result.get("success"):
-        print(f"  Routing FAILED: {route_result.get('error')}")
+        logger.info(f"  Routing FAILED: {route_result.get('error')}")
         return False
 
     # Re-read the routed board: the approval gate, vision review, KiCad export,
@@ -157,35 +161,35 @@ def run_workflow(
     routed_path = project.get_output_path(f"{project_name}_routed.json")
     routed = json.loads(routed_path.read_text())
 
-    print()
+    logger.info("")
 
     # Step 5: DRC
-    print(f"[Step 5: DRC]")
+    logger.info(f"[Step 5: DRC]")
     drc_report = stages.run_drc(project.project_dir, project_name, config, log=print)
 
-    print()
+    logger.info("")
 
     # Post-routing approval gate
     bom_path = project.get_output_path(f"{project_name}_bom.json")
     bom_data = json.loads(bom_path.read_text()) if bom_path.exists() else None
 
     if config.skip_approval:
-        print(f"[Review & Approval] Skipped (--skip-approval)")
+        logger.info(f"[Review & Approval] Skipped (--skip-approval)")
     elif config.agent_mode:
         # Agent mode: vision-based autonomous review
-        print(f"[Review & Approval] Vision-based autonomous review")
+        logger.info(f"[Review & Approval] Vision-based autonomous review")
         from orchestrator.vision_review import run_vision_review
 
         review_result = run_vision_review(
             routed, netlist_data, bom_data, drc_report, config, project,
         )
         if review_result == "approved":
-            print(f"  Vision review: APPROVED")
+            logger.info(f"  Vision review: APPROVED")
         elif review_result == "escalated":
-            print(f"  Vision review: Escalated — auto-approving (agent mode)")
+            logger.info(f"  Vision review: Escalated — auto-approving (agent mode)")
     else:
         # Serve the visualizer with DRC results for user review
-        print(f"[Review & Approval]")
+        logger.info(f"[Review & Approval]")
         from orchestrator.approval_server import serve_approval_gate
 
         approval = serve_approval_gate(
@@ -198,7 +202,7 @@ def run_workflow(
         )
 
         if approval == "continue":
-            print(f"  Approved")
+            logger.info(f"  Approved")
 
     # KiCad export (if requested via CLI flag)
     if config.export_kicad:
@@ -210,15 +214,15 @@ def run_workflow(
             kicad_path = project.get_output_path(f"{project_name}.kicad_pcb")
 
         export_kicad_pcb(routed, netlist_data, kicad_path)
-        print(f"  KiCad export: {kicad_path}")
+        logger.info(f"  KiCad export: {kicad_path}")
 
-    print()
+    logger.info("")
 
     # Step 6: Output Generation
-    print(f"[Step 6: Output Generation]")
+    logger.info(f"[Step 6: Output Generation]")
     stages.run_export(project.project_dir, project_name, config, log=print)
 
-    print()
+    logger.info("")
 
     # Final delivery
     _print_delivery(project, result)
@@ -422,7 +426,7 @@ def run_workflow_streaming(
     # Vision-based autonomous review (agent_mode is always True in Gradio)
     # Skip vision review when skip_qa is set — calling agent reviews via get_board_image
     if config.skip_qa:
-        print("[Review] Vision review skipped (skip_qa mode)")
+        logger.info("[Review] Vision review skipped (skip_qa mode)")
         yield {"event": "vision_review_start"}
         yield {"event": "vision_review_done", "result": "approved"}
     else:
@@ -455,7 +459,7 @@ def run_workflow_streaming(
 
 
 def _print_blocked(project_name: str, step: int, step_name: str, error: str) -> None:
-    print(f"""
+    logger.info(f"""
 WORKFLOW BLOCKED
 {'=' * 46}
 Project : {project_name}
@@ -509,7 +513,7 @@ def _print_delivery(project: ProjectManager, result) -> None:
     if result.qa_report and result.qa_report.get("issues"):
         warnings = "\n  ".join(result.qa_report["issues"])
 
-    print(f"""
+    logger.info(f"""
 DESIGN COMPLETE
 {'=' * 46}
 Project  : {project.project_name}

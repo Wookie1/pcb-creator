@@ -188,14 +188,39 @@ _PACKAGE_PIN_PATTERNS: list[tuple[re.Pattern, int | None, int | None]] = [
     (re.compile(r"SOIC-?(\d+)", re.IGNORECASE), 1, None),
     # DIP family: DIP-8, PDIP-28, CDIP-16
     (re.compile(r"(?:P|C)?DIP-?(\d+)", re.IGNORECASE), 1, None),
-    # QFN/DFN: QFN-32, DFN-8
+    # QFN/DFN: QFN-32, DFN-8 (-EP variants handled separately — the exposed
+    # pad counts as an extra pin, matching the IPC-7351 generator)
     (re.compile(r"[QD]FN-?(\d+)", re.IGNORECASE), 1, None),
     # BGA: BGA-256
     (re.compile(r"BGA-?(\d+)", re.IGNORECASE), 1, None),
+    # SOT variable counts MUST precede the fixed-count fallbacks below
+    # (\b matches at the hyphen, so "SOT-23-5" would otherwise hit "SOT-23").
+    (re.compile(r"SOT-23-(\d+)", re.IGNORECASE), 1, None),
+    (re.compile(r"SOT-223-(\d+)", re.IGNORECASE), 1, None),
     # SOT fixed counts
     (re.compile(r"SOT-23\b", re.IGNORECASE), None, 3),
     (re.compile(r"SOT-223\b", re.IGNORECASE), None, 3),
     (re.compile(r"SOT-89\b", re.IGNORECASE), None, 3),
+    (re.compile(r"SOT-353\b|SC-70-5\b", re.IGNORECASE), None, 5),
+    (re.compile(r"SOT-363\b|SC-88\b|SC-70-6\b", re.IGNORECASE), None, 6),
+    (re.compile(r"SOT-323\b|SC-70\b", re.IGNORECASE), None, 3),
+    # TO power packages: TO-220-5 etc. are explicit; bare names default to 3
+    (re.compile(r"TO-?220-(\d+)", re.IGNORECASE), 1, None),
+    (re.compile(r"TO-?252-(\d+)", re.IGNORECASE), 1, None),
+    (re.compile(r"TO-?263-(\d+)", re.IGNORECASE), 1, None),
+    (re.compile(r"D2PAK-(\d+)", re.IGNORECASE), 1, None),
+    (re.compile(r"TO-?2(20|47|62)\b", re.IGNORECASE), None, 3),
+    (re.compile(r"TO-?92\b", re.IGNORECASE), None, 3),
+    (re.compile(r"TO-?252\b|DPAK\b", re.IGNORECASE), None, 3),
+    (re.compile(r"TO-?263\b|D2PAK\b|DDPAK\b", re.IGNORECASE), None, 3),
+    # Castellated WiFi modules: ESP-12E/F/S have 16 edge pins + 6 bottom
+    # programming pads (22 total); the classic ESP-12 and ESP-07 have 16
+    (re.compile(r"ESP-?12[EFS]\b", re.IGNORECASE), None, 22),
+    (re.compile(r"ESP-?12\b", re.IGNORECASE), None, 16),
+    (re.compile(r"ESP-?07\b", re.IGNORECASE), None, 16),
+    (re.compile(r"ESP-?01\b", re.IGNORECASE), None, 8),
+    # Crystals
+    (re.compile(r"HC-?49\b", re.IGNORECASE), None, 2),
     # Pin headers: PinHeader_1x15, PinHeader_2x20
     (re.compile(r"PinHeader_(\d+)x(\d+)", re.IGNORECASE), None, None),  # special
     # USB connectors with pin count: USB-C-16P-SMD, USB_C_12P
@@ -209,6 +234,10 @@ _PACKAGE_PIN_PATTERNS: list[tuple[re.Pattern, int | None, int | None]] = [
 
 # Special handler for PinHeader
 _PIN_HEADER_RE = re.compile(r"PinHeader_(\d+)x(\d+)", re.IGNORECASE)
+
+# Special handler for QFN/DFN with exposed pad: the EP is an extra pad
+# (QFN-32-EP → 33), matching the IPC-7351 generator's pad numbering.
+_QFN_EP_RE = re.compile(r"[QD]FN-?(\d+)[-_]EP", re.IGNORECASE)
 
 
 def expected_pin_count(package: str, specs: dict | None = None) -> int | None:
@@ -233,6 +262,11 @@ def expected_pin_count(package: str, specs: dict | None = None) -> int | None:
     m = _PIN_HEADER_RE.search(package)
     if m:
         return int(m.group(1)) * int(m.group(2))
+
+    # 2b. Special case: QFN/DFN with exposed pad (EP = one extra pad)
+    m = _QFN_EP_RE.search(package)
+    if m:
+        return int(m.group(1)) + 1
 
     # 3. Pattern matching
     for pattern, group_idx, fixed_count in _PACKAGE_PIN_PATTERNS:

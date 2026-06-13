@@ -14,10 +14,14 @@ import json
 import sys
 import os
 
+import logging
+
+logger = logging.getLogger(__name__)
+
 try:
     import jsonschema
 except ImportError:
-    print(json.dumps({
+    logger.info(json.dumps({
         "valid": False,
         "errors": ["Python 'jsonschema' package not installed. Run: pip install jsonschema"],
         "warnings": [],

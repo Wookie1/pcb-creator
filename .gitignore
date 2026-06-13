@@ -35,3 +35,13 @@ test/
 # Temp
 /tmp/
 *.tmp
+
+# Eval / spike run artifacts
+scripts/eval_output/
+scripts/spike_output/
+
+# Stray board files dropped in repo root for analysis (not project fixtures)
+/morgan_carrier_v11.kicad_pcb
+/carrier_board.kicad_pcb
+/carrier_board.kicad_pro
+/carrier_board.kicad_prl

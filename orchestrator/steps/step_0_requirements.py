@@ -9,6 +9,10 @@ from orchestrator.gather.schema import validate_requirements
 
 from .base import StepBase, StepResult
 
+import logging
+
+logger = logging.getLogger(__name__)
+
 
 class RequirementsStep(StepBase):
     @property
@@ -71,9 +75,9 @@ class RequirementsStep(StepBase):
             if src.exists():
                 dest = self.project.project_dir / src.name
                 shutil.copy2(src, dest)
-                print(f"  Copied attachment: {src.name}")
+                logger.info(f"  Copied attachment: {src.name}")
             else:
-                print(f"  Warning: attachment not found: {src}")
+                logger.info(f"  Warning: attachment not found: {src}")
 
     def _copy_referenced_attachments(
         self, requirements: dict, base_dir: Path
@@ -88,6 +92,6 @@ class RequirementsStep(StepBase):
             src = base_dir / filename
             if src.exists():
                 shutil.copy2(src, dest)
-                print(f"  Copied referenced attachment: {filename}")
+                logger.info(f"  Copied referenced attachment: {filename}")
             else:
-                print(f"  Warning: referenced attachment not found: {filename}")
+                logger.info(f"  Warning: referenced attachment not found: {filename}")

@@ -18,10 +18,37 @@ if _validators_dir not in sys.path:
 
 from pinout import build_pinout_from_requirements, expected_pin_count
 
+import logging
+
+logger = logging.getLogger(__name__)
+
+
+def _strip_reasoning(raw: str) -> str:
+    """Drop <think>…</think> reasoning that thinking models emit even with
+    thinking disabled.
+
+    Local Qwen/DeepSeek MLX builds frequently emit the answer *inside* the
+    think block, close it, then re-emit the same answer — e.g.
+    ``[ ...json... ]</think>\\n\\n[ ...json... ]``. Naive first-brace-to-last
+    -brace extraction then spans both copies (glued by ``</think>``) and is
+    invalid. Taking everything after the LAST ``</think>`` keeps exactly one
+    clean copy. When the block is never closed (no ``</think>``), strip a
+    leading ``<think>`` marker but keep the body so the extractor can still
+    find the JSON.
+    """
+    if "</think>" in raw:
+        tail = raw.rsplit("</think>", 1)[1].strip()
+        if tail:
+            return tail
+        # Answer was entirely inside the (now-empty-after) block — fall back
+        # to the pre-close content with the opening marker removed.
+        raw = raw.rsplit("</think>", 1)[0]
+    return raw.replace("<think>", "").strip()
+
 
 def _strip_markdown_fences(raw: str) -> str:
     """Remove markdown code fences (```json ... ```) if present, returning bare content."""
-    stripped = raw.strip()
+    stripped = _strip_reasoning(raw)
     if stripped.startswith("```"):
         # Remove opening fence line
         first_nl = stripped.find("\n")
@@ -146,7 +173,7 @@ def extract_json(raw: str) -> str:
     """
     if not raw:
         raise ValueError("LLM returned empty/null response")
-    raw = raw.strip()
+    raw = _strip_reasoning(raw)
 
     last_err: json.JSONDecodeError | None = None
 
@@ -214,6 +241,27 @@ def extract_json(raw: str) -> str:
             except json.JSONDecodeError:
                 pass
 
+    # Cheap textual repairs for common small-model mistakes: trailing commas
+    # before } or ], and single-quoted keys/strings.
+    for candidate_src in [raw, raw[first_brace : last_brace + 1] if first_brace != -1 else ""]:
+        if not candidate_src:
+            continue
+        repaired = re.sub(r",\s*([}\]])", r"\1", candidate_src)
+        # Only attempt the quote swap when there are no double quotes at all
+        # (a fully single-quoted output) — mixing would corrupt valid strings.
+        if '"' not in repaired and "'" in repaired:
+            repaired = repaired.replace("'", '"')
+        if repaired != candidate_src:
+            try:
+                json.loads(repaired)
+                logger.info(
+                    "JSON repair: fixed trailing commas/single quotes in %d-char output",
+                    len(raw),
+                )
+                return repaired
+            except json.JSONDecodeError:
+                pass
+
     # Build an informative error that pinpoints where the JSON broke
     if last_err is not None and last_err.pos > 200:
         # Non-trivial parse: include position + context around the error
@@ -262,7 +310,7 @@ def _normalize_netlist_structure(netlist_text: str) -> str:
             data["elements"] = elements
 
     if merged:
-        print(f"  Normalized netlist structure (merged separate arrays into elements)")
+        logger.info(f"  Normalized netlist structure (merged separate arrays into elements)")
         return json.dumps(data, indent=2)
 
     return netlist_text
@@ -323,7 +371,7 @@ def _sanitize_net_ids(netlist_text: str) -> str:
         changed = True
 
     if changed:
-        print(f"  Auto-sanitized {len(id_map)} net_id(s) with illegal characters")
+        logger.info(f"  Auto-sanitized {len(id_map)} net_id(s) with illegal characters")
 
     return json.dumps(data, separators=(",", ":")) if changed else netlist_text
 
@@ -357,10 +405,11 @@ class SchematicStep(StepBase):
 
         self.project.update_status(self.step_number, "IN_PROGRESS")
 
-        # For large circuits (expected output > 8000 chars), single-generation is
-        # unreliable — small/fast models corrupt JSON mid-output. Go straight to
-        # chunked (components → ports → nets) for these.
-        CHUNKED_THRESHOLD = 8000
+        # For large circuits, single-generation is unreliable — small/fast
+        # models corrupt JSON mid-output. Go straight to chunked
+        # (components → ports → nets) for these. The "small" model profile
+        # (PCB_MODEL_PROFILE=small) switches over earlier.
+        CHUNKED_THRESHOLD = 5000 if self.config.model_profile == "small" else 8000
         expected_output_size = self._estimate_expected_output_length()
         use_chunked_from_start = expected_output_size > CHUNKED_THRESHOLD
 
@@ -372,7 +421,7 @@ class SchematicStep(StepBase):
         initial_raw_response: str | None = None
 
         if use_chunked_from_start:
-            print(f"  Large circuit (~{expected_output_size} chars expected) — using chunked generation")
+            logger.info(f"  Large circuit (~{expected_output_size} chars expected) — using chunked generation")
             try:
                 initial_raw_response = self._generate_chunked(
                     requirements_text, project_name, pinout_table, pin_count_table
@@ -383,7 +432,7 @@ class SchematicStep(StepBase):
 
         for attempt in range(1, max_rework + 1):
             # 1. Generate or rework netlist
-            print(f"  [Attempt {attempt}/{max_rework}] Generating netlist...")
+            logger.info(f"  [Attempt {attempt}/{max_rework}] Generating netlist...")
             self._report_progress(phase="schematic", sub="generate", attempt=attempt,
                                   max_attempts=max_rework)
             if attempt == 1 and initial_raw_response is not None:
@@ -479,11 +528,11 @@ class SchematicStep(StepBase):
                     "Attempting forced continuation.",
                     len(raw_response.strip()), expected_min, consecutive_short,
                 )
-                print(f"  [Attempt {attempt}] Short output ({len(raw_response)} chars vs ~{expected_min} expected), retrying with continuation...")
+                logger.info(f"  [Attempt {attempt}] Short output ({len(raw_response)} chars vs ~{expected_min} expected), retrying with continuation...")
 
                 # After 2+ consecutive short outputs, switch to chunked generation
                 if consecutive_short >= 2:
-                    print(f"  [Attempt {attempt}] Switching to chunked generation (components → ports → nets)...")
+                    logger.info(f"  [Attempt {attempt}] Switching to chunked generation (components → ports → nets)...")
                     try:
                         raw_response = self._generate_chunked(
                             requirements_text, project_name, pinout_table,
@@ -491,7 +540,7 @@ class SchematicStep(StepBase):
                         )
                     except Exception as e:
                         logger.error("Chunked generation failed: %s", e)
-                        print(f"  [Attempt {attempt}] Chunked generation failed: {e}")
+                        logger.info(f"  [Attempt {attempt}] Chunked generation failed: {e}")
                         issues = [f"Chunked generation failed: {e}"]
                         previous_output = raw_response
                         continue
@@ -516,11 +565,11 @@ class SchematicStep(StepBase):
                 self.project.update_status(
                     self.step_number, "REWORK_IN_PROGRESS", rework_count=attempt
                 )
-                print(f"  [Attempt {attempt}] Failed to extract JSON from response")
+                logger.info(f"  [Attempt {attempt}] Failed to extract JSON from response")
                 if raw_response:
-                    print(f"    Response length: {len(raw_response)} chars")
-                    print(f"    First 200 chars: {raw_response[:200]}")
-                    print(f"    Last 200 chars: {raw_response[-200:]}")
+                    logger.info(f"    Response length: {len(raw_response)} chars")
+                    logger.info(f"    First 200 chars: {raw_response[:200]}")
+                    logger.info(f"    Last 200 chars: {raw_response[-200:]}")
                     # Debug: write full response to file with diagnostics header
                     debug_path = self.project.get_output_path(f"debug_attempt_{attempt}.txt")
                     debug_header = (
@@ -536,12 +585,12 @@ class SchematicStep(StepBase):
             netlist_text = _sanitize_net_ids(netlist_text)
             netlist_text = _normalize_netlist_structure(netlist_text)
             output_path = self.project.write_output(output_filename, netlist_text)
-            print(f"  Saved {output_filename}")
+            logger.info(f"  Saved {output_filename}")
 
             # 3. Run validator
             validator_result = self._run_validator(output_path)
             last_validator_result = validator_result
-            print(
+            logger.info(
                 f"  Validator: {'VALID' if validator_result['valid'] else 'INVALID'}"
                 f" ({len(validator_result.get('errors', []))} errors,"
                 f" {len(validator_result.get('warnings', []))} warnings)"
@@ -559,18 +608,18 @@ class SchematicStep(StepBase):
                         netlist_data, merge_warnings = _auto_merge_shared_nets(netlist_data)
                         if merge_warnings:
                             for mw in merge_warnings:
-                                print(f"    {mw}")
+                                logger.info(f"    {mw}")
                             netlist_text = json.dumps(netlist_data, indent=2)
                             output_path = self.project.write_output(output_filename, netlist_text)
                             validator_result = self._run_validator(output_path)
                             last_validator_result = validator_result
-                            print(
+                            logger.info(
                                 f"  Post-merge validator: "
                                 f"{'VALID' if validator_result['valid'] else 'INVALID'}"
                                 f" ({len(validator_result.get('errors', []))} errors)"
                             )
                     except Exception as e:
-                        print(f"    Auto-merge failed: {e}")
+                        logger.info(f"    Auto-merge failed: {e}")
 
             # 4. If validator fails, go straight to rework (skip QA)
             if not validator_result["valid"]:
@@ -579,12 +628,12 @@ class SchematicStep(StepBase):
                 self.project.update_status(
                     self.step_number, "QA_FAILED", rework_count=attempt
                 )
-                print(f"  Validation failed, will rework...")
+                logger.info(f"  Validation failed, will rework...")
                 continue
 
             # 5. LLM QA review (skippable when config.skip_qa is set)
             if self.config.skip_qa:
-                print(f"  QA review skipped (skip_qa mode)")
+                logger.info(f"  QA review skipped (skip_qa mode)")
                 qa_report = {
                     "step": self.step_number,
                     "step_name": self.step_name,
@@ -600,7 +649,7 @@ class SchematicStep(StepBase):
                     qa_report=qa_report,
                 )
 
-            print(f"  Running QA review...")
+            logger.info(f"  Running QA review...")
             self.project.update_status(self.step_number, "AWAITING_QA")
 
             qa_prompt = self.prompt_builder.render(
@@ -625,7 +674,7 @@ class SchematicStep(StepBase):
                 qa_report = json.loads(extract_json(qa_raw))
             except Exception as e:
                 # If QA response parsing fails, treat validator pass as sufficient
-                print(f"  QA response parsing failed ({e}), accepting validator pass")
+                logger.info(f"  QA response parsing failed ({e}), accepting validator pass")
                 qa_report = {
                     "step": self.step_number,
                     "step_name": self.step_name,
@@ -639,7 +688,7 @@ class SchematicStep(StepBase):
             # treated as warnings — the validator is the authoritative gate.
             validator_clean = not validator_result.get("errors")
             if not qa_report.get("passed", False) and validator_clean:
-                print(f"  QA: OVERRIDDEN — validator passed cleanly, treating QA issues as warnings")
+                logger.info(f"  QA: OVERRIDDEN — validator passed cleanly, treating QA issues as warnings")
                 qa_report["passed"] = True
                 qa_report["summary"] = (
                     f"Validator passed. QA raised concerns (overridden): "
@@ -649,7 +698,7 @@ class SchematicStep(StepBase):
             if qa_report.get("passed", False):
                 self.project.write_quality(qa_report)
                 self.project.update_status(self.step_number, "COMPLETE")
-                print(f"  QA: PASSED — {qa_report.get('summary', '')}")
+                logger.info(f"  QA: PASSED — {qa_report.get('summary', '')}")
                 return StepResult(
                     success=True,
                     output_path=str(output_path),
@@ -662,9 +711,9 @@ class SchematicStep(StepBase):
             self.project.update_status(
                 self.step_number, "QA_FAILED", rework_count=attempt
             )
-            print(f"  QA: FAILED — {qa_report.get('summary', '')}")
+            logger.info(f"  QA: FAILED — {qa_report.get('summary', '')}")
             for issue in issues:
-                print(f"    - {issue}")
+                logger.info(f"    - {issue}")
 
         # Exhausted rework attempts
         self.project.update_status(
@@ -715,7 +764,7 @@ class SchematicStep(StepBase):
         a phase-specific debug file if the raw output is suspiciously short.
         """
         # Phase 1: components
-        print("  [Chunked] Phase 1: Generating components...")
+        logger.info("  [Chunked] Phase 1: Generating components...")
         self._report_progress(phase="schematic", sub="components", attempt=attempt)
         p1_prompt = self.prompt_builder.render(
             "schematic_generate_components",
@@ -735,7 +784,7 @@ class SchematicStep(StepBase):
             expected_min_length=p1_min,
         )
         components_raw = _strip_markdown_fences(components_raw)
-        print(f"  [Chunked] Phase 1 raw: {len(components_raw)} chars (min expected {p1_min})")
+        logger.info(f"  [Chunked] Phase 1 raw: {len(components_raw)} chars (min expected {p1_min})")
         try:
             components_json = self._extract_json_array(components_raw)
         except ValueError:
@@ -747,86 +796,171 @@ class SchematicStep(StepBase):
                     f"(expected ≥{p1_min}). Raw saved to {debug_path.name}"
                 )
             raise
-        print(f"  [Chunked] Phase 1 done: {len(json.loads(components_json))} components")
+        logger.info(f"  [Chunked] Phase 1 done: {len(json.loads(components_json))} components")
 
-        # Phase 2: ports
-        print("  [Chunked] Phase 2: Generating ports...")
+        # Phase 2: ports — batched per component group so each call's output
+        # stays small (small models degrade on long outputs).
+        components = json.loads(components_json)
+        batch_size = 6 if self.config.model_profile == "small" else 8
+        logger.info(f"  [Chunked] Phase 2: Generating ports "
+                    f"({len(components)} components, batches of {batch_size})...")
         self._report_progress(phase="schematic", sub="ports", attempt=attempt)
-        p2_prompt = self.prompt_builder.render(
-            "schematic_generate_ports",
-            {
-                "requirements": requirements_text,
-                "project_name": project_name,
-                "pinout_table": pinout_table,
-                "pin_count_table": pin_count_table,
-                "components_json": components_json,
-            },
-        )
-        # Ports: ~4 pins per component average (passives=2, ICs=10-32), ~130 chars each
-        p2_min = max(3000, self._estimate_component_count() * 4 * 130)
-        ports_raw = self.llm.generate_long(
-            system_prompt="",
-            user_prompt=p2_prompt,
-            max_tokens=self.config.max_tokens,
-            temperature=self.config.temperature,
-            expected_min_length=p2_min,
-        )
-        ports_raw = _strip_markdown_fences(ports_raw)
-        print(f"  [Chunked] Phase 2 raw: {len(ports_raw)} chars (min expected {p2_min})")
-        # Try parse first — valid JSON is accepted regardless of length estimate
-        try:
-            ports_json = self._extract_json_array(ports_raw)
-        except ValueError:
-            if len(ports_raw.strip()) < p2_min:
-                debug_path = self.project.get_output_path("debug_chunked_phase2.txt")
-                debug_path.write_text(ports_raw)
-                raise ValueError(
-                    f"Phase 2 (ports) output too short and invalid: {len(ports_raw)} chars "
-                    f"(expected ≥{p2_min}). Raw saved to {debug_path.name}"
-                )
-            raise  # Re-raise if long enough but invalid
-        print(f"  [Chunked] Phase 2 done: {len(json.loads(ports_json))} ports")
+        ports: list[dict] = []
+        for b in range(0, len(components), batch_size):
+            batch = components[b:b + batch_size]
+            batch_json = json.dumps(batch)
+            p2_prompt = self.prompt_builder.render(
+                "schematic_generate_ports",
+                {
+                    "requirements": requirements_text,
+                    "project_name": project_name,
+                    "pinout_table": pinout_table,
+                    "pin_count_table": pin_count_table,
+                    "components_json": batch_json,
+                },
+            )
+            # Ports: ~4 pins/component average (passives=2, ICs=10-32), ~130 chars each
+            p2_min = max(1000, len(batch) * 4 * 130)
+            ports_raw = self.llm.generate_long(
+                system_prompt="",
+                user_prompt=p2_prompt,
+                max_tokens=self.config.max_tokens,
+                temperature=self.config.temperature,
+                expected_min_length=p2_min,
+            )
+            ports_raw = _strip_markdown_fences(ports_raw)
+            logger.info(f"  [Chunked] Phase 2 batch {b // batch_size + 1}: "
+                        f"{len(ports_raw)} chars (min expected {p2_min})")
+            # Try parse first — valid JSON is accepted regardless of length estimate
+            try:
+                batch_ports_json = self._extract_json_array(ports_raw)
+            except ValueError:
+                if len(ports_raw.strip()) < p2_min:
+                    debug_path = self.project.get_output_path("debug_chunked_phase2.txt")
+                    debug_path.write_text(ports_raw)
+                    raise ValueError(
+                        f"Phase 2 (ports) batch {b // batch_size + 1} output too short "
+                        f"and invalid: {len(ports_raw)} chars (expected ≥{p2_min}). "
+                        f"Raw saved to {debug_path.name}"
+                    )
+                raise  # Re-raise if long enough but invalid
+            batch_ports = json.loads(batch_ports_json)
+            # Drop ports for components outside this batch (some models
+            # re-emit earlier components' ports despite the instruction).
+            batch_cids = {c.get("component_id") for c in batch}
+            seen_pids = {p.get("port_id") for p in ports}
+            batch_ports = [p for p in batch_ports
+                           if p.get("component_id") in batch_cids
+                           and p.get("port_id") not in seen_pids]
+            ports.extend(batch_ports)
+        logger.info(f"  [Chunked] Phase 2 done: {len(ports)} ports")
+        ports_json = json.dumps(ports)
 
-        # Phase 3: nets
-        print("  [Chunked] Phase 3: Generating nets...")
+        # Phase 3: nets — two scoped calls (power/ground, then signal) over a
+        # COMPACT port table. The single all-nets call with full JSON inputs
+        # is where small models loop into degenerate output.
+        logger.info("  [Chunked] Phase 3: Generating nets (power/ground, then signal)...")
         self._report_progress(phase="schematic", sub="nets", attempt=attempt)
-        p3_prompt = self.prompt_builder.render(
+        cid_to_des = {c.get("component_id"): c.get("designator", "?")
+                      for c in components}
+
+        def _compact_ports(port_list: list[dict]) -> str:
+            lines = []
+            for p in port_list:
+                des = cid_to_des.get(p.get("component_id"), "?")
+                lines.append(f"{p.get('port_id')}  {des}.{p.get('pin_number')}"
+                             f"  {p.get('name')}  [{p.get('electrical_type')}]")
+            return "\n".join(lines)
+
+        connectable = [p for p in ports
+                       if p.get("electrical_type") != "no_connect"]
+
+        pg_scope = (
+            "In THIS response generate ONLY the power and ground nets "
+            "(net_class 'power' or 'ground'): the shared GND net(s) and each "
+            "supply rail (VCC, 5V, 3V3, VIN, ...). Include EVERY port that "
+            "belongs on those rails — IC power/ground pins, decoupling "
+            "capacitor pins, connector power/ground pins, pull-up high sides. "
+            "Do NOT generate any signal nets; they come in a later step."
+        )
+        p3a_prompt = self.prompt_builder.render(
             "schematic_generate_nets",
             {
                 "requirements": requirements_text,
                 "project_name": project_name,
                 "components_json": components_json,
-                "ports_json": ports_json,
+                "ports_json": _compact_ports(connectable),
+                "scope_instructions": pg_scope,
             },
         )
-        # Nets: roughly component_count nets, each with ~300 chars
-        p3_min = max(2000, self._estimate_component_count() * 300)
-        nets_raw = self.llm.generate_long(
+        pg_raw = self.llm.generate_long(
             system_prompt="",
-            user_prompt=p3_prompt,
+            user_prompt=p3a_prompt,
             max_tokens=self.config.max_tokens,
             temperature=self.config.temperature,
-            expected_min_length=p3_min,
+            expected_min_length=300,
         )
-        nets_raw = _strip_markdown_fences(nets_raw)
-        print(f"  [Chunked] Phase 3 raw: {len(nets_raw)} chars (min expected {p3_min})")
+        pg_raw = _strip_markdown_fences(pg_raw)
+        logger.info(f"  [Chunked] Phase 3a (power/ground) raw: {len(pg_raw)} chars")
         try:
-            nets_json = self._extract_json_array(nets_raw)
+            pg_json = self._extract_json_array(pg_raw)
         except ValueError:
-            if len(nets_raw.strip()) < p3_min:
-                debug_path = self.project.get_output_path("debug_chunked_phase3.txt")
-                debug_path.write_text(nets_raw)
-                raise ValueError(
-                    f"Phase 3 (nets) output too short and invalid: {len(nets_raw)} chars "
-                    f"(expected ≥{p3_min}). Raw saved to {debug_path.name}"
-                )
-            raise
-        print(f"  [Chunked] Phase 3 done: {len(json.loads(nets_json))} nets")
+            debug_path = self.project.get_output_path("debug_chunked_phase3a.txt")
+            debug_path.write_text(pg_raw)
+            raise ValueError(
+                f"Phase 3a (power/ground nets) output invalid: {len(pg_raw)} "
+                f"chars. Raw saved to {debug_path.name}"
+            )
+        pg_nets = [n for n in json.loads(pg_json)
+                   if n.get("net_class") in ("power", "ground")]
+        assigned = {pid for n in pg_nets
+                    for pid in n.get("connected_port_ids", [])}
+        logger.info(f"  [Chunked] Phase 3a done: {len(pg_nets)} power/ground nets "
+                    f"({len(assigned)} ports assigned)")
 
-        # Assemble into final netlist structure
-        components = json.loads(components_json)
-        ports = json.loads(ports_json)
-        nets = json.loads(nets_json)
+        remaining = [p for p in connectable if p.get("port_id") not in assigned]
+        sig_nets: list[dict] = []
+        if remaining:
+            sig_scope = (
+                "The power and ground nets are ALREADY generated — do not "
+                "repeat them. In THIS response generate ONLY the signal nets "
+                "(net_class 'signal') connecting the remaining ports listed "
+                "below. Every listed port must appear in exactly one of your "
+                "signal nets."
+            )
+            p3b_prompt = self.prompt_builder.render(
+                "schematic_generate_nets",
+                {
+                    "requirements": requirements_text,
+                    "project_name": project_name,
+                    "components_json": components_json,
+                    "ports_json": _compact_ports(remaining),
+                    "scope_instructions": sig_scope,
+                },
+            )
+            sig_raw = self.llm.generate_long(
+                system_prompt="",
+                user_prompt=p3b_prompt,
+                max_tokens=self.config.max_tokens,
+                temperature=self.config.temperature,
+                expected_min_length=300,
+            )
+            sig_raw = _strip_markdown_fences(sig_raw)
+            logger.info(f"  [Chunked] Phase 3b (signal) raw: {len(sig_raw)} chars")
+            try:
+                sig_json = self._extract_json_array(sig_raw)
+            except ValueError:
+                debug_path = self.project.get_output_path("debug_chunked_phase3b.txt")
+                debug_path.write_text(sig_raw)
+                raise ValueError(
+                    f"Phase 3b (signal nets) output invalid: {len(sig_raw)} "
+                    f"chars. Raw saved to {debug_path.name}"
+                )
+            pg_ids = {n.get("net_id") for n in pg_nets}
+            sig_nets = [n for n in json.loads(sig_json)
+                        if n.get("net_id") not in pg_ids]
+        nets = pg_nets + sig_nets
+        logger.info(f"  [Chunked] Phase 3 done: {len(nets)} nets")
 
         netlist = {
             "version": "1.0",
@@ -848,7 +982,7 @@ class SchematicStep(StepBase):
     @staticmethod
     def _extract_json_array(raw: str) -> str:
         """Extract a JSON array from LLM response."""
-        raw = raw.strip()
+        raw = _strip_reasoning(raw)
         # Try direct parse
         try:
             parsed = json.loads(raw)
@@ -877,6 +1011,26 @@ class SchematicStep(StepBase):
                     return candidate
             except json.JSONDecodeError:
                 pass
+        # Cheap repairs: trailing commas; salvage a truncated array (e.g. the
+        # repetition guard cut a degenerate tail) by closing at the last
+        # complete object.
+        if first != -1:
+            candidate = raw[first: last + 1] if last > first else raw[first:]
+            repaired = re.sub(r",\s*([}\]])", r"\1", candidate)
+            attempts = [repaired]
+            last_obj_end = repaired.rfind("},")
+            if last_obj_end != -1:
+                attempts.append(repaired[: last_obj_end + 1] + "]")
+            if repaired.rstrip().endswith("}"):
+                attempts.append(repaired.rstrip() + "]")
+            for att in attempts:
+                try:
+                    parsed = json.loads(att)
+                    if isinstance(parsed, list) and parsed:
+                        logger.info("JSON array repair succeeded (%d items)", len(parsed))
+                        return att
+                except json.JSONDecodeError:
+                    pass
         raise ValueError(f"Could not extract JSON array from response:\n{raw[:200]}...")
 
     def _estimate_expected_output_length(self) -> int:
