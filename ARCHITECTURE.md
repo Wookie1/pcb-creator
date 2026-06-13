@@ -830,7 +830,21 @@ Highest-leverage first:
 - **E. Pin-pitch-scaled clearance.** Generalize the single global `min_clearance_mm` to per-component: fine-pitch / high-pin parts get a larger keepout automatically (a lighter cousin of A — A now reserves *fanout* space via a soft penalty; E would harden it into the overlap constraint). Effort: low.
 - **F. Decoupling caps under the IC (two-sided).** Extend the layer-flip move to place a chip's decoupling caps on the bottom directly beneath it — frees the IC's top-side escape perimeter and improves decoupling. Today caps scatter by congestion, competing for escape channels. Compounds with A. Effort: moderate.
 
-Recommended order: **A + C** ✅ done (the focused pair); **B** ✅ implemented but proven inert on the current suite (off by default). The data redirects the next bet to **D** (connector fanout orientation — morgan's actual failure mode), then **E/F** as refinements.
+**Verdict (2026-06-13), after building and isolating A–D on morgan:** *placement is not morgan's bottleneck.* The clean A-isolation (same repaired placement, route with `escape_weight` 0 vs 6) routed **identically-or-worse with the halo on** (97.9% off → 95.8% on, A-on Freerouting timed out) — morgan was never escape-*space*-limited, so spreading neighbours only lengthens traces. B is inert (not congestion-limited), D is inert (CN1 mis-typed + suite connectors small). All three are committed and validated as **no-regression**, and may still help connector-heavy / congestion-bound boards that *aren't* morgan — but none move morgan. **E and F would also be inert here** (more placement spreading, which morgan doesn't need), so they are deprioritized. morgan's real wall is **router-side**, addressed by the next section. A/C remain genuinely useful as the routing-feedback retry scaffold; B/D/E/F are parked as situational.
+
+### Planned: Fine-Pitch Escape / Fanout Pre-Routing (next, in process)
+
+**Motivation.** morgan's residual unrouted/disconnected nets — `net_swclk`, `net_swdio`, `net_gpio5_uart_rx`, `net_gpio3_estop_in`, `net_gpio42/43_platen`, … — are the GPIO/SWD signals entering through `CN1`, the 30-pin **0.5 mm FH35 FPC**. This is a *fine-pitch escape* problem, not a placement one (the A-isolation above proved spreading doesn't help). At 0.5 mm pitch with 0.127 mm trace/clearance only one trace fits between adjacent pads, so getting N signals out of the pad field needs a systematic **breakout**: each pad → short stub → **via** ("dog-bone") just outside the pad row, dropping the signal to an inner/bottom layer where it routes at normal pitch. Freerouting is a generic net-by-net rip-up router with no concept of fanning a pad field out *as a group*, so it leaves some fine-pitch pins as stubs/unrouted. This is also the project's **founding use case** ("a 0.5 mm connector where routing wasn't working well").
+
+**Design.**
+1. **Detect** fine-pitch parts (reuse `_min_pad_pitch` / the existing `FINE_PITCH_THRESHOLD_MM` gate).
+2. For each pad, compute an **escape vector** (outward from the pad-row toward open board) and emit a short stub trace + a via at a **staggered** distance (alternating stub lengths / a fanned via arc) so 0.6 mm vias clear each other at 0.5 mm pad pitch.
+3. **Collision-check** the generated escapes against each other and nearby copper.
+4. Emit them as **protected wiring** — reuse the existing `fixed_routing` → `(type protect)` DSN mechanism (the incremental-routing path). Freerouting then routes only from the breakout vias (now at comfortable pitch) to destinations — a far easier problem.
+
+**Why placement (A) can't do this:** the pads are fixed by the connector; the hard part is *between* the pads, not around the part. **Gate:** morgan re-route (escape-routed CN1 → does the GPIO/SWD residual close?) + `scripts/eval_boards.py` no-regression + a fine-pitch synthetic (the existing `spike_fine_pitch.py` 16-pin 0.5 mm connector). Effort: moderate–high (a small specialized escape router; the protected-wiring plumbing already exists).
+
+**Companion (Problem 2 — high-fanout power, `net_5v`/`net_3v3`):** *not* an algorithm — a **stackup choice**. With `plane_layers=1` only GND is a plane, so 5V/3V3 route as trace stars and Freerouting leaves stragglers. `plane_layers=2` makes one power net a plane (trivial distribution) at the cost of the inner signal layer (harder CN1 fanout); wanting *both* an inner signal layer and power planes is the **6-layer** case (see Future Enhancements). Covered by the existing `plane_layers` knob; no new code.
 
 ### Future Enhancements
 
