@@ -16,6 +16,24 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+# Connector fanout orientation (enhancement D): rotate edge connectors so their
+# long pad-span runs along the board edge. Kill-switch so it can be A/B-tested
+# and disabled if it regresses a board. Only connectors with at least
+# ORIENT_MIN_PINS pins are reoriented — small terminal blocks / few-pin headers
+# gain nothing and reorienting them regressed routing (see the loop below).
+ORIENT_CONNECTORS = True
+ORIENT_MIN_PINS = 10
+
+
+def _connector_rotation(w: float, h: float, pins: int) -> int:
+    """Rotation for an edge connector: 90° (long pad-span vertical, along the
+    left edge) for a wide, high-pin connector; 0 otherwise. Gated on pin count
+    so small terminal blocks / few-pin headers are left alone (reorienting them
+    regressed routing)."""
+    if ORIENT_CONNECTORS and w > h and pins >= ORIENT_MIN_PINS:
+        return 90
+    return 0
+
 
 def generate_grid_placement(
     netlist: dict,
@@ -80,6 +98,9 @@ def generate_grid_placement(
 
     connectors = [(c, w, h) for c, w, h in comp_dims
                   if c.get("component_type") == "connector"]
+
+    def _pins(comp: dict) -> int:
+        return comp_pin_counts.get(comp.get("component_id", ""), 0)
     others = [(c, w, h) for c, w, h in comp_dims
               if c.get("component_type") != "connector"]
     # Largest first for better packing
@@ -89,19 +110,37 @@ def generate_grid_placement(
     margin = 1.5
     clearance = 1.0
 
-    # Connectors along the left edge
+    # High-pin connectors along the left edge are oriented so their pins fan
+    # into open board area (enhancement D): a connector whose pin row runs
+    # along its width (long axis = x) is rotated 90° to run its pins *vertically
+    # along the edge* — every pin escapes a short hop into the interior, instead
+    # of the row poking horizontally into the board with deep, hard-to-escape
+    # inner pins (the fanout wall on wide connectors like a 30-pin FPC).
+    # GATED ON PIN COUNT (≥ ORIENT_MIN_PINS): small terminal blocks / few-pin
+    # headers gain nothing from reorientation and rotating them measurably HURT
+    # routing on real boards (rs485 0→3 DRC, 4ch 11→26 DRC when applied to all
+    # connectors). Only genuinely wide connectors — where the deep-inner-pin
+    # problem exists — are reoriented. Connectors are pinned through the SA
+    # optimize pass, so the orientation sticks. footprint_width/height stay the
+    # UNROTATED body dims; the layout math uses the rotated extent (ew, eh).
     cy = margin
+    conn_extent_w: list[float] = []
     for comp, w, h in connectors:
-        x = margin + w / 2
-        y = cy + h / 2
-        if y + h / 2 > board_height_mm - margin:
-            x = board_width_mm - margin - w / 2
-            y = margin + h / 2
-        placements.append(_place_item(comp, w, h, x, y))
-        cy += h + clearance
+        rot = _connector_rotation(w, h, _pins(comp))
+        ew, eh = (h, w) if rot in (90, 270) else (w, h)
+        conn_extent_w.append(ew)
+        x = margin + ew / 2
+        y = cy + eh / 2
+        if y + eh / 2 > board_height_mm - margin:
+            x = board_width_mm - margin - ew / 2
+            y = margin + eh / 2
+        item = _place_item(comp, w, h, x, y)
+        item["rotation_deg"] = rot
+        placements.append(item)
+        cy += eh + clearance
 
     # Remaining components in rows (left→right, bottom→top)
-    connector_col = margin + max((w for _, w, _ in connectors), default=0) + clearance * 2
+    connector_col = margin + max(conn_extent_w, default=0) + clearance * 2
     row_x = connector_col
     row_y = margin
     row_height = 0.0

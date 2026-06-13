@@ -622,6 +622,15 @@ def optimize_placement(
                                                   "diode"):
                 continue
             pkg, pin_count = packages.get(des, ("", 2))
+            # Guard against mis-typed high-pin / fine-pitch parts: a true
+            # flip-eligible passive has ≤3 pins and a coarse pitch. A 30-pin
+            # 0.5mm FPC mis-labelled "capacitor" must never be sent to the
+            # bottom (real case: morgan CN1). Belt-and-braces with the type gate.
+            if pin_count > 3:
+                continue
+            pitch = _footprint_min_pitch(pkg, pin_count)
+            if pitch is not None and pitch < ESCAPE_PITCH_THRESHOLD_MM:
+                continue
             fp = get_footprint_def(pkg, pin_count)
             if is_through_hole_package(pkg, fp):
                 continue
@@ -1240,6 +1249,13 @@ def repair_placement(
                                                   "diode"):
                 continue
             pkg, pc = packages.get(des, ("", 2))
+            # Same guard as optimize: never flip a mis-typed high-pin /
+            # fine-pitch part (e.g. a 30-pin FPC labelled "capacitor").
+            if pc > 3:
+                continue
+            pitch = _footprint_min_pitch(pkg, pc)
+            if pitch is not None and pitch < ESCAPE_PITCH_THRESHOLD_MM:
+                continue
             if is_through_hole_package(pkg, get_footprint_def(pkg, pc)):
                 continue
             flip_eligible.add(des)
