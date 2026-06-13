@@ -369,17 +369,20 @@ if __name__ == "__main__":
     args = [a for a in sys.argv[1:] if not a.startswith("--")]
     pcb = args[0] if args else "morgan_carrier_v11.kicad_pcb"
     effort = args[1] if len(args) > 1 else "fast"
-    pl = 1 if "--plane1" in sys.argv else None
+    pl = None
+    for _cand in (0, 1, 2):
+        if f"--plane{_cand}" in sys.argv:
+            pl = _cand
     esc = "--escape" in sys.argv
+    _plabel = f", plane_layers={pl}" if pl is not None else ""
     if "--reopt" in sys.argv:
         print(f"=== A-isolation: existing placement vs escape-halo re-opt, "
-              f"effort={effort}{', plane_layers=1' if pl else ''}"
-              f"{', escape-fanout' if esc else ''} ===")
+              f"effort={effort}{_plabel}{', escape-fanout' if esc else ''} ===")
         reopt_and_route(pcb, effort=effort, plane_layers=(pl if pl is not None else 1),
                         escape_fanout=esc)
     elif "--replace" in sys.argv:
         print(f"=== FULL re-place + feedback-retry route (tests A+C), effort={effort}"
-              f"{', plane_layers=1' if pl else ''}{', escape-fanout' if esc else ''} ===")
+              f"{_plabel}{', escape-fanout' if esc else ''} ===")
         replace_and_route(pcb, effort=effort, plane_layers=(pl if pl is not None else 1),
                           two_sided="--two-sided" in sys.argv, escape_fanout=esc)
     elif "--incremental" in sys.argv:
