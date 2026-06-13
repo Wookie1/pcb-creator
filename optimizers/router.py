@@ -5211,6 +5211,12 @@ def apply_copper_fills(
             continue
 
         layer = trace.get("layer", "top")
+        # The copper-fill grid only models the outer layers (where GND fill is
+        # poured). Inner-layer signal traces (In1/In2 used as signal when
+        # plane_layers<2) don't obstruct the outer fill or the inner GND
+        # plane, so they aren't marked here.
+        if layer not in grid.layers:
+            continue
         width = trace.get("width_mm", 0.25)
 
         # Mark the trace on the grid by walking from start to end

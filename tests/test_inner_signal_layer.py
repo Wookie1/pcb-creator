@@ -56,3 +56,42 @@ class TestDsnRoutingLayers:
     def test_two_layer_unaffected(self):
         sig = self._layers_in_structure(2, 0)
         assert sig == ["F.Cu", "B.Cu"]
+
+
+class TestInnerSignalTraceFill:
+    """Regression: with plane_layers=1, Freerouting routes signal traces on
+    In2.Cu (inner2). The copper-fill grid only models outer layers, so it must
+    skip inner-layer traces rather than KeyError on them (the 'inner2' crash
+    seen on the morgan board)."""
+
+    def test_apply_copper_fills_tolerates_inner_signal_trace(self):
+        from optimizers.router import apply_copper_fills, RouterConfig
+        netlist = {"version": "1.0", "project_name": "t", "elements": [
+            {"element_type": "component", "component_id": "comp_u1",
+             "designator": "U1", "component_type": "ic", "value": "x",
+             "package": "SOIC-8"},
+            {"element_type": "port", "port_id": "port_u1_1",
+             "component_id": "comp_u1", "pin_number": 1, "name": "OUT",
+             "electrical_type": "signal"},
+            {"element_type": "net", "net_id": "net_sig", "name": "SIG",
+             "connected_port_ids": ["port_u1_1"], "net_class": "signal"},
+            {"element_type": "net", "net_id": "net_gnd", "name": "GND",
+             "connected_port_ids": [], "net_class": "ground"}]}
+        routed = {"version": "1.0", "project_name": "t",
+                  "board": {"width_mm": 30, "height_mm": 20, "layers": 4,
+                            "plane_layers": 1},
+                  "placements": [{"designator": "U1", "package": "SOIC-8",
+                                  "component_type": "ic", "x_mm": 15, "y_mm": 10,
+                                  "rotation_deg": 0, "layer": "top",
+                                  "footprint_width_mm": 5, "footprint_height_mm": 4}],
+                  "routing": {"traces": [
+                      {"net_id": "net_sig", "net_name": "SIG", "layer": "inner2",
+                       "width_mm": 0.127, "start_x_mm": 5, "start_y_mm": 5,
+                       "end_x_mm": 15, "end_y_mm": 5}],
+                      "vias": [], "unrouted_nets": []}}
+        # Must not raise KeyError('inner2')
+        out = apply_copper_fills(routed, netlist, RouterConfig())
+        # inner2 trace preserved; only the In1 GND plane (not In2) generated
+        assert any(t["layer"] == "inner2" for t in out["routing"]["traces"])
+        fills = {f["layer"] for f in out["routing"].get("copper_fills", [])}
+        assert "inner1" in fills and "inner2" not in fills
