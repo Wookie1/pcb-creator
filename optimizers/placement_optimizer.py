@@ -29,6 +29,7 @@ from .ratsnest import (
     NetInfo, build_connectivity, total_wire_length,
     find_decoupling_associations, find_crystal_associations,
     DecouplingAssociation, CrystalAssociation, IncrementalCost,
+    _PLANE_NET_CLASSES,
 )
 
 import logging
@@ -52,6 +53,19 @@ class SAConfig:
     grouping_weight: float = 2.0    # functional grouping affinity
     congestion_weight: float = 0.0  # pad-density penalty (escape-route proxy);
                                     # 0 = off, enabled by the routing retry loop
+    demand_weight: float = 0.0      # routing-DEMAND congestion (RUDY): spreads
+                                    # each signal net's wire estimate over its
+                                    # bounding box and penalizes cells whose
+                                    # summed demand exceeds track capacity.
+                                    # OFF by default: it is correct and self-
+                                    # gating, but no board in the current suite
+                                    # is channel-congestion-limited (morgan is
+                                    # only ~7% over capacity and is fanout-, not
+                                    # congestion-, limited), so the weight that
+                                    # would make it bite is unvalidated. Kept
+                                    # implemented + tested; enable explicitly
+                                    # (e.g. ~40) once a congestion-limited board
+                                    # is available to tune against.
     escape_weight: float = 6.0      # escape-halo penalty: keep foreign pads out
                                     # of the fanout channel a dense/fine-pitch
                                     # part needs to escape. Self-gating — only
@@ -281,6 +295,74 @@ def _congestion_cost(
     return cost
 
 
+# ---- Routing-demand congestion / RUDY (enhancement B) -------------------
+#
+# The pad-density `_congestion_cost` above measures where copper *pads* sit;
+# it misses the thing that actually fails on dense boards — many nets all
+# wanting to route through the same channel. B models routing *demand*: each
+# signal net spreads its estimated wire (half-perimeter of its pad bounding
+# box) uniformly over that box (the classic RUDY estimator), the per-cell
+# contributions sum into a demand heatmap, and cells whose demand exceeds the
+# track capacity they could physically carry are penalized. SA then pulls
+# connected parts together where there is room and away from hotspots — the
+# single biggest "make placement routability-aware" lever, and it generalizes
+# beyond fine-pitch. Plane (power/ground) nets are excluded: they are delivered
+# by copper pours, not routed through channels.
+
+DEMAND_CELL_MM = 2.5          # demand-heatmap bucket size — a few track-widths
+                              # across; 5mm was too coarse to see channel-level
+                              # congestion (morgan peaked at 56% util there).
+DEMAND_SIGNAL_LAYERS = 2.0    # outer copper layers carry signal in every stackup
+DEMAND_UTILIZATION_LIMIT = 0.75  # routers degrade well before 100% channel
+                              # fill; penalize cells above this fraction of the
+                              # nominal track capacity (standard routability rule)
+
+
+def _routing_demand_cost(
+    positions: dict[str, tuple[float, float]],
+    signal_nets: list[NetInfo],
+    track_pitch_mm: float,
+    cell_mm: float = DEMAND_CELL_MM,
+    signal_layers: float = DEMAND_SIGNAL_LAYERS,
+) -> float:
+    """RUDY routing-demand penalty (see comment above).
+
+    `signal_nets` must already exclude plane nets. `track_pitch_mm` is
+    trace+clearance — it sets how many parallel tracks a cell can carry.
+    Penalty is normalized by capacity so each over-subscribed cell contributes
+    an O(1) term (squared over-fraction), keeping the weight comparable to the
+    other SA terms and the whole thing a no-op when no cell is over capacity.
+    """
+    if not signal_nets:
+        return 0.0
+    cell2 = cell_mm * cell_mm
+    grid: dict[tuple[int, int], float] = {}
+    for net in signal_nets:
+        pts = [positions[d] for d in net.designators if d in positions]
+        if len(pts) < 2:
+            continue
+        xs = [p[0] for p in pts]
+        ys = [p[1] for p in pts]
+        xmin, xmax = min(xs), max(xs)
+        ymin, ymax = min(ys), max(ys)
+        w, h = xmax - xmin, ymax - ymin
+        area = max(w * h, cell2)              # floor for near-1D/degenerate boxes
+        contrib = (w + h) / area * cell2       # ≈ HPWL spread, per cell
+        ci0, ci1 = int(xmin // cell_mm), int(xmax // cell_mm)
+        cj0, cj1 = int(ymin // cell_mm), int(ymax // cell_mm)
+        for ci in range(ci0, ci1 + 1):
+            for cj in range(cj0, cj1 + 1):
+                grid[(ci, cj)] = grid.get((ci, cj), 0.0) + contrib
+    capacity = max((cell_mm / max(track_pitch_mm, 0.1)) * cell_mm * signal_layers
+                   * DEMAND_UTILIZATION_LIMIT, 1e-6)
+    cost = 0.0
+    for demand in grid.values():
+        if demand > capacity:
+            over = (demand - capacity) / capacity
+            cost += over * over
+    return cost
+
+
 # ---- Escape-halo / fanout reservation (enhancement A) -------------------
 #
 # A dense or fine-pitch part needs a clear channel on its escape edges to fan
@@ -400,6 +482,7 @@ def _quality_cost(
     layers: dict[str, str] | None = None,
     escape_halos: dict[str, float] | None = None,
     th_map: dict[str, bool] | None = None,
+    signal_nets: list[NetInfo] | None = None,
 ) -> float:
     """Weighted sum of the placement-quality terms (proximity/crystal/grouping).
 
@@ -420,6 +503,9 @@ def _quality_cost(
     if escape_halos and config.escape_weight > 0 and packages:
         cost += config.escape_weight * _escape_halo_cost(
             positions, packages, layers, escape_halos, th_map or {})
+    if signal_nets and config.demand_weight > 0:
+        cost += config.demand_weight * _routing_demand_cost(
+            positions, signal_nets, config.escape_track_pitch_mm)
     if layers and config.two_sided and config.bottom_penalty > 0:
         cost += config.bottom_penalty * sum(
             1 for l in layers.values() if l == "bottom")
@@ -560,6 +646,11 @@ def optimize_placement(
                         + (f" ({len(config.focus_components)} routing-focused)"
                            if config.focus_components else ""))
 
+    # Routing-demand heatmap (enhancement B): signal nets only — plane
+    # (power/ground) nets are delivered by copper pours, not channels.
+    signal_nets = ([n for n in nets if n.net_class not in _PLANE_NET_CLASSES]
+                   if config.demand_weight > 0 else [])
+
     # Compute iteration count
     iterations = _compute_iterations(len(movable), config.max_iterations)
 
@@ -574,7 +665,8 @@ def optimize_placement(
         config.wire_weight * initial_wire
         + config.crossing_weight * initial_cross
         + _quality_cost(positions, config, decoupling, crystal_assocs, grouping_pairs, packages,
-                        layers=layers, escape_halos=escape_halos, th_map=th_map)
+                        layers=layers, escape_halos=escape_halos, th_map=th_map,
+                        signal_nets=signal_nets)
     )
 
     # SA state
@@ -639,7 +731,8 @@ def optimize_placement(
             config.wire_weight * ev_wire
             + config.crossing_weight * ev_cross
             + _quality_cost(new_pos, config, decoupling, crystal_assocs, grouping_pairs, packages,
-                            layers=new_layers, escape_halos=escape_halos, th_map=th_map)
+                            layers=new_layers, escape_halos=escape_halos, th_map=th_map,
+                            signal_nets=signal_nets)
         )
 
         # Accept or reject
