@@ -271,6 +271,26 @@ def replace_and_route(pcb_path, effort="best", max_seconds=None,
               f"routed={a.get('routed_nets')}/{a.get('total_nets')}", flush=True)
     if r.get("unrouted_nets"):
         print(f"     still unrouted: {r['unrouted_nets'][:12]}", flush=True)
+
+    # Save the routed result next to the input so it can be inspected and
+    # finished incrementally (`--incremental <saved>.kicad_pcb`) — Freerouting
+    # is nondeterministic, so an incremental finish on the residual reliably
+    # closes the last nets the protected majority already routed.
+    src = Path(pcb_path)
+    routed_json = pdir / "rep_routed.json"
+    if routed_json.exists():
+        out_json = src.with_name(src.stem + "_replace_routed.json")
+        out_pcb = src.with_name(src.stem + "_replace.kicad_pcb")
+        out_json.write_text(routed_json.read_text())
+        try:
+            from exporters.kicad_exporter import export_kicad_pcb
+            export_kicad_pcb(json.loads(routed_json.read_text()), netlist, out_pcb)
+            print(f"  saved: {out_pcb.name}  (finish residual: "
+                  f"python scripts/reroute_kicad_pcb.py {out_pcb.name} "
+                  f"{effort} --incremental --plane{plane_layers})", flush=True)
+        except Exception as exc:
+            print(f"  saved {out_json.name}; kicad export skipped: {exc}", flush=True)
+
     shutil.rmtree(tmp, ignore_errors=True); shutil.rmtree(tmpcache, ignore_errors=True)
     return r
 
