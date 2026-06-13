@@ -807,10 +807,26 @@ Beyond normalization, several mechanisms make netlist generation reliable down t
 
 Live results: Qwen3.6-35B-A3B (the floor target) takes the prior-crashing test boards from 0/7 to 7/7 *generation* success; routing/DRC quality then depends on board density and effort level.
 
+### Planned: Routability-Driven Placement
+
+**Motivation.** The SA placement optimizer minimizes *proxies* for routability — MST wirelength, MST crossings, pad-density congestion — but never models where traces actually need to go. On dense boards this plateaus: e.g. `morgan_carrier_v11` (4-layer, 73 parts, a 30-pin 0.5mm FH35 FPC `CN1`) autoroutes to ~77% and the unrouted nets all cluster around `CN1`'s fanout (its GPIO/SWD escapes + the opto/platen-driver nets they feed). The wall is local congestion / fanout space, not global capacity. These enhancements make placement *routing-aware*. Implement one at a time; **gate each on `scripts/eval_boards.py` (no regression on `test/requirements`) + a morgan re-route**, since a routability heuristic that helps one board can hurt another. Goal is to push the autoroutable fraction up (~77% → ~90%+), not to 100% — some fine-pitch fanouts still finish best by hand.
+
+Highest-leverage first:
+
+- **A. Escape-halo / fanout reservation around dense parts.** A 30-pin 0.5mm part needs ≈`pins × (trace+clearance)` of clear channel on its escape edge(s); nothing reserves it today, so neighbours crowd the pin rows and escapes have nowhere to go. Compute a per-component *fanout demand* (pin count + leaving-net count) and penalize foreign pads within an escape halo sized to that demand. Directly targets the CN1 cluster. Builds on the existing `_congestion_cost` machinery in `optimizers/placement_optimizer.py`. Effort: moderate.
+- **B. Congestion-driven placement on routing *demand* (not pad count).** Replace/augment the pad-density `_congestion_cost` with the classic EDA approach: rasterize each net's bounding box (or MST segments) onto a coarse grid, sum overlaps → a routing-demand heatmap, penalize hotspots. Measures the thing that actually fails (many nets wanting one channel) rather than where copper pads happen to sit. The biggest single "make SA routability-aware" upgrade; generalizes beyond fine-pitch. Effort: moderate.
+- **C. Localized routing-feedback re-place.** `run_route_with_retry` (`orchestrator/stages.py`) currently bumps clearance *globally* +0.5mm — blunt, disturbs parts that routed fine. Instead use the router as oracle: from the incomplete route's `unrouted_nets` + `pad_map`, find their bounding region and apply a *local* spacing/halo increase there, then re-route. Targeted; preserves the already-routed majority. We already have `unrouted_nets` and pad positions. Effort: moderate.
+- **D. Connector fanout orientation + pin-ordered neighbours.** Orient high-pin connectors so their pins face open board area, and place the components they feed on that side in roughly pin order so the fanout doesn't self-cross. Today connectors are edge-pinned without considering pin-exit direction or neighbour ordering. High value for connector-heavy boards. Effort: moderate–high.
+- **E. Pin-pitch-scaled clearance.** Generalize the single global `min_clearance_mm` to per-component: fine-pitch / high-pin parts get a larger keepout automatically (a lighter cousin of A). Effort: low.
+- **F. Decoupling caps under the IC (two-sided).** Extend the layer-flip move to place a chip's decoupling caps on the bottom directly beneath it — frees the IC's top-side escape perimeter and improves decoupling. Today caps scatter by congestion, competing for escape channels. Compounds with A. Effort: moderate.
+
+Recommended order: **A + C** as a focused pair (fastest win on connector-heavy boards), or **B** as the bigger principled bet; then **D**, then **E/F** as refinements.
+
 ### Future Enhancements
 
 - **Manufacturer quoting (Step 7)**: Auto-submit BOM, Gerbers, assembly files to manufacturer APIs (JLCPCB, PCBWay, OSH Park) for fabrication + assembly quotes. Present comparison to user. Steps 5-6 produce submission-ready files in manufacturer-expected formats. Blocked on: vendor API availability or TOS review for agent accounts + Playwright.
 - **build123d for richer 3D models**: Replace hand-written STEP BREP boxes with build123d parametric shapes (rounded IC bodies, pin legs, LED domes, etc.). Blocked on: build123d/cadquery adding Python 3.14 support (requires OpenCascade `cadquery-ocp` wheels).
+- **6-layer stackup**: For boards that exceed 3 signal layers + GND plane (e.g. `sig/GND/sig/sig/PWR/sig`), the principled next step over dropping to `plane_layers=0` on 4-layer. Extends `_COPPER_LAYERS_BY_COUNT` and `inner_plane_count`.
 
 ## User-Defined Component Positions
 
