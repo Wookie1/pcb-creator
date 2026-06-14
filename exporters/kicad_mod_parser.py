@@ -147,6 +147,13 @@ class KiCadLibraryIndex:
     def __init__(self, library_root: str | Path) -> None:
         self._root = Path(library_root)
         self._index: dict[str, Path] | None = None  # lazy
+        # Parsed-footprint cache keyed by resolved file path. Parsing a
+        # .kicad_mod (read + tokenize + s-expr parse) is expensive and the hot
+        # placement loops (repair/optimize) resolve the same packages thousands
+        # of times — without this, repair_placement re-parses every footprint on
+        # every iteration (≈2000s for morgan on a Pi). A FootprintDef for a given
+        # file never changes within a run, so caching the parse is safe.
+        self._parsed: dict[Path, "FootprintDef | None"] = {}
 
     def _build_index(self) -> dict[str, Path]:
         """Scan all .kicad_mod files and build the alias map."""
@@ -191,7 +198,11 @@ class KiCadLibraryIndex:
         if path is None:
             return None
 
-        fp = parse_kicad_mod(path)
+        if path in self._parsed:
+            fp = self._parsed[path]
+        else:
+            fp = parse_kicad_mod(path)
+            self._parsed[path] = fp
         if fp is None:
             return None
 
@@ -208,6 +219,7 @@ class KiCadLibraryIndex:
         that subsequent ``get_footprint`` calls see the new files.
         """
         self._index = None
+        self._parsed.clear()
 
     @property
     def root(self) -> Path:
