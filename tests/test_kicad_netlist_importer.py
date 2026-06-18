@@ -112,6 +112,27 @@ class TestInferComponentType:
     def test_fuse(self):       assert _infer_component_type("F1")   == "fuse"
     def test_unknown(self):    assert _infer_component_type("MODULE1") == "ic"
 
+    # Connector designator prefixes beyond J/P/CN (morgan_carrier_v14 had these
+    # mis-classified as "ic", so the optimizer relocated them off the edge).
+    def test_terminal_block(self): assert _infer_component_type("TB1")  == "connector"
+    def test_header(self):         assert _infer_component_type("HDR1") == "connector"
+    def test_swd(self):            assert _infer_component_type("SWD1") == "connector"
+    def test_swd_not_switch(self): assert _infer_component_type("SWD2") != "switch"
+
+    # Footprint keywords override the designator prefix — even an unconventional
+    # designator is a connector if its footprint is a TerminalBlock/Connector/FFC.
+    def test_pkg_terminalblock(self):
+        assert _infer_component_type("X9",
+            "TerminalBlock_Phoenix_MKDS-1,5-2-5.08_1x02_P5.08mm_Horizontal") == "connector"
+    def test_pkg_ffc_hirose(self):
+        assert _infer_component_type("CN1", "FH35-30S-0.5SV_52") == "connector"
+    def test_pkg_molex(self):
+        assert _infer_component_type("TB1",
+            "Molex_Micro-Fit_3.0_43650-0600_1x06_P3.00mm_Horizontal") == "connector"
+    def test_pkg_does_not_override_ic(self):
+        # A normal IC footprint keeps the prefix-based type.
+        assert _infer_component_type("U1", "TI_SO-PowerPAD-8") == "ic"
+
 
 class TestInferNetClass:
     def test_gnd(self):        assert _infer_net_class("GND")    == "ground"

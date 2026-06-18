@@ -1725,6 +1725,7 @@ def optimize_placement(
     seed: int | None = None,
     two_sided: bool = False,
     plane_layers: int | None = None,
+    layers: int | None = None,
 ) -> dict:
     """Place components deterministically and optimize the layout (no LLM).
 
@@ -1745,18 +1746,35 @@ def optimize_placement(
     completion; prefer a larger board when routing (not fit) is the problem.
     Connectors, ICs, LEDs, and through-hole parts always stay on top.
 
+    layers sets the copper layer count: 2 (default) or 4. Use 4 for dense /
+    fine-pitch boards (e.g. a connector with many GPIO) that cannot route on
+    2 layers — a 4-layer board adds inner copper for power/ground planes and/or
+    extra signal routing. Persists for re-placements; routing and export follow
+    the placement's layer count.
+
     plane_layers (4-layer boards only) sets how many inner layers are solid
     PLANES: 2 (default) = In1 GND + In2 power planes, 2 signal layers (best
     power integrity); 1 = In1 GND plane only, In2 becomes a 3rd SIGNAL layer
     (power routed as traces) — use for dense / many-signal boards (e.g. a
     fine-pitch connector with lots of GPIO) that won't route on 2 signal
     layers; 0 = all inner layers signal. Persists for re-placements.
+    NOTE: passing plane_layers implies a 4-layer board — if the board is
+    currently 2-layer it is automatically promoted to 4 layers (plane_layers
+    has no meaning on 2 layers, and silently ignoring it is how a board that
+    needed 4 layers ends up over-crammed onto 2).
 
     Example: optimize_placement("my_board", board_width_mm=45,
-                                board_height_mm=18, two_sided=True,
-                                plane_layers=1)
+                                board_height_mm=18, layers=4, plane_layers=1)
     """
     from orchestrator import stages
+
+    if layers is not None and layers not in (2, 4):
+        return fail(
+            f"layers must be 2 or 4 (got {layers}).",
+            remediation=[option(
+                "Re-run with layers=4 for a dense board", "optimize_placement",
+                {"project_name": project_name, "layers": 4})],
+        )
 
     pdir = _project_dir(project_name)
     if not pdir.exists():
@@ -1783,6 +1801,7 @@ def optimize_placement(
             seed=seed,
             two_sided=two_sided or None,
             plane_layers=plane_layers,
+            layers=layers,
         )
     except Exception as exc:
         return fail(f"Placement failed: {exc}")
@@ -1824,11 +1843,17 @@ def optimize_placement(
         return fail(result.get("error", "Placement failed."),
                     remediation=rem or None, data=result)
 
+    promo = ""
+    if result.get("layers_promoted"):
+        promo = (f" NOTE: promoted to a {result.get('layers')}-layer board "
+                 f"(plane_layers={result.get('plane_layers')}) because an inner-"
+                 "plane stackup was requested.")
     return ok(result, next_step(
         "route_board", {"project_name": project_name},
-        f"Placement done: wire length {result.get('wire_length_mm')}mm, "
-        f"{result.get('crossings')} crossings. Routing runs in the background; "
-        "poll get_project_status afterwards.",
+        f"Placement done ({result.get('layers')}-layer): wire length "
+        f"{result.get('wire_length_mm')}mm, {result.get('crossings')} crossings."
+        f"{promo} Routing runs in the background; poll get_project_status "
+        "afterwards.",
     ))
 
 

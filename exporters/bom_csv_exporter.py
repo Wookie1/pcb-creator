@@ -82,11 +82,16 @@ def export_pick_and_place(
 
     items = placement.get("placements", [])
 
-    # Build value lookup from BOM
+    # Build value lookup from BOM. A grouped BOM lists several designators in
+    # one "designator" field ("R1, R2, R3"), so split on commas.
     bom_values: dict[str, str] = {}
     if bom:
         for entry in bom.get("bom", []):
-            bom_values[entry.get("designator", "")] = entry.get("value", "")
+            val = entry.get("value", "")
+            for d in str(entry.get("designator", "")).split(","):
+                d = d.strip()
+                if d:
+                    bom_values[d] = val
 
     with open(output_path, "w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)

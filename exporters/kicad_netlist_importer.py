@@ -41,12 +41,42 @@ _REF_TYPE_RULES: list[tuple[re.Pattern, str]] = [
     (re.compile(r"^IC\d"),  "ic"),
     (re.compile(r"^Y\d"),   "crystal"),
     (re.compile(r"^X\d"),   "crystal"),
+    # Connectors come in many designator flavours. SWD/HDR/TB must precede the
+    # bare H/SW rules below (SWD is a connector, not a switch; HDR is a header,
+    # not a mounting hole). J/P/CN are the classic KiCad connector prefixes.
+    (re.compile(r"^SWD"),   "connector"),
+    (re.compile(r"^HDR"),   "connector"),
+    (re.compile(r"^TB\d"),  "connector"),
     (re.compile(r"^J\d"),   "connector"),
     (re.compile(r"^P\d"),   "connector"),
     (re.compile(r"^CN\d"),  "connector"),
+    (re.compile(r"^CON\d"), "connector"),
     (re.compile(r"^SW\d"),  "switch"),
     (re.compile(r"^K\d"),   "relay"),
     (re.compile(r"^F\d"),   "fuse"),
+]
+
+# Footprint/package name keywords → component type. Checked BEFORE the
+# designator prefix because the footprint is a far more reliable signal: a part
+# designated "TB3" or "SWD1" or an unconventional prefix is still unambiguously
+# a connector if its footprint is a TerminalBlock / Connector / FFC pattern.
+# (morgan_carrier_v14 had TB1-5/HDR1/SWD1 all mis-classified as "ic" because
+# their designators weren't in the prefix table, so the optimizer relocated
+# them off the board edge.)
+_PKG_TYPE_KEYWORDS: list[tuple[str, str]] = [
+    ("terminalblock", "connector"),
+    ("terminal_block", "connector"),
+    ("connector", "connector"),
+    ("pinheader", "connector"),
+    ("pin_header", "connector"),
+    ("pinsocket", "connector"),
+    ("idc", "connector"),
+    ("molex", "connector"),
+    ("jst", "connector"),
+    ("phoenix", "connector"),
+    ("ffc", "connector"),
+    ("fpc", "connector"),
+    ("fh35", "connector"),       # Hirose FH35 FFC/FPC connector
 ]
 
 _VALID_COMPONENT_TYPES = {
@@ -56,7 +86,13 @@ _VALID_COMPONENT_TYPES = {
 }
 
 
-def _infer_component_type(ref: str) -> str:
+def _infer_component_type(ref: str, package: str = "") -> str:
+    # Footprint keywords win over the designator prefix (more reliable).
+    if package:
+        pkg_l = package.lower()
+        for kw, ctype in _PKG_TYPE_KEYWORDS:
+            if kw in pkg_l:
+                return ctype
     for pattern, ctype in _REF_TYPE_RULES:
         if pattern.match(ref):
             return ctype
@@ -308,9 +344,9 @@ def _build_netlist(
 
     # --- component + port elements ---
     for ref, meta in sorted(comp_meta.items()):
-        ctype    = _infer_component_type(ref)
         pkg_raw  = meta.get("footprint", "")
         pkg      = _strip_footprint_library(pkg_raw) if pkg_raw else "Unknown"
+        ctype    = _infer_component_type(ref, pkg)
         value    = meta.get("value", ref) or ref
 
         elements.append({
@@ -365,8 +401,10 @@ def _build_netlist(
 
             # Refine electrical_type now that we know the net class
             if pid in port_idx:
-                ctype = comp_meta.get(ref, {})
-                ctype_str = _infer_component_type(ref)
+                meta = comp_meta.get(ref, {})
+                pkg_raw = meta.get("footprint", "")
+                pkg = _strip_footprint_library(pkg_raw) if pkg_raw else ""
+                ctype_str = _infer_component_type(ref, pkg)
                 etype = _infer_electrical_type(nclass, ctype_str)
                 elements[port_idx[pid]]["electrical_type"] = etype
 

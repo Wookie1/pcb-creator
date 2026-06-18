@@ -204,6 +204,7 @@ def run_placement(
     congestion_weight: float = 0.0,
     two_sided: bool | None = None,
     plane_layers: int | None = None,
+    layers: int | None = None,
     escape_weight: float | None = None,
     focus_components: list[str] | None = None,
 ) -> dict:
@@ -282,8 +283,23 @@ def run_placement(
     if bh is None:
         bh = 50.0
 
-    # Resolve layer count (existing placement → circuit draft → requirements).
-    num_layers = _resolve_layers(project_dir, project_name)
+    # Resolve layer count: explicit `layers` arg wins, else existing placement →
+    # circuit draft → requirements (default 2).
+    if layers in (2, 4):
+        num_layers = int(layers)
+    else:
+        num_layers = _resolve_layers(project_dir, project_name)
+
+    # Auto-promote to 4 layers when an inner-plane stackup is requested. The
+    # plane_layers parameter only has meaning on a 4-layer board; without this
+    # guard, passing plane_layers on a 2-layer board was silently ignored —
+    # which is exactly how a board that needed 4 layers got routed (and
+    # over-crammed) on 2 (morgan_carrier_v14: plane_layers=0 but layers stayed
+    # 2, producing shorts/unconnected that read as a "fake" 100% route).
+    layers_promoted = False
+    if plane_layers is not None and num_layers < 4:
+        num_layers = 4
+        layers_promoted = True
 
     # Deterministic seed placement
     placement = generate_grid_placement(netlist, bw, bh, project_name,
@@ -434,6 +450,9 @@ def run_placement(
         "crossings": ev.total_cross,
         "board_width_mm": bw,
         "board_height_mm": bh,
+        "layers": num_layers,
+        "plane_layers": placement["board"].get("plane_layers"),
+        "layers_promoted": layers_promoted,
         "placement_path": str(placement_path),
     }
 
@@ -1004,6 +1023,45 @@ def run_drc(project_dir: Path, project_name: str, config, log=None) -> dict:
 # Output generation (Gerbers, drill, BOM CSV, CPL, STEP, ZIP)
 # ---------------------------------------------------------------------------
 
+def _bom_from_netlist(netlist: dict) -> dict:
+    """Synthesize a BOM (grouped by value+package) from the netlist.
+
+    Used when no <project>_bom.json exists so the manufacturing package still
+    includes a BOM CSV. Without this, export silently skips the BOM whenever the
+    board came from a KiCad netlist import (no separate BOM file) — the missing
+    BOM half of the "manufacturing package incomplete" report. Mounting holes
+    and fiducials are excluded (not assembly parts).
+    """
+    import re as _re
+    from collections import defaultdict
+
+    def _natkey(des: str):
+        m = _re.match(r"^([A-Za-z]+)(\d+)", des)
+        return (m.group(1), int(m.group(2))) if m else (des, 0)
+
+    groups: dict[tuple, list[str]] = defaultdict(list)
+    for e in netlist.get("elements", []):
+        if e.get("element_type") != "component":
+            continue
+        pkg = e.get("package", "") or ""
+        ctype = e.get("component_type", "")
+        if ctype in ("fiducial", "mounting_hole") or "mountinghole" in pkg.lower():
+            continue
+        groups[(e.get("value", "") or "", pkg)].append(e.get("designator", ""))
+
+    bom = []
+    for (value, pkg), dess in groups.items():
+        dess_sorted = sorted((d for d in dess if d), key=_natkey)
+        bom.append({
+            "designator": ", ".join(dess_sorted),
+            "value": value,
+            "package": pkg,
+            "quantity": len(dess_sorted),
+        })
+    bom.sort(key=lambda b: _natkey(b["designator"].split(",")[0]))
+    return {"bom": bom}
+
+
 def run_export(project_dir: Path, project_name: str, config, log=None) -> dict:
     """Generate manufacturing outputs from the routed board.
 
@@ -1033,6 +1091,10 @@ def run_export(project_dir: Path, project_name: str, config, log=None) -> dict:
     netlist_data = _load(netlist_path) if netlist_path.exists() else {}
     bom_path = _p(project_dir, project_name, "bom")
     bom_data = _load(bom_path) if bom_path.exists() else None
+    # No standalone BOM file (e.g. KiCad-netlist import) — derive one from the
+    # netlist so the manufacturing package always ships a BOM CSV.
+    if bom_data is None and netlist_data.get("elements"):
+        bom_data = _bom_from_netlist(netlist_data)
 
     output_dir = project_dir / "output"
     output_dir.mkdir(exist_ok=True)

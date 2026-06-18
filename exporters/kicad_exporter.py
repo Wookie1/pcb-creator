@@ -9,6 +9,7 @@ which is sufficient for manual routing in KiCad.
 
 from __future__ import annotations
 
+import json
 import re
 import uuid
 from pathlib import Path
@@ -39,6 +40,57 @@ def _is_through_hole(package: str) -> bool:
         if package.upper().startswith(prefix.upper()):
             return True
     return False
+
+
+def _mounting_hole_drill_mm(package: str, component_type: str = "") -> float | None:
+    """Return the drill diameter (mm) if this part is a mounting hole, else None.
+
+    Mounting holes are NPTH (non-plated through holes) with no copper pad and no
+    net. They are detected by package name ("MountingHole_3.2mm_M3") or by the
+    "mounting_hole" component type. Without this, the footprint resolver can't
+    parse a mounting-hole .kicad_mod (its pad is unnumbered np_thru_hole, which
+    the parser skips) and falls back to an SMD placeholder pad — the recurring
+    "H1-H4 are SMD pads, not drilled NPTH" bug.
+    """
+    pkg = (package or "").lower()
+    if "mountinghole" not in pkg and "mounting_hole" not in pkg \
+            and component_type != "mounting_hole":
+        return None
+    # Parse the hole/drill diameter from the package name, e.g.
+    # "MountingHole_3.2mm_M3" -> 3.2. Fall back to 3.2mm (M3) if absent.
+    m = re.search(r"(\d+(?:\.\d+)?)\s*mm", pkg)
+    if m:
+        return round(float(m.group(1)), 3)
+    return 3.2
+
+
+def _mounting_hole_footprint(plc: dict, drill_mm: float) -> str:
+    """Generate an NPTH mounting-hole footprint: a single non-plated through
+    hole, no copper, no net, excluded from BOM/position files."""
+    des = plc["designator"]
+    package = plc.get("package", "MountingHole")
+    cx, cy = plc["x_mm"], plc["y_mm"]
+    # A small annular ring of bare copper is conventional but a pure NPTH has
+    # size == drill (no copper). Keep it pure NPTH so DRC sees no net.
+    d = round(drill_mm, 3)
+    pad_clear = round(d + 1.0, 3)  # courtyard around the hole
+    return "\n".join([
+        f'  (footprint "pcb-creator:{des}_{package}"',
+        f'    (layer "F.Cu")',
+        f'    (tstamp {_uid()})',
+        f'    (at {cx} {cy})',
+        f'    (attr exclude_from_pos_files exclude_from_bom)',
+        f'    (property "Reference" "{des}"',
+        f'      (at 0 {-pad_clear/2 - 1.0})',
+        f'      (layer "F.SilkS")',
+        f'      (effects (font (size 1 1) (thickness 0.15)))',
+        f'    )',
+        f'    (fp_circle (center 0 0) (end {d/2} 0)'
+        f' (stroke (width 0.05) (type default)) (layer "F.CrtYd"))',
+        f'    (pad "" np_thru_hole circle (at 0 0)'
+        f' (size {d} {d}) (drill {d}) (layers "*.Cu" "*.Mask"))',
+        f'  )',
+    ])
 
 
 def _uid() -> str:
@@ -177,6 +229,12 @@ def _footprint(
     layer = _LAYER_MAP.get(plc.get("layer", "top"), "F.Cu")
     fw = plc.get("footprint_width_mm", 2.0)
     fh = plc.get("footprint_height_mm", 1.0)
+
+    # Mounting holes export as NPTH (no copper pad, no net) — never as the
+    # SMD-placeholder footprint the resolver falls back to.
+    mh_drill = _mounting_hole_drill_mm(package, plc.get("component_type", ""))
+    if mh_drill is not None:
+        return _mounting_hole_footprint(plc, mh_drill)
 
     # Find component info to get pin count
     comp_id = None
@@ -417,6 +475,93 @@ def _silkscreen(silk_items: list[dict]) -> str:
 # Public API
 # ---------------------------------------------------------------------------
 
+def _net_class(name: str, clearance: float, track_w: float,
+               via_dia: float, via_drill: float) -> dict:
+    """One KiCad net-class entry (KiCad 9 .kicad_pro schema)."""
+    return {
+        "name": name,
+        "clearance": round(clearance, 4),
+        "track_width": round(track_w, 4),
+        "via_diameter": round(via_dia, 4),
+        "via_drill": round(via_drill, 4),
+        "diff_pair_width": 0.2,
+        "diff_pair_gap": 0.25,
+        "diff_pair_via_gap": 0.25,
+        "microvia_diameter": 0.3,
+        "microvia_drill": 0.1,
+        "bus_width": 12,
+        "wire_width": 6,
+        "priority": 2147483647,
+        "line_style": 0,
+        "pcb_color": "rgba(0, 0, 0, 0.000)",
+        "schematic_color": "rgba(0, 0, 0, 0.000)",
+    }
+
+
+def build_kicad_pro(routed: dict, project_name: str) -> dict:
+    """Build a .kicad_pro project dict whose design rules MATCH how the board
+    was actually routed.
+
+    KiCad 9's ``kicad-cli pcb drc`` reads net-class clearance / track width and
+    the board minimum-clearance rule from the sibling .kicad_pro — NOT from the
+    .kicad_pcb. Without one it falls back to its 0.2mm defaults, so a fine-pitch
+    board routed at 0.127mm gets a false clearance violation on essentially every
+    trace. Emitting the real rules here is what lets DRC pass a board that is in
+    fact correct.
+    """
+    cfg = routed.get("routing", {}).get("config", {})
+    clearance = float(cfg.get("trace_clearance_mm", 0.2))
+    track_w = float(cfg.get("trace_width_signal_mm", 0.2))
+    via_dia = float(cfg.get("via_diameter_mm", 0.6))
+    via_drill = float(cfg.get("via_drill_mm", 0.3))
+
+    return {
+        "meta": {"filename": f"{project_name}.kicad_pro", "version": 3},
+        "board": {
+            "design_settings": {
+                "defaults": {},
+                "drc_exclusions": [],
+                "rule_severities": {},
+                "rules": {
+                    "min_clearance": round(clearance, 4),
+                    "min_track_width": round(track_w, 4),
+                    "min_via_diameter": round(via_dia, 4),
+                    "min_through_hole_diameter": round(via_drill, 4),
+                    "min_hole_clearance": 0.2,
+                    "min_hole_to_hole": 0.25,
+                },
+                "meta": {"version": 2},
+            }
+        },
+        "net_settings": {
+            "meta": {"version": 3},
+            "net_colors": None,
+            "netclass_assignments": None,
+            "netclass_patterns": [],
+            "classes": [
+                _net_class("Default", clearance, track_w, via_dia, via_drill),
+            ],
+        },
+        "schematic": {},
+        "sheets": [],
+        "cvpcb": {},
+        "libraries": {"pinned_footprint_libs": [], "pinned_symbol_libs": []},
+        "pcbnew": {"last_paths": {}, "page_layout_descr_file": ""},
+        "text_variables": {},
+    }
+
+
+def export_kicad_pro(routed: dict, output_path: str | Path) -> Path:
+    """Write a .kicad_pro next to the .kicad_pcb so DRC honors the routed rules."""
+    output_path = Path(output_path)
+    project_name = output_path.stem
+    output_path.write_text(
+        json.dumps(build_kicad_pro(routed, project_name), indent=2),
+        encoding="utf-8",
+    )
+    return output_path
+
+
 def export_kicad_pcb(
     routed: dict,
     netlist: dict,
@@ -503,5 +648,9 @@ def export_kicad_pcb(
     content = "\n".join(parts) + "\n"
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(content, encoding="utf-8")
+
+    # Emit a sibling .kicad_pro so kicad-cli DRC honors the routed design rules
+    # (clearance/track width) instead of its 0.2mm defaults.
+    export_kicad_pro(routed, output_path.with_suffix(".kicad_pro"))
 
     return output_path

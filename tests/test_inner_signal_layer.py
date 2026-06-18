@@ -6,6 +6,8 @@ plane_layers controls how many inner layers are solid planes vs signal:
   0           = all inner layers signal
 """
 
+import json
+
 import pytest
 
 from optimizers.router import inner_plane_count
@@ -95,3 +97,47 @@ class TestInnerSignalTraceFill:
         assert any(t["layer"] == "inner2" for t in out["routing"]["traces"])
         fills = {f["layer"] for f in out["routing"].get("copper_fills", [])}
         assert "inner1" in fills and "inner2" not in fills
+
+
+class TestLayerCountPlumbing:
+    """run_placement must let the caller set the layer count and must never
+    silently ignore plane_layers. Regression for morgan_carrier_v14, which was
+    routed/exported as 2-layer despite plane_layers=0 because plane_layers had
+    no `layers` to attach to — over-cramming a 4-layer design onto 2 layers."""
+
+    _NETLIST = {"version": "1.0", "project_name": "t", "elements": [
+        {"element_type": "component", "component_id": "comp_u1",
+         "designator": "U1", "component_type": "ic", "value": "x",
+         "package": "SOIC-8"},
+        {"element_type": "port", "port_id": "port_u1_1",
+         "component_id": "comp_u1", "pin_number": 1, "name": "OUT",
+         "electrical_type": "signal"},
+        {"element_type": "net", "net_id": "net_sig", "name": "SIG",
+         "connected_port_ids": ["port_u1_1"], "net_class": "signal"}]}
+
+    def _place(self, tmp_path, **kw):
+        from orchestrator import stages
+        (tmp_path / "t_netlist.json").write_text(json.dumps(self._NETLIST))
+        r = stages.run_placement(tmp_path, "t", object(),
+                                 board_width_mm=40, board_height_mm=30, **kw)
+        assert r["success"], r.get("error")
+        board = json.loads((tmp_path / "t_placement.json").read_text())["board"]
+        return r, board
+
+    def test_default_is_two_layer(self, tmp_path):
+        r, board = self._place(tmp_path)
+        assert r["layers"] == 2 and board["layers"] == 2
+        assert not r["layers_promoted"]
+
+    def test_explicit_four_layer(self, tmp_path):
+        r, board = self._place(tmp_path, layers=4)
+        assert r["layers"] == 4 and board["layers"] == 4
+        assert board["plane_layers"] == 2  # default stackup
+        assert not r["layers_promoted"]
+
+    def test_plane_layers_promotes_to_four(self, tmp_path):
+        # The morgan case: plane_layers=0 on a would-be 2-layer board.
+        r, board = self._place(tmp_path, plane_layers=0)
+        assert r["layers"] == 4 and board["layers"] == 4
+        assert board["plane_layers"] == 0
+        assert r["layers_promoted"] is True

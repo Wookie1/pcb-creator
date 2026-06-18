@@ -52,7 +52,7 @@ DESIGNATOR_MAP = {
     "transistor_nmos": ["Q"],
     "transistor_pmos": ["Q"],
     "ic": ["U"],
-    "connector": ["J"],
+    "connector": ["J", "P", "CN", "CON", "TB", "HDR", "SWD", "X"],
     "switch": ["SW"],
     "voltage_regulator": ["U"],
     "crystal": ["Y"],

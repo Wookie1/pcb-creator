@@ -439,6 +439,15 @@ def export_drill(
             drill = max(0.6, round(min(pad.pad_width_mm, pad.pad_height_mm) + 0.2, 2))
             holes.append((pad.x_mm, pad.y_mm, drill))
 
+    # NPTH mounting holes — not in pad_map (their .kicad_mod pad is unnumbered),
+    # so collect them from the placements directly.
+    from exporters.kicad_exporter import _mounting_hole_drill_mm
+    for plc in routed.get("placements", []):
+        d = _mounting_hole_drill_mm(plc.get("package", ""),
+                                    plc.get("component_type", ""))
+        if d is not None:
+            holes.append((plc["x_mm"], plc["y_mm"], round(d, 3)))
+
     if not holes:
         # Write empty drill file
         output_path.write_text("M48\nMETRIC,TZ\n%\nM30\n")
