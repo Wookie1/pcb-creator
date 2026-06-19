@@ -311,7 +311,9 @@ def _footprint(
         f'    (property "Reference" "{des}"',
         f'      (at 0 {-fh/2 - 1.0})',
         f'      (layer "{layer.replace("Cu", "SilkS")}")',
-        f'      (effects (font (size 1 1) (thickness 0.15)))',
+        # Smaller reference text reduces silkscreen overlap / silk-over-pad
+        # clipping on dense boards (it is the only property on the silk layer).
+        f'      (effects (font (size 0.6 0.6) (thickness 0.1)))',
         f'    )',
         f'    (property "Value" "{package}"',
         f'      (at 0 {fh/2 + 1.0})',
