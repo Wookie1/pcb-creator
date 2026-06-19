@@ -712,6 +712,8 @@ def run_routing(project_dir: Path, project_name: str, config,
                         clearance_mm=router_kwargs.get("clearance_mm", 0.127),
                         via_diameter_mm=router_kwargs.get("via_diameter_mm", 0.45),
                         via_drill_mm=router_kwargs.get("via_drill_mm", 0.2),
+                        num_layers=num_layers,
+                        plane_layers=plane_layers,
                     )
                     escapes = generate_escape_routing(
                         placement_data, netlist_data, ecfg,
