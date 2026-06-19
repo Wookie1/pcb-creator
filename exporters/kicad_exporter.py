@@ -64,6 +64,37 @@ def _mounting_hole_drill_mm(package: str, component_type: str = "") -> float | N
     return 3.2
 
 
+def _allow_mask_bridges(fp_def, mask_clearance: float = 0.05,
+                        min_web: float = 0.15) -> bool:
+    """True if any two pads of this footprint sit closer than the manufacturable
+    solder-mask web, so their mask apertures merge.
+
+    Fine-pitch parts (e.g. a 0.5mm FFC connector) legitimately have mask that
+    bridges between their own pads — the manufacturer handles it — but KiCad's
+    DRC flags every such pair unless the footprint carries
+    ``allow_soldermask_bridges``. We add that attr only to footprints that
+    actually bridge, so real mask slivers on coarse parts are still caught.
+
+    A pad's mask aperture is the pad grown by *mask_clearance* per side. Two
+    apertures merge when the edge-to-edge separation drops below *min_web*.
+    """
+    pts = list(fp_def.pin_offsets.values())
+    if len(pts) < 2:
+        return False
+    pw, ph = fp_def.pad_size
+    span_x = pw + 2 * mask_clearance   # full mask width  (pad + clearance both sides)
+    span_y = ph + 2 * mask_clearance   # full mask height
+    n = len(pts)
+    for i in range(n):
+        xi, yi = pts[i]
+        for j in range(i + 1, n):
+            gx = max(0.0, abs(xi - pts[j][0]) - span_x)
+            gy = max(0.0, abs(yi - pts[j][1]) - span_y)
+            if (gx * gx + gy * gy) ** 0.5 < min_web:
+                return True
+    return False
+
+
 def _mounting_hole_footprint(plc: dict, drill_mm: float) -> str:
     """Generate an NPTH mounting-hole footprint: a single non-plated through
     hole, no copper, no net, excluded from BOM/position files."""
@@ -258,6 +289,13 @@ def _footprint(
         f'    (layer "{layer}")',
         f'    (tstamp {_uid()})',
         f'    (at {cx} {cy} {rot})',
+    ]
+    # Fine-pitch parts whose mask apertures merge: tell DRC the bridges are
+    # intended (manufacturer-handled) rather than flagging every adjacent pair.
+    if _allow_mask_bridges(fp_def):
+        mount = "through_hole" if is_th else "smd"
+        lines.append(f'    (attr {mount} allow_soldermask_bridges)')
+    lines += [
         f'    (property "Reference" "{des}"',
         f'      (at 0 {-fh/2 - 1.0})',
         f'      (layer "{layer.replace("Cu", "SilkS")}")',

@@ -9,10 +9,55 @@ the parser skips, so the part fell back to a 3mm SMD pad placeholder.
 import tempfile
 from pathlib import Path
 
+from optimizers.pad_geometry import FootprintDef
+
 from exporters.kicad_exporter import (
-    _mounting_hole_drill_mm, _footprint, build_kicad_pro,
+    _mounting_hole_drill_mm, _footprint, build_kicad_pro, _allow_mask_bridges,
 )
 from exporters.gerber_exporter import export_drill
+
+
+class TestSolderMaskBridges:
+    """Fine-pitch footprints whose mask apertures merge get
+    allow_soldermask_bridges so DRC stops flagging every adjacent pad pair;
+    coarse parts (where a mask sliver would be a real defect) do not."""
+
+    def test_fine_pitch_ffc_allows(self):
+        ffc = FootprintDef(
+            pin_offsets={i: (round(i * 0.5, 3), 0.0) for i in range(10)},
+            pad_size=(0.27, 1.3))
+        assert _allow_mask_bridges(ffc) is True
+
+    def test_soic_does_not_allow(self):
+        soic = FootprintDef(
+            pin_offsets={1: (0, 2.0), 2: (1.27, 2.0), 3: (2.54, 2.0),
+                         4: (0, -2.0)}, pad_size=(0.6, 1.5))
+        assert _allow_mask_bridges(soic) is False
+
+    def test_0805_does_not_allow(self):
+        r = FootprintDef(pin_offsets={1: (-1.0, 0), 2: (1.0, 0)},
+                         pad_size=(1.0, 1.3))
+        assert _allow_mask_bridges(r) is False
+
+    def test_single_pad_never_bridges(self):
+        assert _allow_mask_bridges(
+            FootprintDef(pin_offsets={1: (0, 0)}, pad_size=(0.3, 0.3))) is False
+
+    def test_attr_emitted_in_footprint(self):
+        plc = {"designator": "CN1", "package": "FH35", "x_mm": 10, "y_mm": 10,
+               "rotation_deg": 0, "layer": "top", "component_type": "connector"}
+        fp_def = FootprintDef(
+            pin_offsets={i: (round(i * 0.5, 3), 0.0) for i in range(6)},
+            pad_size=(0.27, 1.3))
+        # Patch resolver to return our fine-pitch def
+        import exporters.kicad_exporter as ke
+        orig = ke.get_footprint_def
+        ke.get_footprint_def = lambda *a, **k: fp_def
+        try:
+            fp = _footprint(plc, {}, {}, {})
+        finally:
+            ke.get_footprint_def = orig
+        assert "allow_soldermask_bridges" in fp
 
 
 class TestKicadProDesignRules:
