@@ -286,11 +286,21 @@ def _footprint(
 
     is_th = _is_through_hole(package)
 
+    # KiCad rotates a footprint CLOCKWISE for a positive angle, but the rest of
+    # the pipeline (build_pad_map / DSN / SES / validation) rotates pad offsets
+    # COUNTER-CLOCKWISE (_rotate_offset). Writing the raw rotation therefore put
+    # every 90°/270° part's pads where KiCad's CW rotation lands them — 180° off
+    # build_pad_map, so the router's traces (placed at build_pad_map positions)
+    # connected to the WRONG pad → ~85 false Pad↔Track shorts on morgan. Emit the
+    # NEGATED angle so KiCad's CW rotation reproduces build_pad_map's CCW layout
+    # (0/180 unchanged; 90↔270 swap). Pads are written with the same raw offsets
+    # build_pad_map consumes, so the two now agree pad-for-pad.
+    export_rot = (360 - (rot % 360)) % 360
     lines = [
         f'  (footprint "pcb-creator:{des}_{package}"',
         f'    (layer "{layer}")',
         f'    (tstamp {_uid()})',
-        f'    (at {cx} {cy} {rot})',
+        f'    (at {cx} {cy} {export_rot})',
     ]
     # Fine-pitch parts whose mask apertures merge: tell DRC the bridges are
     # intended (manufacturer-handled) rather than flagging every adjacent pair.
