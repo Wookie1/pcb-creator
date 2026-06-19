@@ -147,3 +147,43 @@ class TestRunPlacementStage:
         coords1 = [(p["designator"], p["x_mm"], p["y_mm"]) for p in pos1["placements"]]
         coords2 = [(p["designator"], p["x_mm"], p["y_mm"]) for p in pos2["placements"]]
         assert coords1 == coords2
+
+
+class TestEscapeFanoutGating:
+    """Escape fanout is tri-state: AUTO (None) enables it when the board has a
+    fine-pitch part; PCB_ESCAPE_FANOUT forces it on/off."""
+
+    def _cfg(self, base_dir):
+        from orchestrator.config import OrchestratorConfig
+        return OrchestratorConfig.from_env(base_dir=base_dir)
+
+    def test_config_tristate_from_env(self, monkeypatch):
+        base = Path(__file__).resolve().parent.parent
+        monkeypatch.delenv("PCB_ESCAPE_FANOUT", raising=False)
+        assert self._cfg(base).escape_fanout is None          # unset → AUTO
+        monkeypatch.setenv("PCB_ESCAPE_FANOUT", "true")
+        assert self._cfg(base).escape_fanout is True           # forced on
+        monkeypatch.setenv("PCB_ESCAPE_FANOUT", "false")
+        assert self._cfg(base).escape_fanout is False          # forced off
+
+    def test_coarse_board_not_fine_pitch(self, tmp_path):
+        # A 2.54mm header must NOT trip the threshold, so AUTO leaves ordinary
+        # boards untouched (no escape vias on non-fine-pitch designs).
+        from orchestrator.stages import _min_pad_pitch, FINE_PITCH_THRESHOLD_MM
+        proj = "fp_test"
+        pdir = tmp_path / proj
+        pdir.mkdir()
+        elements = [{"element_type": "component", "component_id": "c_cn1",
+                     "designator": "CN1", "component_type": "connector",
+                     "package": "PinHeader_1x16", "value": "x"}]
+        for i in range(1, 17):
+            elements.append({"element_type": "port", "port_id": f"p{i}",
+                             "component_id": "c_cn1", "pin_number": i, "name": str(i)})
+        (pdir / f"{proj}_netlist.json").write_text(
+            json.dumps({"version": "1.0", "project_name": proj, "elements": elements}))
+        pitch = _min_pad_pitch(pdir, proj)
+        assert pitch is not None and pitch >= FINE_PITCH_THRESHOLD_MM
+
+    def test_min_pad_pitch_none_without_netlist(self, tmp_path):
+        from orchestrator.stages import _min_pad_pitch
+        assert _min_pad_pitch(tmp_path, "nope") is None

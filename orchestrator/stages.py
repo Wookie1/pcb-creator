@@ -697,12 +697,17 @@ def run_routing(project_dir: Path, project_name: str, config,
                 if best_pwr[1]:
                     exclude_nets.append(best_pwr[1])
                     _log(f"  Excluding power plane net from routing: {best_pwr[1]} ({best_pwr[0]} pins)")
-            # Fine-pitch escape fanout (opt-in): pre-route dog-bone escapes for
-            # single-row fine-pitch parts and hand them to Freerouting as
-            # protected wiring, so it only routes from comfortable-pitch
-            # breakout vias. Only on a fresh route (an incremental caller's
-            # fixed_routing already carries the existing escapes).
-            if getattr(config, "escape_fanout", False) and fixed_routing is None:
+            # Fine-pitch escape fanout: pre-route dog-bone escapes for single-row
+            # fine-pitch parts and hand them to Freerouting as protected wiring,
+            # so it only routes from comfortable-pitch breakout vias. AUTO-enabled
+            # when the board has a fine-pitch part (config.escape_fanout is None);
+            # PCB_ESCAPE_FANOUT=true/false forces it on/off. Only on a fresh route
+            # (an incremental caller's fixed_routing already carries the escapes).
+            ef = getattr(config, "escape_fanout", None)
+            if ef is None:
+                _mp = _min_pad_pitch(project_dir, project_name)
+                ef = _mp is not None and _mp < FINE_PITCH_THRESHOLD_MM
+            if ef and fixed_routing is None:
                 try:
                     from optimizers.escape_router import (
                         generate_escape_routing, EscapeConfig,
