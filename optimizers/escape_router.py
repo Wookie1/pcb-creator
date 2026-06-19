@@ -162,6 +162,7 @@ def generate_escape_routing(
 
     traces: list[dict] = []
     vias: list[dict] = []
+    keepouts: list[dict] = []
     placed_via_centers: list[tuple[float, float]] = []  # collision across parts
 
     via_r = cfg.via_diameter_mm / 2.0
@@ -254,7 +255,20 @@ def generate_escape_routing(
                     "width_mm": cfg.trace_width_mm, "layer": drop_signal,
                     "net_id": net_id, "net_name": nm, "escape_role": "fanout",
                 })
+            else:
+                # A plane-net (GND) escape is excluded from the routing netlist,
+                # so the autorouter cannot see its stub/via and will route other
+                # nets straight over them. Emit keepout circles along the stub
+                # and at the via so the router steers clear (the plane connects
+                # the pin — no fanout to protect it).
+                ko_d = cfg.via_diameter_mm + cfg.clearance_mm
+                for fr in (0.5, 1.0):
+                    keepouts.append({
+                        "x_mm": round(pad.x_mm + edir[0] * dist * fr, 3),
+                        "y_mm": round(pad.y_mm + edir[1] * dist * fr, 3),
+                        "diameter_mm": round(ko_d, 3),
+                    })
             part_vias.append((vx, vy))
         placed_via_centers.extend(part_vias)
 
-    return {"traces": traces, "vias": vias}
+    return {"traces": traces, "vias": vias, "keepouts": keepouts}

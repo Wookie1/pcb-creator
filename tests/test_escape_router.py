@@ -166,6 +166,23 @@ class TestDropLayer:
 
 
 class TestPlaneNets:
+    def test_plane_net_emits_keepouts(self):
+        """A plane-net (GND) escape — invisible to the autorouter — emits
+        keepout circles so other nets don't route over its stub/via."""
+        pm = _connector_padmap(16, pitch=0.5)
+        out = generate_escape_routing(
+            _placement(), _netlist_for(pm), pad_map=pm,
+            config=EscapeConfig(num_layers=4, plane_layers=1),
+            exclude_nets=("sig_1",))
+        assert out["keepouts"], "expected keepouts for the plane-net escape"
+        # signal-net escapes get protected fanout, not keepouts → only sig_1's
+        assert all(k["diameter_mm"] > 0 for k in out["keepouts"])
+
+    def test_no_keepouts_without_plane_nets(self):
+        pm = _connector_padmap(16, pitch=0.5)
+        out = generate_escape_routing(_placement(), _netlist_for(pm), pad_map=pm)
+        assert out["keepouts"] == []
+
     def test_plane_net_drops_to_plane_no_fanout(self):
         """A pin on an excluded (plane) net still escapes — a via to the plane,
         but no onward fanout trace (the plane makes the connection)."""

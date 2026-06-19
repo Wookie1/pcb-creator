@@ -1503,15 +1503,26 @@ def _setup_grid(
     # floor/ceil rounding makes the obstacle ring wider than the pad net area.
     clearance_cells = max(1, int(math.ceil(clearance_mm / grid.resolution)))
     for pad in pad_map.values():
+        pw, ph = pad.pad_width_mm, pad.pad_height_mm
+        pad_radius = max(pw, ph) / 2
+        clr = clearance_mm
+
+        # Via-exclusion around EVERY pad — including no-net pads (mounting / NC /
+        # unassigned). A stitching or rescue via dropped on a pad shorts it (or
+        # trips hole-clearance), and the net-keyed marking below skips no-net
+        # pads, so do this first and unconditionally.
+        via_excl = pad_radius + clr
+        grid.mark_no_via_rect(
+            pad.x_mm - via_excl, pad.y_mm - via_excl,
+            pad.x_mm + via_excl, pad.y_mm + via_excl,
+        )
+
         if pad.net_id and pad.net_id in net_id_map:
             nid = net_id_map[pad.net_id]
-            pw, ph = pad.pad_width_mm, pad.pad_height_mm
             is_th = pad.layer == "all"
 
             eff_pw, eff_ph = pw, ph
-            pad_radius = max(pw, ph) / 2
 
-            clr = clearance_mm
             comp_layer = pad.layer if pad.layer != "all" else "top"
 
             if is_th:
@@ -1541,17 +1552,6 @@ def _setup_grid(
                     pad.x_mm + eff_pw / 2 + clr, pad.y_mm + eff_ph / 2 + clr,
                     comp_layer, nid,
                 )
-
-            # Mark via exclusion zone around ALL pads.
-            # TH pads: via drill must not overlap pad copper on either layer.
-            # SMD pads: via-in-pad causes solder wicking during reflow.
-            # The exclusion zone covers the pad + clearance so vias land
-            # outside the pad's keepout area.
-            via_excl = pad_radius + clr
-            grid.mark_no_via_rect(
-                pad.x_mm - via_excl, pad.y_mm - via_excl,
-                pad.x_mm + via_excl, pad.y_mm + via_excl,
-            )
 
 
 # ---------------------------------------------------------------------------

@@ -174,8 +174,16 @@ def _dsn_structure(board: dict, config: dict) -> str:
         f"      (width {_fmt(trace_w)})",
         f"      (clearance {_fmt(clearance)})",
         "    )",
-        "  )",
     ]
+    # Keepouts: round no-route zones the autorouter must avoid on every routing
+    # layer (e.g. plane-net escape stubs/vias that are absent from the netlist
+    # so the router can't otherwise see them). One circle per routing layer.
+    for i, ko in enumerate((config.get("fixed_routing") or {}).get("keepouts", [])):
+        for lname in routing_layers:
+            lines.append(
+                f'    (keepout "esc_ko_{i}" (circle "{lname}" '
+                f'{_fmt(ko["diameter_mm"])} {_fmt(ko["x_mm"])} {_fmt(ko["y_mm"])}))')
+    lines.append("  )")
     return "\n".join(lines) + "\n"
 
 
@@ -238,13 +246,24 @@ def _dsn_library(
 
     lines = ["  (library"]
 
+    # Routing (signal) layers: every copper layer that is NOT a solid plane.
+    # A through-hole pad — like a via — occupies copper on ALL of these, so its
+    # padstack and any via must carry a shape on each, or Freerouting believes
+    # an inner signal layer is clear under a TH pad and routes a trace straight
+    # through it (a real short once the TH barrel spans all layers).
+    num_layers = config.get("num_layers", 2)
+    all_copper_layers = _COPPER_LAYERS_BY_COUNT.get(num_layers, _COPPER_LAYERS_BY_COUNT[2])
+    _via_plane_set = set(["In1.Cu", "In2.Cu"][:config.get("plane_layers",
+                                                          2 if num_layers >= 4 else 0)])
+    via_routing_layers = [l for l in all_copper_layers if l not in _via_plane_set]
+
     # Padstack definitions
     # SMD padstacks: one per unique pad size per layer side
     padstack_ids: dict[str, str] = {}  # key -> padstack_id
 
     for image_id, (fp_def, is_th, pw, ph) in image_defs.items():
         if is_th:
-            # Through-hole padstack
+            # Through-hole padstack — shape on every routing layer (see above).
             pad_dia = max(pw, ph)
             drill = max(0.6, round(min(pw, ph) + 0.2, 2))
             key = f"th_{_fmt(pad_dia)}_{_fmt(drill)}"
@@ -252,8 +271,8 @@ def _dsn_library(
                 ps_id = f"TH_{_fmt(pad_dia)}_{_fmt(drill)}".replace(".", "p")
                 padstack_ids[key] = ps_id
                 lines.append(f'    (padstack {ps_id}')
-                lines.append(f'      (shape (circle "F.Cu" {_fmt(pad_dia)}))')
-                lines.append(f'      (shape (circle "B.Cu" {_fmt(pad_dia)}))')
+                for lname in via_routing_layers:
+                    lines.append(f'      (shape (circle "{lname}" {_fmt(pad_dia)}))')
                 lines.append(f'      (attach off)')
                 lines.append(f'    )')
         else:
@@ -269,23 +288,14 @@ def _dsn_library(
                     lines.append(f'      (attach off)')
                     lines.append(f'    )')
 
-    # Via padstack — shapes ONLY for layers declared in the structure section
-    # (i.e. the routing/signal layers). Inner PLANE layers are excluded from the
-    # structure section, so including a via shape for them while they are absent
-    # from structure makes Freerouting dereference an uninitialised layer-index
-    # entry and crash with ArrayIndexOutOfBoundsException. The physical via still
-    # passes through plane layers; copper fill connects those planes to the via
-    # barrels after routing.
-    #
-    # IMPORTANT: exclude only the layers that are actually PLANES, not all inner
-    # layers — with plane_layers=1/0 an inner layer is a routable SIGNAL layer
-    # (in the structure section) and its via shape is required, or vias can't
-    # connect to inner-layer signal traces (the inner-signal routing path).
-    num_layers = config.get("num_layers", 2)
-    all_copper_layers = _COPPER_LAYERS_BY_COUNT.get(num_layers, _COPPER_LAYERS_BY_COUNT[2])
-    _via_plane_set = set(["In1.Cu", "In2.Cu"][:config.get("plane_layers",
-                                                          2 if num_layers >= 4 else 0)])
-    via_routing_layers = [l for l in all_copper_layers if l not in _via_plane_set]
+    # Via padstack — shapes ONLY for the routing layers computed above. Inner
+    # PLANE layers are excluded (they are absent from the structure section, so
+    # a via shape there makes Freerouting dereference an uninitialised
+    # layer-index and crash with ArrayIndexOutOfBoundsException). The physical
+    # via still passes through plane layers; copper fill connects those planes
+    # to the via barrels after routing. With plane_layers=1/0 an inner layer is
+    # a routable SIGNAL layer (in the structure section) and its via shape is
+    # required, or vias can't connect to inner-layer signal traces.
     lines.append(f'    (padstack Via_Default')
     for lname in via_routing_layers:
         lines.append(f'      (shape (circle "{lname}" {_fmt(via_dia)}))')
