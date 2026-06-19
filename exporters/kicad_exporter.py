@@ -573,7 +573,11 @@ def build_kicad_pro(routed: dict, project_name: str) -> dict:
             "design_settings": {
                 "defaults": {},
                 "drc_exclusions": [],
-                "rule_severities": {},
+                # pcb-creator embeds full footprint definitions inline in the
+                # board, so there is no external library to register — KiCad's
+                # "footprint library 'pcb-creator' not configured" check is a
+                # false positive here. Silence it so DRC reflects real issues.
+                "rule_severities": {"lib_footprint_issues": "ignore"},
                 "rules": {
                     "min_clearance": round(clearance, 4),
                     "min_track_width": round(track_w, 4),
