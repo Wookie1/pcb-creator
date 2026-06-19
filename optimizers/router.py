@@ -2596,6 +2596,10 @@ def _add_stitching_vias(
                 nc, nr = col + dc, row + dr
                 if not grid._in_bounds(nc, nr):
                     return False
+                # Respect via-exclusion zones (e.g. inner-layer signal traces a
+                # through via would pierce).
+                if not grid.can_place_via(nc, nr):
+                    return False
                 for layer in ("top", "bottom"):
                     val = grid.get(nc, nr, layer)
                     if val != EMPTY and val != fill_net_int:
@@ -2855,6 +2859,10 @@ def _add_rescue_vias(
         for idx in cells:
             if filled_bottom[idx]:
                 col, row = idx % cols, idx // cols
+                # Skip cells where a through via would pierce an inner-layer
+                # signal trace (via-exclusion zone).
+                if not grid.can_place_via(col, row):
+                    continue
                 # Prefer candidates away from edges (at least 1 cell from island boundary)
                 dist_to_center = abs(col - cx) + abs(row - cy)
                 candidates.append((idx, dist_to_center))
@@ -5211,18 +5219,35 @@ def apply_copper_fills(
             continue
 
         layer = trace.get("layer", "top")
-        # The copper-fill grid only models the outer layers (where GND fill is
-        # poured). Inner-layer signal traces (In1/In2 used as signal when
-        # plane_layers<2) don't obstruct the outer fill or the inner GND
-        # plane, so they aren't marked here.
-        if layer not in grid.layers:
-            continue
         width = trace.get("width_mm", 0.25)
-
-        # Mark the trace on the grid by walking from start to end
         sx, sy = trace["start_x_mm"], trace["start_y_mm"]
         ex, ey = trace["end_x_mm"], trace["end_y_mm"]
+        # The copper-fill grid only models the outer layers (where GND fill is
+        # poured). Inner-layer signal traces (In1/In2 used as signal when
+        # plane_layers<2) don't obstruct the outer fill or the inner GND plane —
+        # but a THROUGH stitching/rescue via dropped on one would pierce the
+        # inner layer and short it. Mark the inner trace's footprint (+ via
+        # clearance) as a via-exclusion zone so fill vias steer clear of it.
+        if layer not in grid.layers:
+            if nid != fill_net_int:
+                vmargin = (width / 2 + config.via_diameter_mm / 2
+                           + config.clearance_mm)
+                rad = max(1, int(math.ceil(vmargin / config.grid_resolution_mm)))
+                isc, isr = grid.mm_to_grid(sx, sy)
+                iec, ier = grid.mm_to_grid(ex, ey)
+                nsteps = max(abs(iec - isc), abs(ier - isr), 1)
+                for si in range(nsteps + 1):
+                    t = si / nsteps
+                    c = int(round(isc + (iec - isc) * t))
+                    r = int(round(isr + (ier - isr) * t))
+                    for ddc in range(-rad, rad + 1):
+                        for ddr in range(-rad, rad + 1):
+                            nc, nr = c + ddc, r + ddr
+                            if grid._in_bounds(nc, nr):
+                                grid.no_via[nr * grid.cols + nc] = True
+            continue
 
+        # Mark the outer-layer trace on the grid by walking from start to end.
         # Calculate half-width in grid cells for the trace + clearance
         half_w_cells = max(1, int(math.ceil(
             (width / 2 + config.clearance_mm) / config.grid_resolution_mm
