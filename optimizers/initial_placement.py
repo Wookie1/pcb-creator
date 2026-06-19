@@ -123,24 +123,68 @@ def generate_grid_placement(
     # problem exists — are reoriented. Connectors are pinned through the SA
     # optimize pass, so the orientation sticks. footprint_width/height stay the
     # UNROTATED body dims; the layout math uses the rotated extent (ew, eh).
-    cy = margin
-    conn_extent_w: list[float] = []
+    # Distribute connectors around the board PERIMETER so many connectors don't
+    # pile onto one edge. The old code stacked them all on the left edge and
+    # collapsed any overflow onto a single right-edge point (they overlapped —
+    # 8 connectors on morgan landed 3 at the same spot). Now we fill left, then
+    # right, then bottom, then top, each with its own running cursor, spilling to
+    # the next edge only when the current one is full. Connectors are pinned
+    # through SA so the positions stick. Left/right keep the high-pin fanout
+    # orientation (_connector_rotation); spill edges run the long pad-span along
+    # the edge so pins still fan inward.
+    from optimizers.placement_optimizer import _get_pad_extent_box
+
+    edge_order = ["left", "right", "bottom", "top"]
+    edge_cap = {"left": board_height_mm, "right": board_height_mm,
+                "bottom": board_width_mm, "top": board_width_mm}
+
+    def _conn_geom(comp: dict, w: float, h: float, edge: str):
+        """Rotation + rotated pad-extent box (offsets from the placement origin)
+        for a connector on *edge*. The box includes PADS, which on terminal
+        blocks / FFCs extend asymmetrically past the body — positioning by it
+        (not the body centre) is what keeps the pads inside the edge clearance."""
+        pins = _pins(comp)
+        if edge in ("left", "right"):
+            r = _connector_rotation(w, h, pins)
+        else:
+            r = 0 if w >= h else 90        # long pad-span along the horizontal edge
+        # Extent relative to a (0,0) origin so we can solve for the placement.
+        bx = _get_pad_extent_box(0.0, 0.0, w, h, r, comp.get("package", ""), pins)
+        return r, bx                       # bx = (x_min, y_min, x_max, y_max)
+
+    ei = 0
+    cur = margin
+    left_thickness = 0.0  # inward reach of left-edge connectors (to inset 'others')
     for comp, w, h in connectors:
-        rot = _connector_rotation(w, h, _pins(comp))
-        ew, eh = (h, w) if rot in (90, 270) else (w, h)
-        conn_extent_w.append(ew)
-        x = margin + ew / 2
-        y = cy + eh / 2
-        if y + eh / 2 > board_height_mm - margin:
-            x = board_width_mm - margin - ew / 2
-            y = margin + eh / 2
+        edge = edge_order[ei]
+        rot, (xmn, ymn, xmx, ymx) = _conn_geom(comp, w, h, edge)
+        span = (ymx - ymn) if edge in ("left", "right") else (xmx - xmn)
+        # Spill to the next edge if this one can't fit the connector.
+        while (cur + span > edge_cap[edge] - margin
+               and ei < len(edge_order) - 1):
+            ei += 1
+            edge = edge_order[ei]
+            cur = margin
+            rot, (xmn, ymn, xmx, ymx) = _conn_geom(comp, w, h, edge)
+            span = (ymx - ymn) if edge in ("left", "right") else (xmx - xmn)
+        # Solve for the origin so the pad-extent box clears the edge margin and
+        # stacks at the running cursor.
+        if edge == "left":
+            x, y = margin - xmn, cur - ymn
+            left_thickness = max(left_thickness, xmx - xmn)
+        elif edge == "right":
+            x, y = (board_width_mm - margin) - xmx, cur - ymn
+        elif edge == "bottom":
+            x, y = cur - xmn, margin - ymn
+        else:  # top
+            x, y = cur - xmn, (board_height_mm - margin) - ymx
         item = _place_item(comp, w, h, x, y)
         item["rotation_deg"] = rot
         placements.append(item)
-        cy += eh + clearance
+        cur += span + clearance
 
-    # Remaining components in rows (left→right, bottom→top)
-    connector_col = margin + max(conn_extent_w, default=0) + clearance * 2
+    # Remaining components in rows, inset past the left-edge connectors.
+    connector_col = margin + left_thickness + clearance * 2
     row_x = connector_col
     row_y = margin
     row_height = 0.0

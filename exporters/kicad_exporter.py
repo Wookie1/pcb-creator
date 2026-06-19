@@ -346,12 +346,14 @@ def _footprint(
         net_num, net_name = port_net_map.get(port_id, (0, ""))
 
         if is_th:
-            # Through-hole pad
-            # Drill = pin diameter (smaller dimension) + 0.2mm tolerance
+            # Through-hole pad. Drill ≈ pin diameter + tolerance, but it MUST
+            # leave a manufacturable annular ring — deriving the drill from the
+            # pad's smaller dimension and flooring it at 0.6mm could make the
+            # hole ≥ the pad (negative annular → KiCad "hole leaves no copper").
+            # Cap the drill so ≥0.2mm copper remains around it.
             pin_dia = min(pad_w, pad_h)
-            drill = pin_dia + 0.2
-            drill = max(0.6, round(drill, 2))  # minimum 0.6mm drill
             pad_dia = max(pad_w, pad_h)
+            drill = max(0.3, round(min(pin_dia + 0.2, pad_dia - 0.4), 2))
             shape = "circle" if pin_num > 1 else "rect"  # pin 1 = square for identification
             lines.append(
                 f'    (pad "{pin_num}" thru_hole {shape}'
