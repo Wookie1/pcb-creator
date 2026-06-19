@@ -311,9 +311,10 @@ def _footprint(
         f'    (property "Reference" "{des}"',
         f'      (at 0 {-fh/2 - 1.0})',
         f'      (layer "{layer.replace("Cu", "SilkS")}")',
-        # Smaller reference text reduces silkscreen overlap / silk-over-pad
-        # clipping on dense boards (it is the only property on the silk layer).
-        f'      (effects (font (size 0.6 0.6) (thickness 0.1)))',
+        # 1mm / 0.15mm is the manufacturable floor: smaller text trips KiCad's
+        # min text-height DRC (0.6mm added 69 text_height violations). Residual
+        # silk overlap on dense boards is a cosmetic warning, left as-is.
+        f'      (effects (font (size 1 1) (thickness 0.15)))',
         f'    )',
         f'    (property "Value" "{package}"',
         f'      (at 0 {fh/2 + 1.0})',
