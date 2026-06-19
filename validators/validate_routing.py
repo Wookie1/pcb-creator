@@ -7,6 +7,7 @@ Also importable: from validate_routing import validate_routing
 import argparse
 import json
 import math
+import re
 import sys
 from pathlib import Path
 
@@ -205,6 +206,25 @@ def _check_via_clearance(routed: dict) -> tuple[list[str], list[str]]:
 # ---------------------------------------------------------------------------
 # 4. Connectivity verification
 # ---------------------------------------------------------------------------
+
+def incomplete_net_ids(routed: dict, netlist: dict | None) -> set[str]:
+    """Net IDs that are NOT fully connected: either fully unrouted, or routed
+    but split into more than one connected group.
+
+    Used by incremental routing to decide which nets to re-route — protecting a
+    disconnected net's partial wiring would otherwise leave it disconnected
+    forever (Freerouting treats protected wiring as done).
+    """
+    ids: set[str] = set(routed.get("routing", {}).get("unrouted_nets", []))
+    if netlist is None:
+        return ids
+    errors, _ = _check_connectivity(routed, netlist)
+    for e in errors:
+        m = re.match(r"Net (\S+):", e)
+        if m:
+            ids.add(m.group(1))
+    return ids
+
 
 def _check_connectivity(routed: dict, netlist: dict | None) -> tuple[list[str], list[str]]:
     """Verify that all pads in each net are connected by traces.

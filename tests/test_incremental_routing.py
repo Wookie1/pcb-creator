@@ -91,3 +91,30 @@ class TestIncrementalEndToEnd:
         out_traces = json.loads((pdir / "inc_routed.json").read_text())["routing"]["traces"]
         assert len(out_traces) >= len(keep)
         assert inc.get("completion_pct", 0) >= full.get("completion_pct", 0) - 5
+
+
+class TestIncompleteNetIds:
+    """incomplete_net_ids drives connectivity-aware incremental routing: it must
+    flag both fully-unrouted nets and nets routed-but-split, so keep_existing
+    re-routes the disconnected ones instead of protecting them forever."""
+
+    def test_unrouted_only_when_no_netlist(self):
+        from validators.validate_routing import incomplete_net_ids
+        routed = {"routing": {"unrouted_nets": ["net_a", "net_b"]}}
+        assert incomplete_net_ids(routed, None) == {"net_a", "net_b"}
+
+    def test_unions_unrouted_and_disconnected(self, monkeypatch):
+        import validators.validate_routing as vr
+        monkeypatch.setattr(vr, "_check_connectivity", lambda r, n: (
+            ["Net net_swclk: 2 disconnected groups (2 pads should all be connected)",
+             "Net net_n3v3: 2 disconnected groups (6 pads should all be connected)"],
+            []))
+        routed = {"routing": {"unrouted_nets": ["net_gpio4"]}}
+        assert vr.incomplete_net_ids(routed, {"elements": []}) == {
+            "net_gpio4", "net_swclk", "net_n3v3"}
+
+    def test_fully_connected_returns_empty(self, monkeypatch):
+        import validators.validate_routing as vr
+        monkeypatch.setattr(vr, "_check_connectivity", lambda r, n: ([], []))
+        assert vr.incomplete_net_ids({"routing": {"unrouted_nets": []}},
+                                     {"elements": []}) == set()
