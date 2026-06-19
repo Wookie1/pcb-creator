@@ -10,7 +10,9 @@ which is sufficient for manual routing in KiCad.
 from __future__ import annotations
 
 import json
+import os
 import re
+import subprocess
 import uuid
 from pathlib import Path
 
@@ -589,6 +591,48 @@ def build_kicad_pro(routed: dict, project_name: str) -> dict:
     }
 
 
+# pcbnew zone-fill script: load board, pour all zones, save in place.
+_FILL_ZONES_SRC = (
+    "import sys, pcbnew\n"
+    "b = pcbnew.LoadBoard(sys.argv[1])\n"
+    "pcbnew.ZONE_FILLER(b).Fill(b.Zones())\n"
+    "pcbnew.SaveBoard(sys.argv[1], b)\n"
+)
+
+
+def fill_zones_pcbnew(pcb_path: str | Path) -> bool:
+    """Pour copper zones in a .kicad_pcb using KiCad's pcbnew, if available.
+
+    Used ONLY on the KiCad-export artifact (for KiCad GUI work + headless
+    kicad-cli DRC, which does not pour zones itself, so an unpoured GND/power
+    plane otherwise reads as dozens of false 'unconnected' pads). The Gerber /
+    manufacturing path is KiCad-independent and paints planes from copper_fills,
+    so it never needs this.
+
+    pcbnew usually lives in the system Python that ships with KiCad, not the
+    project venv, so we shell out to a Python that can import it. Returns True if
+    zones were filled, False if no pcbnew is reachable (then the .kicad_pcb is
+    left with unpoured zones — KiCad's GUI auto-pours on open regardless).
+    """
+    pcb_path = Path(pcb_path)
+    candidates = []
+    env_py = os.environ.get("PCB_KICAD_PYTHON")
+    if env_py:
+        candidates.append(env_py)
+    candidates += ["/usr/bin/python3", "python3"]
+    for py in candidates:
+        try:
+            r = subprocess.run([py, "-c", _FILL_ZONES_SRC, str(pcb_path)],
+                               capture_output=True, text=True, timeout=180)
+        except (FileNotFoundError, OSError, subprocess.SubprocessError):
+            continue
+        if r.returncode == 0:
+            return True
+        # Non-zero with an ImportError means this Python lacks pcbnew — try the
+        # next candidate. Any other failure also just falls through to skip.
+    return False
+
+
 def export_kicad_pro(routed: dict, output_path: str | Path) -> Path:
     """Write a .kicad_pro next to the .kicad_pcb so DRC honors the routed rules."""
     output_path = Path(output_path)
@@ -690,5 +734,12 @@ def export_kicad_pcb(
     # Emit a sibling .kicad_pro so kicad-cli DRC honors the routed design rules
     # (clearance/track width) instead of its 0.2mm defaults.
     export_kicad_pro(routed, output_path.with_suffix(".kicad_pro"))
+
+    # Pour zones (GND/power planes) so KiCad work + headless DRC see connected
+    # copper. Best-effort: silently skipped where pcbnew isn't installed.
+    try:
+        fill_zones_pcbnew(output_path)
+    except Exception:
+        pass
 
     return output_path

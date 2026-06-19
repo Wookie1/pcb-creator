@@ -60,6 +60,50 @@ class TestSolderMaskBridges:
         assert "allow_soldermask_bridges" in fp
 
 
+class TestFillZonesPcbnew:
+    """Zone pour runs only on the KiCad-export artifact and degrades gracefully
+    when pcbnew isn't installed (e.g. on a CI box / the dev Mac)."""
+
+    def test_returns_false_when_no_pcbnew(self, monkeypatch):
+        import exporters.kicad_exporter as ke
+
+        class R:
+            returncode = 1
+            stdout = ""
+            stderr = "ModuleNotFoundError: No module named 'pcbnew'"
+        monkeypatch.setattr(ke.subprocess, "run", lambda *a, **k: R())
+        assert ke.fill_zones_pcbnew("/tmp/x.kicad_pcb") is False
+
+    def test_returns_true_on_success(self, monkeypatch):
+        import exporters.kicad_exporter as ke
+        seen = []
+
+        class R:
+            returncode = 0
+            stdout = ""
+            stderr = ""
+        def fake_run(cmd, *a, **k):
+            seen.append(cmd[0])
+            return R()
+        monkeypatch.setattr(ke.subprocess, "run", fake_run)
+        assert ke.fill_zones_pcbnew("/tmp/x.kicad_pcb") is True
+        assert seen  # a python candidate was invoked
+
+    def test_honors_PCB_KICAD_PYTHON(self, monkeypatch):
+        import exporters.kicad_exporter as ke
+        seen = []
+
+        class R:
+            returncode = 0
+            stdout = ""
+            stderr = ""
+        monkeypatch.setenv("PCB_KICAD_PYTHON", "/opt/kicad/bin/python")
+        monkeypatch.setattr(ke.subprocess, "run",
+                            lambda cmd, *a, **k: (seen.append(cmd[0]), R())[1])
+        ke.fill_zones_pcbnew("/tmp/x.kicad_pcb")
+        assert seen[0] == "/opt/kicad/bin/python"  # env candidate tried first
+
+
 class TestKicadProDesignRules:
     """The exported .kicad_pro must carry the ACTUAL routed clearance/track
     width so kicad-cli DRC stops using its 0.2mm defaults (which falsely flag
