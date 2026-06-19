@@ -382,8 +382,6 @@ def run_placement(
         MIN_CLEARANCE_MM, find_placement_violations,
     )
     clearance = MIN_CLEARANCE_MM + max(0.0, extra_clearance_mm)
-    placement = repair_placement(placement, netlist, clearance=clearance, seed=seed,
-                                 two_sided=two_sided)
     # Flipping is only attractive to the annealer through the layer-aware
     # congestion term — give it a floor when two-sided is on.
     if two_sided and congestion_weight <= 0:
@@ -402,13 +400,39 @@ def run_placement(
     rk = _build_router_kwargs(project_dir, project_name)
     track_pitch = (rk.get("trace_width_signal_mm", 0.25)
                    + rk.get("clearance_mm", 0.2))
-    sa = SAConfig(seed=seed, min_clearance_mm=clearance,
-                  congestion_weight=congestion_weight,
-                  two_sided=two_sided, bottom_penalty=bottom_penalty,
-                  escape_track_pitch_mm=track_pitch,
-                  escape_weight=(6.0 if escape_weight is None else escape_weight),
-                  focus_components=tuple(focus_components or ()))
-    placement = optimize_placement(placement, netlist, sa)
+
+    # Repair overlaps/boundary, then optimize. A sparse board can still leave a
+    # few movable overlaps that a different anneal seed resolves, so when the
+    # caller hasn't fixed a seed we try a handful and keep the first clean result
+    # (or the fewest-violation one). An explicit seed is honoured as-is for full
+    # reproducibility, and pinned-only conflicts are never retried — a different
+    # seed cannot move fixed parts.
+    import copy as _copy
+    grid_seed = _copy.deepcopy(placement)
+    seed_candidates = [seed] if seed is not None else [0, 1, 2, 3, 4]
+    best_placement = None
+    best_violations = None
+    for _seed in seed_candidates:
+        cand = repair_placement(_copy.deepcopy(grid_seed), netlist,
+                                clearance=clearance, seed=_seed,
+                                two_sided=two_sided)
+        sa = SAConfig(seed=_seed, min_clearance_mm=clearance,
+                      congestion_weight=congestion_weight,
+                      two_sided=two_sided, bottom_penalty=bottom_penalty,
+                      escape_track_pitch_mm=track_pitch,
+                      escape_weight=(6.0 if escape_weight is None else escape_weight),
+                      focus_components=tuple(focus_components or ()))
+        cand = optimize_placement(cand, netlist, sa)
+        v = find_placement_violations(cand, netlist, clearance=MIN_CLEARANCE_MM)
+        if best_violations is None or v["count"] < best_violations["count"]:
+            best_placement, best_violations = cand, v
+        if v["count"] == 0:
+            break
+        # A different seed can't fix pinned/out-of-bounds fixed parts.
+        if ([e for e in v["out_of_bounds"] if e["pinned"]]
+                + [o for o in v["overlaps"] if o["pinned"]]):
+            break
+    placement, violations = best_placement, best_violations
 
     placement_path.write_text(json.dumps(placement, indent=2))
 
@@ -416,7 +440,6 @@ def run_placement(
     # everything, but the caller must SEE the violations (pinned components
     # overlapping each other or hanging past the edge can never be fixed by
     # moving the movable ones).
-    violations = find_placement_violations(placement, netlist, clearance=MIN_CLEARANCE_MM)
     if violations["count"]:
         pinned_involved = ([v for v in violations["out_of_bounds"] if v["pinned"]]
                            + [v for v in violations["overlaps"] if v["pinned"]])

@@ -154,7 +154,12 @@ def generate_grid_placement(
 
     ei = 0
     cur = margin
-    left_thickness = 0.0  # inward reach of left-edge connectors (to inset 'others')
+    # Inward reach of the connectors on each edge, so the interior 'others' can
+    # be inset clear of ALL of them (not just the left edge).
+    left_reach = margin
+    right_reach = board_width_mm - margin
+    bottom_reach = margin
+    top_reach = board_height_mm - margin
     for comp, w, h in connectors:
         edge = edge_order[ei]
         rot, (xmn, ymn, xmx, ymx) = _conn_geom(comp, w, h, edge)
@@ -171,32 +176,43 @@ def generate_grid_placement(
         # stacks at the running cursor.
         if edge == "left":
             x, y = margin - xmn, cur - ymn
-            left_thickness = max(left_thickness, xmx - xmn)
+            left_reach = max(left_reach, x + xmx)
         elif edge == "right":
             x, y = (board_width_mm - margin) - xmx, cur - ymn
+            right_reach = min(right_reach, x + xmn)
         elif edge == "bottom":
             x, y = cur - xmn, margin - ymn
+            bottom_reach = max(bottom_reach, y + ymx)
         else:  # top
             x, y = cur - xmn, (board_height_mm - margin) - ymx
+            top_reach = min(top_reach, y + ymn)
         item = _place_item(comp, w, h, x, y)
         item["rotation_deg"] = rot
         placements.append(item)
         cur += span + clearance
 
-    # Remaining components in rows, inset past the left-edge connectors.
-    connector_col = margin + left_thickness + clearance * 2
-    row_x = connector_col
-    row_y = margin
+    # Remaining components fill the interior region clear of ALL edge connectors
+    # (inset from each edge by that edge's connector reach), in left→right,
+    # bottom→top rows. Keeping 'others' out of the pinned perimeter lets overlap
+    # repair converge instead of fighting the fixed connectors — the marginal,
+    # seed-dependent placement failures on sparse boards came from 'others' being
+    # laid over the right/top/bottom connectors.
+    x_lo = left_reach + clearance
+    x_hi = right_reach - clearance
+    y_lo = bottom_reach + clearance
+    y_hi = top_reach - clearance
+    row_x = x_lo
+    row_y = y_lo
     row_height = 0.0
     for comp, w, h in others:
-        if row_x + w + margin > board_width_mm:
-            row_x = connector_col
+        if row_x + w > x_hi:
+            row_x = x_lo
             row_y += row_height + clearance
             row_height = 0.0
         x = row_x + w / 2
         y = row_y + h / 2
-        if y + h / 2 > board_height_mm - margin:
-            y = board_height_mm - margin - h / 2  # clamp
+        if y + h / 2 > y_hi:
+            y = y_hi - h / 2  # clamp; repair spreads any residual overlap
         placements.append(_place_item(comp, w, h, x, y))
         row_x += w + clearance
         row_height = max(row_height, h)
