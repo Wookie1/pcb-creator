@@ -344,6 +344,15 @@ def _footprint(
         pin_port_map[port.get("pin_number", 0)] = port.get("port_id", "")
 
     pad_w, pad_h = fp_def.pad_size
+    # KiCad does NOT rotate an SMD pad's rectangle with the footprint angle on
+    # load — only the pad POSITION rotates (verified via pcbnew: a -90° part's
+    # pads keep orient 0 / their authored w×h in board frame). So a 90°/270°
+    # rotated fine-pitch part would have its long pads overlap their neighbours
+    # (morgan CN1: 1.3mm pads at 0.5mm pitch → 45 pad-pad shorts). Pre-swap the
+    # pad dimensions into the board frame, mirroring build_pad_map's own swap,
+    # so the exported pad extents match the router/DRC pad model pad-for-pad.
+    if rot % 180 == 90:
+        pad_w, pad_h = pad_h, pad_w
 
     for pin_num, (dx, dy) in sorted(fp_def.pin_offsets.items()):
         # Round offsets to avoid floating point noise (e.g., 3.8099999999999987)
@@ -569,6 +578,15 @@ def build_kicad_pro(routed: dict, project_name: str) -> dict:
     track_w = float(cfg.get("trace_width_signal_mm", 0.2))
     via_dia = float(cfg.get("via_diameter_mm", 0.6))
     via_drill = float(cfg.get("via_drill_mm", 0.3))
+
+    # The board MUST allow the smallest via/drill actually present — fine-pitch
+    # escape fanout drops smaller vias (0.45/0.2) than the default routing via
+    # (0.6/0.3); without lowering the rule minima DRC flags every escape via as
+    # under-size. Floor the rule at the tightest via on the board.
+    vias = routed.get("routing", {}).get("vias", [])
+    if vias:
+        via_dia = min([via_dia] + [float(v.get("diameter_mm", via_dia)) for v in vias])
+        via_drill = min([via_drill] + [float(v.get("drill_mm", via_drill)) for v in vias])
 
     return {
         "meta": {"filename": f"{project_name}.kicad_pro", "version": 3},

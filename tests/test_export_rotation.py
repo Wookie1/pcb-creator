@@ -43,8 +43,13 @@ def _build(rot):
 def _exported_pads(text):
     """Parse {pin: (center_x, center_y, angle, local_dx, local_dy)} from a
     one-footprint .kicad_pcb."""
-    fp = re.search(r'\(at ([\d.-]+) ([\d.-]+) ([\d.-]+)\)', text)
-    cx, cy, ang = float(fp[1]), float(fp[2]), float(fp[3])
+    # The footprint origin is the first (at ...) inside the (footprint block.
+    # Its angle is OPTIONAL: when the part is at 0°, pcbnew (which pours zones
+    # on export) normalises "(at x y 0)" down to "(at x y)", so a 3-number regex
+    # would skip it and wrongly latch onto the next property's (at x y 0).
+    fpidx = text.index("(footprint")
+    fp = re.search(r'\(at (-?[\d.]+) (-?[\d.]+)(?: (-?[\d.]+))?\)', text[fpidx:])
+    cx, cy, ang = float(fp[1]), float(fp[2]), float(fp[3] or 0)
     pads = {}
     for m in re.finditer(r'\(pad "(\d+)"[^()]*\(at ([\d.-]+) ([\d.-]+)\)', text):
         pads[int(m[1])] = (cx, cy, ang, float(m[2]), float(m[3]))
@@ -71,4 +76,37 @@ class TestExportRotationMatchesPadMap:
     def test_rot_0(self, tmp_path):   self._check(0, tmp_path)
     def test_rot_90(self, tmp_path):  self._check(90, tmp_path)
     def test_rot_180(self, tmp_path): self._check(180, tmp_path)
+    def test_rot_270(self, tmp_path): self._check(270, tmp_path)
+
+
+def _exported_pad_sizes(text):
+    """Parse {pin: (width, height)} of the exported SMD pads."""
+    sizes = {}
+    for m in re.finditer(r'\(pad "(\d+)".*?\(size ([\d.]+) ([\d.]+)\)', text, re.S):
+        sizes.setdefault(int(m[1]), (float(m[2]), float(m[3])))
+    return sizes
+
+
+class TestExportPadSizeMatchesPadMap:
+    """KiCad does NOT rotate an SMD pad's rectangle with the footprint angle —
+    only the pad position rotates. So the exporter must pre-swap pad w/h for
+    90/270 parts (mirroring build_pad_map), or a rotated fine-pitch part's long
+    pads overlap their neighbours (the morgan CN1 pad-pad shorts)."""
+
+    def _check(self, rot, tmp_path):
+        netlist, routed = _build(rot)
+        pm = {p.pin_number: (p.pad_width_mm, p.pad_height_mm)
+              for p in build_pad_map(routed, netlist).values()}
+        out = tmp_path / "t.kicad_pcb"
+        export_kicad_pcb(routed, netlist, out)
+        sizes = _exported_pad_sizes(out.read_text())
+        assert sizes, "no pad sizes parsed"
+        for pin, (ew, eh) in sizes.items():
+            bw, bh = pm[pin]
+            assert abs(ew - bw) < 1e-3 and abs(eh - bh) < 1e-3, (
+                f"pin {pin} rot={rot}: exported size ({ew}x{eh}) "
+                f"!= padmap ({bw}x{bh})")
+
+    def test_rot_0(self, tmp_path):   self._check(0, tmp_path)
+    def test_rot_90(self, tmp_path):  self._check(90, tmp_path)
     def test_rot_270(self, tmp_path): self._check(270, tmp_path)
