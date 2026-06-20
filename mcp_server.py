@@ -2028,6 +2028,9 @@ def route_board(project_name: str, effort: str = "normal",
         status_hint=(
             "Routing started in the background (can take seconds to minutes). "
             "Keep polling get_project_status — progress is reported every pass. "
+            "After the main route, a short-cleanup phase may rip and re-route a "
+            "few shorting/incomplete nets (a brief gap with no pass progress is "
+            "normal); wait for 'routing_state' to reach 'complete'. "
             "Do not run other tools or external CLIs for this project while "
             "routing is active."
         ),
