@@ -2244,6 +2244,23 @@ def set_component_positions(
 
     placement_path.write_text(json.dumps(placement, indent=2))
 
+    # Persist to the DURABLE pin store (placement_pins.json) too — the same
+    # store place_component writes and that run_placement re-applies on every
+    # optimize. Without this, these pins lived only in placement.json's
+    # placement_source flags and were silently lost whenever the placement was
+    # regenerated, so a later optimize_placement scattered them (the
+    # set_component_positions "silent no-op" failure mode that cost an agent
+    # 30+ tool calls). Writing both stores makes batch pins as durable as
+    # single place_component pins.
+    from orchestrator.stages import load_placement_pins, _pins_path
+    durable = load_placement_pins(pdir, project_name)
+    for des in pinned:
+        it = placement["placements"][des_index[des]]
+        durable[des] = {"x_mm": it["x_mm"], "y_mm": it["y_mm"],
+                        "rotation_deg": it.get("rotation_deg", 0),
+                        "layer": it.get("layer", "top")}
+    _pins_path(pdir, project_name).write_text(json.dumps(durable, indent=2))
+
     return {
         "success": True,
         "pinned_count": len(pinned),

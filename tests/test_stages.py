@@ -187,3 +187,49 @@ class TestEscapeFanoutGating:
     def test_min_pad_pitch_none_without_netlist(self, tmp_path):
         from orchestrator.stages import _min_pad_pitch
         assert _min_pad_pitch(tmp_path, "nope") is None
+
+
+class TestPinDurability:
+    """set_component_positions must persist to the DURABLE pin store
+    (placement_pins.json) — not only placement.json's placement_source flags —
+    so batch pins survive a full placement regeneration. Regression for the
+    'silent no-op' where optimize_placement scattered set_component_positions
+    pins after the placement was rebuilt."""
+
+    def test_batch_pins_survive_placement_regen(self, tmp_path, monkeypatch):
+        import mcp_server
+        from orchestrator import stages
+        from orchestrator.config import OrchestratorConfig
+
+        monkeypatch.setenv("PCB_PROJECTS_DIR", str(tmp_path))
+        proj = "pintest"
+        pdir = tmp_path / proj
+        pdir.mkdir()
+        (pdir / f"{proj}_netlist.json").write_text(json.dumps(_tiny_netlist()))
+        mcp_server._init_lookup()
+
+        # Pin comfortably in-bounds so the edge-clearance repair won't nudge it.
+        r = mcp_server.set_component_positions(
+            proj,
+            [{"designator": "J1", "x_mm": 20.0, "y_mm": 15.0, "rotation_deg": 90}],
+            board_width_mm=40, board_height_mm=30)
+        assert r["success"] and "J1" in r["pinned_designators"]
+
+        # The durable pin store now carries J1 (the fix).
+        pins = stages.load_placement_pins(pdir, proj)
+        assert "J1" in pins
+        assert pins["J1"]["x_mm"] == 20.0 and pins["J1"]["rotation_deg"] == 90
+
+        # Drop placement.json to simulate a full regen (loses placement_source
+        # flags) — the exact scenario that used to scatter the pin. Only the
+        # durable store remains.
+        (pdir / f"{proj}_placement.json").unlink()
+        cfg = OrchestratorConfig.from_env(
+            base_dir=Path(__file__).resolve().parent.parent)
+        res = stages.run_placement(pdir, proj, cfg,
+                                   board_width_mm=40, board_height_mm=30, seed=1)
+        assert res.get("success")
+        placement = json.loads((pdir / f"{proj}_placement.json").read_text())
+        j1 = next(p for p in placement["placements"] if p["designator"] == "J1")
+        assert j1["placement_source"] == "user"
+        assert abs(j1["x_mm"] - 20.0) < 0.01 and abs(j1["y_mm"] - 15.0) < 0.01
