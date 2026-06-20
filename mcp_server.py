@@ -2571,6 +2571,16 @@ def main():
     # for all placement/export calls in this server process.
     _init_lookup()
 
+    # Install atexit + SIGTERM/SIGINT hooks (main thread) so a graceful shutdown
+    # of the server kills any in-flight Freerouting JVM instead of orphaning it.
+    # Routing runs on a worker thread where signal handlers can't be set, so it
+    # must be installed here.
+    try:
+        from optimizers.freerouter import install_process_cleanup
+        install_process_cleanup()
+    except Exception:  # noqa: BLE001 — cleanup hooks are best-effort
+        pass
+
     mcp.run()
 
 
