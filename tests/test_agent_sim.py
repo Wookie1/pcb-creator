@@ -152,6 +152,32 @@ def test_provide_footprint_clears_unresolved_loop(server, tmp_path, monkeypatch)
     assert v2["next_step"]["tool"] == "optimize_placement"
 
 
+def test_register_custom_footprint_guidance(server):
+    bad = call(server, "register_custom_footprint",
+               {"project_name": "rcf", "package_name": "X",
+                "kicad_mod_content": "not an s-expr"})
+    assert_fail_with_remediation(bad, ["register_custom_footprint"])
+    good = call(server, "register_custom_footprint",
+                {"project_name": "rcf", "package_name": "MY2P",
+                 "kicad_mod_content": '(footprint "MY2P" (layer F.Cu)'
+                 '(pad "1" smd rect (at 0 0)(size 1 1)(layers F.Cu)))'})
+    assert good["success"]
+    assert good["next_step"]["tool"] == "verify_footprints"
+
+
+def test_check_footprint_coverage_guidance(server):
+    needs = call(server, "check_footprint_coverage",
+                 {"components": [{"reference": "U1", "package": "NOPE-99",
+                                  "pin_count": 99}], "project_name": "cov"})
+    assert needs["coverage"]["custom_needed"] == 1
+    assert needs["next_step"]["tool"] == "register_custom_footprint"
+    okc = call(server, "check_footprint_coverage",
+               {"components": [{"reference": "R1", "package": "0805",
+                                "pin_count": 2}], "project_name": "cov"})
+    assert okc["coverage"]["custom_needed"] == 0
+    assert okc["next_step"]["tool"] == "optimize_placement"
+
+
 def test_add_component_bad_designator(server):
     call(server, "create_circuit",
          {"project_name": "flawed3", "description": "x",

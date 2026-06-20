@@ -2527,7 +2527,7 @@ def check_footprint_coverage(
                 ),
             })
 
-    return {
+    out = {
         "coverage": {
             "total": len(components),
             "resolved": len(resolved),
@@ -2536,6 +2536,21 @@ def check_footprint_coverage(
         "resolved": resolved,
         "custom_needed": custom_needed,
     }
+    if custom_needed:
+        out["next_step"] = next_step(
+            "register_custom_footprint",
+            {"project_name": project_name or "<project>",
+             "package_name": custom_needed[0]["package"],
+             "kicad_mod_content": "<.kicad_mod S-expression>"},
+            f"{len(custom_needed)} component(s) have no library footprint — "
+            "create and register a .kicad_mod for each, then re-check.",
+        )
+    else:
+        out["next_step"] = next_step(
+            "optimize_placement", {"project_name": project_name or "<project>"},
+            "All footprints resolve — placement can proceed.",
+        )
+    return out
 
 
 @mcp.tool()
@@ -2571,14 +2586,17 @@ def register_custom_footprint(
     # Basic content sanity check
     stripped = kicad_mod_content.strip()
     if not (stripped.startswith("(footprint") or stripped.startswith("(module")):
-        return {
-            "success": False,
-            "error": (
-                "kicad_mod_content must be a valid KiCad S-expression starting "
-                "with '(footprint ...' or '(module ...'. Got: "
-                + stripped[:60]
-            ),
-        }
+        return fail(
+            "kicad_mod_content must be a valid KiCad S-expression starting "
+            "with '(footprint ...' or '(module ...'. Got: " + stripped[:60],
+            remediation=[option(
+                "Pass the full .kicad_mod file content (starts with '(footprint')",
+                "register_custom_footprint",
+                {"project_name": project_name, "package_name": package_name,
+                 "kicad_mod_content": "(footprint \"NAME\" (layer F.Cu) "
+                 "(pad \"1\" smd rect (at 0 0)(size 1 1)(layers F.Cu)) ...)"},
+            )],
+        )
 
     # Build a filesystem-safe filename from the package name
     safe_name = re.sub(r"[^a-zA-Z0-9_\-\.]", "_", package_name).strip("_")
@@ -2608,8 +2626,7 @@ def register_custom_footprint(
             from exporters.kicad_mod_parser import KiCadLibraryIndex
             _CUSTOM_INDICES[project_name] = KiCadLibraryIndex(custom_dir)
 
-    return {
-        "success": True,
+    return ok({
         "path": str(fp_path),
         "package_name": package_name,
         "message": (
@@ -2617,7 +2634,10 @@ def register_custom_footprint(
             f"'{project_name}'. It will be found by check_footprint_coverage and "
             "optimize_placement immediately."
         ),
-    }
+    }, next_step(
+        "verify_footprints", {"project_name": project_name},
+        "Confirm the registered footprint clears the placement gate.",
+    ))
 
 
 # ---------------------------------------------------------------------------
