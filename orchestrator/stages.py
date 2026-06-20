@@ -1109,23 +1109,27 @@ def run_drc(project_dir: Path, project_name: str, config, log=None) -> dict:
 
     report = _run_drc(routed, netlist_data, req_data)
 
-    # When kicad-cli is installed, supersede the report with KiCad's own DRC —
-    # the authoritative engine the fab uses (correct rules from the exported
-    # .kicad_pro, poured zones, real short/antipad geometry). The internal
-    # report is the portable fallback. We keep the internal current-capacity
-    # check (KiCad has no current rule).
+    # When kicad-cli is installed, supersede the report with KiCad's own DRC for
+    # GEOMETRY — the authoritative engine the fab uses (correct rules from the
+    # exported .kicad_pro, poured zones, real short/antipad geometry). The
+    # internal report is the portable fallback. We carry over the internal
+    # CONNECTIVITY and current-capacity checks: connectivity stays on the
+    # router-reconciled internal check (KiCad's ratsnest disagrees with the
+    # router and would loop agents on "100% routed but N unconnected"), and
+    # KiCad has no current-capacity rule.
     try:
         from optimizers.route_cleanup import find_kicad_cli
         from validators.kicad_drc import run_kicad_drc
         from exporters.kicad_exporter import export_kicad_pcb
         kcli = find_kicad_cli()
         if kcli:
-            current_check = next((c for c in report.get("checks", [])
-                                  if c.get("rule") == "trace_current_capacity"), None)
+            _carry = {"connectivity", "trace_current_capacity"}
+            extra = [c for c in report.get("checks", [])
+                     if c.get("rule") in _carry]
             auth = run_kicad_drc(
                 routed, netlist_data, kcli,
                 export_fn=lambda rt, nl, pcb: export_kicad_pcb(rt, nl, pcb),
-                project_name=project_name, current_check=current_check)
+                project_name=project_name, extra_checks=extra)
             if auth is not None:
                 auth["manufacturer"] = report.get("manufacturer")
                 auth["dfm_profile"] = report.get("dfm_profile")

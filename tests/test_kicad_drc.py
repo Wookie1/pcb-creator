@@ -28,11 +28,23 @@ class TestBuildReport:
         assert rep["engine"] == "kicad-cli"
         assert rep["statistics"]["errors"] == 2
 
-    def test_unconnected_becomes_connectivity(self):
+    def test_kicad_unconnected_is_ignored(self):
+        # KiCad's ratsnest disagrees with the router; connectivity is NOT taken
+        # from kicad-cli. Unconnected items must not create a failing check.
         rep = build_kicad_drc_report(_drc([], unconnected=[
             {"description": "GND", "items": [{"description": "Pad", "pos": {"x": 3, "y": 4}}]}]))
-        conn = next(c for c in rep["checks"] if c["rule"] == "connectivity")
-        assert conn["passed"] is False and len(conn["violations"]) == 1
+        assert not any(c["rule"] == "connectivity" for c in rep["checks"])
+        assert rep["passed"] is True
+
+    def test_connectivity_comes_from_extra_checks(self):
+        # The router-reconciled internal connectivity check is the gate, passed
+        # in via extra_checks — and DOES fail the report when it has errors.
+        conn = {"rule": "connectivity", "category": "electrical", "passed": False,
+                "violations": [{"rule": "connectivity", "severity": "error",
+                                "message": "Net X: 2 disconnected groups"}]}
+        rep = build_kicad_drc_report(_drc([]), extra_checks=[conn])
+        assert any(c["rule"] == "connectivity" for c in rep["checks"])
+        assert rep["passed"] is False
 
     def test_clean_board_passes(self):
         rep = build_kicad_drc_report(_drc([]))
@@ -46,10 +58,10 @@ class TestBuildReport:
         assert rep["passed"] is True
         assert rep["statistics"]["warnings"] == 1
 
-    def test_current_check_appended(self):
+    def test_extra_checks_appended(self):
         cc = {"rule": "trace_current_capacity", "category": "current",
               "passed": True, "violations": [], "checked_count": 5}
-        rep = build_kicad_drc_report(_drc([]), current_check=cc)
+        rep = build_kicad_drc_report(_drc([]), extra_checks=[cc])
         assert any(c["rule"] == "trace_current_capacity" for c in rep["checks"])
 
     def test_unknown_type_bucketed(self):

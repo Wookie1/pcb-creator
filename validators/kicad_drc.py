@@ -54,11 +54,18 @@ def _first_pos(items: list[dict]) -> dict | None:
 
 
 def build_kicad_drc_report(drc_data: dict, *, project_name: str = "",
-                           current_check: dict | None = None) -> dict:
+                           extra_checks: list[dict] | None = None) -> dict:
     """Shape a parsed kicad-cli DRC json into the drc_report report structure.
 
-    `current_check` (the internal trace_current_capacity result) is appended —
-    KiCad's DRC has no current-capacity rule, so we keep that one internal."""
+    KiCad's DRC is authoritative for GEOMETRY (shorts, clearance, hole/edge,
+    annular, silk, dangling). It is NOT used for CONNECTIVITY: KiCad's ratsnest
+    disagrees with the autorouter's own completion (it flags GND-zone fragments
+    and segment/plane-credited joins the router considers connected), which made
+    a "100% routed" board read as "DRC: N unconnected" and sent agents looping.
+    So kicad-cli `unconnected_items` are intentionally dropped here, and the
+    caller passes the router-reconciled internal checks via `extra_checks`
+    (connectivity + trace_current_capacity, neither of which KiCad covers the
+    way we want)."""
     by_rule: dict[str, dict] = {}
 
     def _bucket(rule: str, category: str) -> dict:
@@ -77,21 +84,14 @@ def build_kicad_drc_report(drc_data: dict, *, project_name: str = "",
         })
         if sev == "error":
             b["passed"] = False
-    # Unconnected ratsnest → connectivity check.
-    unconnected = drc_data.get("unconnected_items", [])
-    if unconnected:
-        b = _bucket("connectivity", "electrical")
-        for u in unconnected:
-            b["passed"] = False
-            b["violations"].append({
-                "rule": "connectivity", "severity": "error",
-                "message": u.get("description", "Unconnected items"),
-                "location": _first_pos(u.get("items", [])),
-            })
+    # NOTE: kicad-cli `unconnected_items` are deliberately NOT mapped — the
+    # router-reconciled internal connectivity check is the connectivity gate
+    # (passed in via extra_checks). See the docstring.
 
     checks = list(by_rule.values())
-    if current_check is not None:
-        checks.append(current_check)
+    for extra in (extra_checks or []):
+        if extra is not None:
+            checks.append(extra)
 
     errors = sum(sum(1 for v in c["violations"] if v.get("severity") == "error")
                  for c in checks)
@@ -122,7 +122,7 @@ def run_kicad_drc(
     *,
     export_fn: Callable[[dict, dict, Path], None],
     project_name: str = "",
-    current_check: dict | None = None,
+    extra_checks: list[dict] | None = None,
     timeout: int = 300,
 ) -> dict | None:
     """Export the board and run kicad-cli DRC; return a drc_report-shaped dict,
@@ -143,4 +143,4 @@ def run_kicad_drc(
                 json.JSONDecodeError, ValueError):
             return None
     return build_kicad_drc_report(data, project_name=project_name,
-                                  current_check=current_check)
+                                  extra_checks=extra_checks)
