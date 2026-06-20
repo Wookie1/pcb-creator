@@ -2158,7 +2158,13 @@ def run_drc(project_name: str) -> dict:
     try:
         report = stages.run_drc(pdir, project_name, _get_config())
     except Exception as exc:
-        return fail(f"DRC failed: {exc}")
+        return fail(
+            f"DRC failed: {exc}",
+            remediation=[option(
+                "The routed board may be incomplete or corrupt — re-route it, "
+                "then run DRC again", "route_board",
+                {"project_name": project_name, "effort": "best"})],
+        )
 
     if report.get("error"):
         return fail(report["error"], remediation=[option(
@@ -2219,7 +2225,13 @@ def export_outputs(project_name: str) -> dict:
     try:
         result = stages.run_export(pdir, project_name, _get_config())
     except Exception as exc:
-        return fail(f"Export failed: {exc}")
+        return fail(
+            f"Export failed: {exc}",
+            remediation=[option(
+                "The routed board may be incomplete or corrupt — re-route it, "
+                "then export again", "route_board",
+                {"project_name": project_name, "effort": "best"})],
+        )
 
     if not result.get("success"):
         return fail(result.get("error", "Export failed."), data=result)
