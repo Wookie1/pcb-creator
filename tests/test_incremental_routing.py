@@ -92,6 +92,55 @@ class TestIncrementalEndToEnd:
         assert len(out_traces) >= len(keep)
         assert inc.get("completion_pct", 0) >= full.get("completion_pct", 0) - 5
 
+    def test_keep_existing_complete_board_stays_100(self, tmp_path, monkeypatch):
+        """Finishing an already-complete board with keep_existing protects EVERY
+        net, so Freerouting writes a degenerate 'nothing to route' SES. import_ses
+        then counts 0 routed nets — but the restored protected traces fully connect
+        the board, so the reported completion must be recomputed to 100%, not 0%
+        (otherwise the agent is told a finished board is unrouted and re-routes)."""
+        import mcp_server
+        from orchestrator import stages
+        monkeypatch.setenv("PCB_PROJECTS_DIR", str(tmp_path / "p"))
+        mcp_server._init_lookup()
+        P = "kx"
+        steps = [
+            ("create_circuit", dict(project_name=P, description="x",
+                                    board_width_mm=30, board_height_mm=20)),
+            ("add_component", dict(project_name=P, designator="R1",
+                                   component_type="resistor", value="330ohm",
+                                   package="0805")),
+            ("add_component", dict(project_name=P, designator="D1",
+                                   component_type="led", value="red",
+                                   package="0805")),
+            ("add_component", dict(project_name=P, designator="J1",
+                                   component_type="connector", value="2-pin",
+                                   package="PinHeader_1x2")),
+            ("connect_pins", dict(project_name=P, net_name="VCC",
+                                  pins=["J1.1", "R1.1"])),
+            ("connect_pins", dict(project_name=P, net_name="LED_DRIVE",
+                                  pins=["R1.2", "D1.anode"])),
+            ("connect_pins", dict(project_name=P, net_name="GND",
+                                  pins=["D1.cathode", "J1.2"])),
+            ("finalize_circuit", dict(project_name=P)),
+        ]
+        for tool, args in steps:
+            assert getattr(mcp_server, tool)(**args)["success"]
+        mcp_server.optimize_placement(P, board_width_mm=30, board_height_mm=20,
+                                      seed=1)
+        cfg = mcp_server._get_config()
+        pdir = mcp_server._project_dir(P)
+
+        full = stages.run_routing(pdir, P, cfg, effort="fast")
+        if full.get("completion_pct", 0) < 100:
+            pytest.skip("baseline route did not complete; environment-dependent")
+
+        rt = json.loads((pdir / f"{P}_routed.json").read_text())["routing"]
+        keep = {"traces": rt["traces"], "vias": rt.get("vias", [])}
+        inc = stages.run_routing(pdir, P, cfg, effort="fast", fixed_routing=keep)
+        assert inc["success"]
+        assert inc["completion_pct"] == 100.0, inc
+        assert inc["unrouted_nets"] == [], inc
+
 
 class TestIncompleteNetIds:
     """incomplete_net_ids drives connectivity-aware incremental routing: it must

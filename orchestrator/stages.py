@@ -708,6 +708,11 @@ def run_routing(project_dir: Path, project_name: str, config,
     netlist_data = _load(netlist_path)
     router_kwargs = _build_router_kwargs(project_dir, project_name, log=log)
 
+    # Caller-driven incremental routing (keep_existing) — captured before the
+    # escape-fanout logic may set fixed_routing internally on a FRESH route, so
+    # the post-merge stats recompute below applies only to true incremental runs.
+    _incremental = fixed_routing is not None
+
     routed = None
     engine = "builtin"
     num_layers = placement_data.get("board", {}).get("layers", 2)
@@ -879,6 +884,39 @@ def run_routing(project_dir: Path, project_name: str, config,
         for v in fixed_routing.get("vias", []):
             if _vk(v) not in seen_v:
                 rt.setdefault("vias", []).append(v); seen_v.add(_vk(v))
+
+        # Recompute completion from the MERGED routing. import_ses only saw the
+        # newly-routed SES nets, so when Freerouting wrote a degenerate "nothing
+        # to route" SES (e.g. an already-complete board finished with
+        # keep_existing) it reported 0% / all-unrouted even though the restored
+        # protected traces fully connect the board. Use the fill-aware
+        # connectivity check so the agent isn't told a finished board is 0% routed
+        # and sent into a needless re-route. Merging traces can only IMPROVE
+        # connectivity, so we never mark MORE nets unrouted than before.
+        from validators.validate_routing import incomplete_net_ids
+        st = rt.setdefault("statistics", {})
+        total = st.get("total_nets", 0)
+        prev_unrouted = set(rt.get("unrouted_nets", []))
+        if _incremental and prev_unrouted:
+            # The connectivity check SKIPS nets already listed in unrouted_nets
+            # (it trusts that field), so a fresh evaluation of the merged board
+            # must start from an empty list — otherwise the protected nets are
+            # never re-examined and stay "unrouted" forever.
+            rt["unrouted_nets"] = []
+            incomplete = incomplete_net_ids(routed, netlist_data)
+            still_unrouted = sorted(prev_unrouted & incomplete)
+            rt["unrouted_nets"] = still_unrouted
+            st["unrouted_nets"] = len(still_unrouted)
+            st["routed_nets"] = max(0, total - len(still_unrouted))
+            st["completion_pct"] = (round(100 * st["routed_nets"] / total, 1)
+                                    if total else 100.0)
+            st["via_count"] = len(rt.get("vias", []))
+            tl = 0.0
+            for t in rt.get("traces", []):
+                dx = t.get("end_x_mm", 0) - t.get("start_x_mm", 0)
+                dy = t.get("end_y_mm", 0) - t.get("start_y_mm", 0)
+                tl += (dx * dx + dy * dy) ** 0.5
+            st["total_trace_length_mm"] = round(tl, 1)
 
     # Persist the design rules the board was ACTUALLY routed to, so the DRC
     # checks against the same clearance/widths the router used (otherwise the
