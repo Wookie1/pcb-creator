@@ -233,3 +233,72 @@ class TestPinDurability:
         j1 = next(p for p in placement["placements"] if p["designator"] == "J1")
         assert j1["placement_source"] == "user"
         assert abs(j1["x_mm"] - 20.0) < 0.01 and abs(j1["y_mm"] - 15.0) < 0.01
+
+
+class TestSetPositionsNoOpGuard:
+    """set_component_positions must NOT silently succeed when it pins nothing.
+
+    The documented failure mode: an agent passed a typo'd designator, the tool
+    skipped it with a buried 'notes' entry but returned success:True /
+    pinned_count:0 and a next_step saying the pins would hold — so the agent
+    proceeded and burned 30+ tool calls discovering its anchors were gone.
+    A request that pins nothing is now a failure with remediation; a partial
+    request surfaces the unpinned designators at the TOP level."""
+
+    def _setup(self, tmp_path, monkeypatch):
+        import mcp_server
+        monkeypatch.setenv("PCB_PROJECTS_DIR", str(tmp_path))
+        proj = "noop"
+        pdir = tmp_path / proj
+        pdir.mkdir()
+        (pdir / f"{proj}_netlist.json").write_text(json.dumps(_tiny_netlist()))
+        mcp_server._init_lookup()
+        # A real placement so the placement-exists branch is taken.
+        ok = mcp_server.set_component_positions(
+            proj, [{"designator": "J1", "x_mm": 20.0, "y_mm": 15.0}],
+            board_width_mm=40, board_height_mm=30)
+        assert ok["success"]
+        return mcp_server, proj
+
+    def test_all_typo_fails_with_remediation(self, tmp_path, monkeypatch):
+        m, proj = self._setup(tmp_path, monkeypatch)
+        r = m.set_component_positions(proj, [{"designator": "J9", "x_mm": 5, "y_mm": 5}])
+        assert r["success"] is False
+        assert r["pinned_count"] == 0
+        # Names the valid designators so the agent can correct the typo.
+        assert "J1" in r["error"] and "R1" in r["error"]
+        assert any(o["tool"] == "list_circuit" for o in r["remediation"])
+        assert "J9" in r["known_designators"] or r["known_designators"]
+
+    def test_missing_coords_fails(self, tmp_path, monkeypatch):
+        m, proj = self._setup(tmp_path, monkeypatch)
+        r = m.set_component_positions(proj, [{"designator": "R1"}])
+        assert r["success"] is False and r["pinned_count"] == 0
+        assert r["unpinned"][0]["reason"].startswith("missing")
+
+    def test_partial_surfaces_unpinned_at_top_level(self, tmp_path, monkeypatch):
+        m, proj = self._setup(tmp_path, monkeypatch)
+        r = m.set_component_positions(
+            proj, [{"designator": "R1", "x_mm": 12, "y_mm": 8},
+                   {"designator": "J9", "x_mm": 1, "y_mm": 1}])
+        assert r["success"] is True
+        assert r["pinned_designators"] == ["R1"]
+        # The failed designator is NOT buried — it is a top-level field and the
+        # next_step.why warns about it.
+        assert r["unpinned"][0]["designator"] == "J9"
+        assert "J9" in r["warning"]
+        assert "WARNING" in r["next_step"]["why"]
+
+    def test_uncompiled_draft_steers_to_finalize(self, tmp_path, monkeypatch):
+        import mcp_server
+        monkeypatch.setenv("PCB_PROJECTS_DIR", str(tmp_path))
+        mcp_server._init_lookup()
+        r = mcp_server.create_circuit("draftonly", "x", 40, 30)
+        assert r["success"]
+        # Draft exists but no netlist yet — must point at finalize_circuit, not
+        # the misleading "import a netlist".
+        r = mcp_server.set_component_positions(
+            "draftonly", [{"designator": "J1", "x_mm": 5, "y_mm": 5}],
+            board_width_mm=40, board_height_mm=30)
+        assert r["success"] is False
+        assert any(o["tool"] == "finalize_circuit" for o in r["remediation"])

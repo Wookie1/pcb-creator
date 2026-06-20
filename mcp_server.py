@@ -1681,12 +1681,32 @@ def place_component(project_name: str, designator: str, x_mm: float,
                                       layer)
     if not result.pop("ok"):
         rem = []
-        if result.get("code") in ("out_of_bounds", "pin_overlap"):
+        code = result.get("code")
+        if code in ("out_of_bounds", "pin_overlap"):
             rem.append(option("Retry with adjusted coordinates",
                               "place_component",
                               {"project_name": project_name,
                                "designator": designator,
                                "x_mm": "<new x>", "y_mm": "<new y>"}))
+        elif code == "no_netlist":
+            # A builder draft exists but was never compiled — steer to
+            # finalize_circuit rather than leaving the agent to guess.
+            if (_project_dir(project_name)
+                    / f"{project_name}_circuit_draft.json").exists():
+                rem.append(option("Compile the draft into a netlist first",
+                                  "finalize_circuit",
+                                  {"project_name": project_name}))
+            else:
+                rem.append(option("Build a circuit from scratch", "create_circuit",
+                                  {"project_name": project_name,
+                                   "description": "<circuit description>",
+                                   "board_width_mm": 50, "board_height_mm": 40}))
+                rem.append(option("Import a KiCad netlist", "import_kicad_netlist",
+                                  {"project_name": project_name,
+                                   "file_path": "<path to .net>"}))
+        elif code == "unknown_designator":
+            rem.append(option("List the circuit to get valid designators",
+                              "list_circuit", {"project_name": project_name}))
         return fail(result.get("error", "place_component failed."),
                     remediation=rem or None)
     return ok(result, next_step(
@@ -2177,63 +2197,103 @@ def set_component_positions(
         or {success: False, error: str}
     """
     pdir = _project_dir(project_name)
-    if not pdir.exists():
-        return {"success": False, "error": f"Project '{project_name}' not found. Run import_kicad_netlist first."}
-
+    draft_path = pdir / f"{project_name}_circuit_draft.json"
     netlist_path = pdir / f"{project_name}_netlist.json"
     placement_path = pdir / f"{project_name}_placement.json"
 
+    if not pdir.exists():
+        return fail(
+            f"Project '{project_name}' not found.",
+            remediation=[
+                option("Build a circuit from scratch", "create_circuit",
+                       {"project_name": project_name,
+                        "description": "<circuit description>",
+                        "board_width_mm": 50, "board_height_mm": 40}),
+                option("Import a KiCad netlist", "import_kicad_netlist",
+                       {"project_name": project_name, "file_path": "<path to .net>"}),
+            ],
+        )
+
     if not netlist_path.exists():
-        return {"success": False, "error": "No netlist found — run import_kicad_netlist first."}
+        # A builder draft that has not been compiled yet has no netlist. Steer to
+        # finalize_circuit instead of the misleading "import a netlist" — the
+        # agent already built the circuit, it just hasn't compiled it.
+        if draft_path.exists():
+            return fail(
+                f"Circuit '{project_name}' is not compiled yet (no netlist). "
+                "Compile and validate the draft, then set positions.",
+                remediation=[option("Compile the draft into a netlist",
+                                    "finalize_circuit",
+                                    {"project_name": project_name})],
+            )
+        return fail(
+            f"No netlist for '{project_name}'.",
+            remediation=[
+                option("Import a KiCad netlist", "import_kicad_netlist",
+                       {"project_name": project_name, "file_path": "<path to .net>"}),
+                option("Build a circuit from scratch", "create_circuit",
+                       {"project_name": project_name,
+                        "description": "<circuit description>"}),
+            ],
+        )
 
     # Load or generate placement
     if placement_path.exists():
         placement = json.loads(placement_path.read_text())
     else:
         # Need board dimensions to generate a seed placement
-        bw = board_width_mm
-        bh = board_height_mm
-        if bw is None or bh is None:
-            return {
-                "success": False,
-                "error": (
-                    "No existing placement found and board_width_mm/board_height_mm not provided. "
-                    "Supply board dimensions so a seed placement can be generated, or call "
-                    "optimize_placement first and then call set_component_positions."
-                ),
-            }
+        if board_width_mm is None or board_height_mm is None:
+            return fail(
+                "No placement exists yet and board_width_mm/board_height_mm were "
+                "not provided, so no seed placement can be generated.",
+                remediation=[
+                    option("Provide board dimensions so a seed placement is generated",
+                           "set_component_positions",
+                           {"project_name": project_name, "positions": positions,
+                            "board_width_mm": "<width>", "board_height_mm": "<height>"}),
+                    option("Or run optimize_placement first, then pin positions",
+                           "optimize_placement",
+                           {"project_name": project_name,
+                            "board_width_mm": "<width>", "board_height_mm": "<height>"}),
+                ],
+            )
         from optimizers.initial_placement import generate_grid_placement
         netlist = json.loads(netlist_path.read_text())
         _activate_project_lookup(project_name)
-        placement = generate_grid_placement(netlist, bw, bh, project_name)
+        placement = generate_grid_placement(netlist, board_width_mm,
+                                            board_height_mm, project_name)
         if placement is None:
-            return {"success": False, "error": "Could not generate seed placement — check that the netlist has components with resolvable footprints."}
+            return fail(
+                "Could not generate a seed placement — check the netlist has "
+                "components with resolvable footprints.",
+                remediation=[option("Verify every footprint resolves",
+                                    "verify_footprints",
+                                    {"project_name": project_name})],
+            )
 
     # Build a lookup from designator → placement item index
     des_index: dict[str, int] = {
         item["designator"]: i
         for i, item in enumerate(placement.get("placements", []))
     }
+    known = sorted(des_index)
 
-    notes = []
-    pinned = []
-
+    pinned: list[str] = []
+    unpinned: list[dict] = []   # every requested entry that did NOT pin, with why
     for pos in positions:
         des = pos.get("designator", "")
         if not des:
-            notes.append("Skipped entry with no designator.")
+            unpinned.append({"designator": None, "reason": "entry has no 'designator'"})
             continue
-
         x = pos.get("x_mm")
         y = pos.get("y_mm")
         if x is None or y is None:
-            notes.append(f"Skipped {des}: x_mm or y_mm missing.")
+            unpinned.append({"designator": des, "reason": "missing x_mm or y_mm"})
             continue
-
         if des not in des_index:
-            notes.append(f"Warning: {des} not found in placement — it may not be in the netlist.")
+            unpinned.append({"designator": des,
+                             "reason": "not a component in this circuit"})
             continue
-
         idx = des_index[des]
         placement["placements"][idx]["x_mm"] = float(x)
         placement["placements"][idx]["y_mm"] = float(y)
@@ -2242,16 +2302,38 @@ def set_component_positions(
         placement["placements"][idx]["placement_source"] = "user"
         pinned.append(des)
 
+    # No-op guard: a request that pins NOTHING is a failure, not a hidden success.
+    # This is the "silent no-op" that cost an agent 30+ tool calls — the call
+    # used to return success:True with pinned_count:0 and a next_step that said
+    # "pinned components will stay fixed", with the real reason buried in 'notes'.
+    # Write nothing on this path so a failed call never mutates placement state.
+    if not pinned:
+        detail = "; ".join(f"{u['designator']}: {u['reason']}"
+                           for u in unpinned) or "no positions given"
+        return fail(
+            f"None of the {len(positions)} requested component(s) were pinned "
+            f"({detail}). Valid designators: {', '.join(known) or '(none)'}.",
+            remediation=[
+                option("Inspect the circuit to get the real designators",
+                       "list_circuit", {"project_name": project_name}),
+                option("Retry with a valid designator and explicit coordinates",
+                       "set_component_positions",
+                       {"project_name": project_name,
+                        "positions": [{"designator": (known[0] if known else "J1"),
+                                       "x_mm": "<x>", "y_mm": "<y>"}]}),
+            ],
+            data={"pinned_count": 0, "pinned_designators": [],
+                  "unpinned": unpinned, "known_designators": known},
+        )
+
     placement_path.write_text(json.dumps(placement, indent=2))
 
     # Persist to the DURABLE pin store (placement_pins.json) too — the same
     # store place_component writes and that run_placement re-applies on every
     # optimize. Without this, these pins lived only in placement.json's
     # placement_source flags and were silently lost whenever the placement was
-    # regenerated, so a later optimize_placement scattered them (the
-    # set_component_positions "silent no-op" failure mode that cost an agent
-    # 30+ tool calls). Writing both stores makes batch pins as durable as
-    # single place_component pins.
+    # regenerated, so a later optimize_placement scattered them. Writing both
+    # stores makes batch pins as durable as single place_component pins.
     from orchestrator.stages import load_placement_pins, _pins_path
     durable = load_placement_pins(pdir, project_name)
     for des in pinned:
@@ -2261,18 +2343,24 @@ def set_component_positions(
                         "layer": it.get("layer", "top")}
     _pins_path(pdir, project_name).write_text(json.dumps(durable, indent=2))
 
-    return {
-        "success": True,
+    data = {
         "pinned_count": len(pinned),
         "pinned_designators": pinned,
         "total_components": len(placement.get("placements", [])),
         "placement_path": str(placement_path),
-        "notes": notes,
-        "next_step": (
-            "Call optimize_placement — pinned components will stay fixed; "
-            "all other components will be placed around them."
-        ),
     }
+    why = "Pinned components stay fixed; everything else is placed around them."
+    if unpinned:
+        # Partial success must be LOUD: surface the failures at top level, not
+        # buried in notes, so the agent fixes the typo'd designators.
+        data["unpinned"] = unpinned
+        names = ", ".join(str(u["designator"]) for u in unpinned)
+        data["warning"] = (
+            f"{len(unpinned)} requested component(s) were NOT pinned: {names}. "
+            f"Valid designators: {', '.join(known)}.")
+        why = "WARNING: " + data["warning"] + " " + why
+    return ok(data, next_step("optimize_placement",
+                              {"project_name": project_name}, why))
 
 
 # ---------------------------------------------------------------------------
