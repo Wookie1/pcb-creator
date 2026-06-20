@@ -607,6 +607,63 @@ ROUTING_EFFORT = {
 }
 
 
+def _short_cleanup(routed, placement_data, netlist_data, exclude_nets,
+                   escape_wiring, fr_kwargs, router_kwargs, timeout_s,
+                   config, log=None):
+    """Drive optimizers.route_cleanup with the real export+kicad-cli-DRC+reroute.
+    No-op (returns routed unchanged) when kicad-cli isn't available."""
+    import tempfile
+    from optimizers.route_cleanup import (
+        find_kicad_cli, cleanup_shorts, drc_shorting_net_names,
+    )
+    kcli = find_kicad_cli()
+    if not kcli:
+        (log or (lambda *_a: None))("  Short cleanup skipped: kicad-cli not found")
+        return routed
+
+    from optimizers.freerouter import route_with_freerouting
+    from optimizers.router import apply_copper_fills, RouterConfig
+    from exporters.kicad_exporter import export_kicad_pcb
+
+    # Cleanup re-routes touch only a few nets (everything else is protected), so
+    # cap passes/timeout to keep the extra FR runs cheap.
+    base_kwargs = {k: v for k, v in fr_kwargs.items() if k != "fixed_routing"}
+    base_kwargs["max_passes"] = min(base_kwargs.get("max_passes", 20), 12)
+    cl_timeout = min(timeout_s, 600)
+
+    def _set_rules(rt):
+        rt.setdefault("routing", {}).setdefault("config", {}).update({
+            "trace_clearance_mm": router_kwargs.get("clearance_mm", 0.2),
+            "trace_width_signal_mm": router_kwargs.get("trace_width_signal_mm", 0.25),
+            "via_diameter_mm": router_kwargs.get("via_diameter_mm", 0.6),
+            "via_drill_mm": router_kwargs.get("via_drill_mm", 0.3),
+        })
+        return rt
+
+    def _route_fn(fixed):
+        try:
+            r = route_with_freerouting(placement_data, netlist_data,
+                                       timeout_s=cl_timeout, fixed_routing=fixed,
+                                       **base_kwargs)
+        except Exception:
+            return None
+        return _set_rules(apply_copper_fills(r, netlist_data,
+                                             RouterConfig(**router_kwargs)))
+
+    def _drc_fn(rt):
+        _set_rules(rt)
+        with tempfile.TemporaryDirectory(prefix="pcb-cleanup-drc-") as td:
+            pcb = Path(td) / "cleanup.kicad_pcb"
+            export_kicad_pcb(rt, netlist_data, pcb)
+            return drc_shorting_net_names(pcb, kcli, timeout=300)
+
+    best, _bad = cleanup_shorts(
+        routed, netlist_data, escapes=escape_wiring,
+        exclude_nets=tuple(exclude_nets), route_fn=_route_fn,
+        drc_net_names_fn=_drc_fn, max_iterations=2, log=log)
+    return best
+
+
 def run_routing(project_dir: Path, project_name: str, config,
                 progress_callback=None, log=None,
                 effort: str = "normal", max_seconds: int | None = None,
@@ -703,6 +760,10 @@ def run_routing(project_dir: Path, project_name: str, config,
             # when the board has a fine-pitch part (config.escape_fanout is None);
             # PCB_ESCAPE_FANOUT=true/false forces it on/off. Only on a fresh route
             # (an incremental caller's fixed_routing already carries the escapes).
+            _fresh_route = fixed_routing is None
+            # Escape wiring is preserved (never ripped) by the short-cleanup pass
+            # below, so a fine-pitch net's breakout survives a re-route.
+            escape_wiring = {"traces": [], "vias": [], "keepouts": []}
             ef = getattr(config, "escape_fanout", None)
             if ef is None:
                 _mp = _min_pad_pitch(project_dir, project_name)
@@ -727,6 +788,7 @@ def run_routing(project_dir: Path, project_name: str, config,
                         _log(f"  Fine-pitch escape fanout: pre-routed "
                              f"{len(escapes['vias'])} pin escape(s) as protected wiring")
                         fixed_routing = escapes
+                        escape_wiring = escapes
                 except Exception as exc:
                     _log(f"  Escape fanout skipped: {exc}")
             eff = ROUTING_EFFORT.get(effort, ROUTING_EFFORT["normal"])
@@ -761,6 +823,21 @@ def run_routing(project_dir: Path, project_name: str, config,
                 _log("  Continuing with partial result (no fallback when Freerouting is the engine)")
             from optimizers.router import apply_copper_fills, RouterConfig
             routed = apply_copper_fills(routed, netlist_data, RouterConfig(**router_kwargs))
+
+            # Short-cleanup pass: rip up the nets kicad-cli DRC reports as
+            # shorting (or that are left incomplete) and re-route just those,
+            # holding everything else — including all escape wiring — protected.
+            # Authoritative bad-net list comes from kicad-cli (the internal
+            # geometric short-check over-reports); a no-op where kicad-cli isn't
+            # installed. Fresh routes only (an incremental caller drives its own).
+            if _fresh_route and getattr(config, "short_cleanup", True):
+                try:
+                    routed = _short_cleanup(
+                        routed, placement_data, netlist_data, exclude_nets,
+                        escape_wiring, fr_kwargs, router_kwargs, timeout_s,
+                        config, log=_log)
+                except Exception as exc:
+                    _log(f"  Short cleanup skipped: {exc}")
         except Exception as exc:
             _log(f"  Freerouting FAILED: {exc}")
             # The built-in A* router is 2-layer only; falling back on a 4-layer

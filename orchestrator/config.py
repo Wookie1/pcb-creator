@@ -77,6 +77,10 @@ class OrchestratorConfig:
     # Tri-state: None = AUTO (enabled when the board has a fine-pitch part),
     # True/False = force on/off via PCB_ESCAPE_FANOUT.
     escape_fanout: bool | None = None
+    # After routing, rip+re-route the nets kicad-cli DRC reports as shorting (or
+    # left incomplete), holding everything else protected (see
+    # optimizers/route_cleanup). No-op without kicad-cli. PCB_SHORT_CLEANUP.
+    short_cleanup: bool = True
 
     # Optimizer settings
     enable_optimizer: bool = True
@@ -148,6 +152,9 @@ class OrchestratorConfig:
         ef_env = os.environ.get("PCB_ESCAPE_FANOUT")
         if ef_env is not None:
             config.escape_fanout = ef_env.lower() in ("1", "true", "yes")
+        sc_env = os.environ.get("PCB_SHORT_CLEANUP")
+        if sc_env is not None:
+            config.short_cleanup = sc_env.lower() in ("1", "true", "yes")
         jar_env = os.environ.get("PCB_FREEROUTING_JAR")
         config.freerouting_jar_path = Path(jar_env) if jar_env else None
         timeout_env = os.environ.get("PCB_FREEROUTING_TIMEOUT")
