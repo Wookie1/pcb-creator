@@ -895,17 +895,24 @@ def get_project_status(project_name: str) -> dict:
         except json.JSONDecodeError:
             result["status"] = {}
 
-    # Routing stats
+    # Routing stats. The statistics live under routing.statistics and the
+    # unrouted-net LIST under routing.unrouted_nets (statistics.unrouted_nets is
+    # a count). Reading the top level returned all-zeros from disk — so any
+    # status query that reconciled from disk (e.g. after a server restart, or any
+    # project not in the in-memory job registry) reported a fully-routed board as
+    # 0% / 0 nets. Tolerate a flat shape too, just in case.
     routed = _read_project_json(project_name, "_routed.json")
     if routed:
-        stats = routed.get("statistics", {})
+        routing = routed.get("routing", routed)
+        stats = routing.get("statistics", {})
         result["routing_stats"] = {
             "completion_pct": stats.get("completion_pct", 0),
             "total_nets": stats.get("total_nets", 0),
             "routed_nets": stats.get("routed_nets", 0),
             "via_count": stats.get("via_count", 0),
             "trace_length_mm": stats.get("total_trace_length_mm", 0),
-            "unrouted_nets": stats.get("unrouted_nets", []),
+            "unrouted_nets": routing.get("unrouted_nets",
+                                         stats.get("unrouted_nets", [])),
         }
 
     # routing_state: in-memory job wins; else infer from on-disk artifact.
@@ -1021,6 +1028,43 @@ def get_project_status(project_name: str) -> dict:
             "optimize_placement with plane_layers=1 (adds a signal layer) or a "
             "larger board, then route again.",
         )
+    elif result.get("routing_state") == "complete" and "next_step" not in result:
+        # A finished route must point the poller at the next stage instead of
+        # leaving it to guess. Progressive: finish an incomplete route, then DRC,
+        # then export, then done.
+        rr = result.get("routing_result") or {}
+        stats = result.get("routing_stats") or {}
+        comp = rr.get("completion_pct")
+        if comp is None:
+            comp = stats.get("completion_pct")
+        unrouted = rr.get("unrouted_nets") or stats.get("unrouted_nets") or []
+        if comp is not None and comp < 100:
+            result["next_step"] = next_step(
+                "route_board",
+                {"project_name": project_name, "keep_existing": True,
+                 "effort": "best"},
+                f"Route finished at {comp}% with {len(unrouted)} net(s) still "
+                "unrouted. Finish them with keep_existing=True (protects the "
+                "routed majority); if it won't close on a dense board, re-run "
+                "optimize_placement with plane_layers=1 or a larger board.",
+            )
+        elif result.get("output_files"):
+            result["next_step"] = next_step(
+                "get_board_image", {"project_name": project_name},
+                "Routed, DRC'd, and exported — the manufacturing package is "
+                "ready. Optionally fetch a final board image to review.",
+            )
+        elif result.get("drc", {}).get("passed"):
+            result["next_step"] = next_step(
+                "export_outputs", {"project_name": project_name},
+                "Routing complete and DRC passed — generate the manufacturing "
+                "outputs.",
+            )
+        else:
+            result["next_step"] = next_step(
+                "run_drc", {"project_name": project_name},
+                "Routing complete — run design-rule checks before export.",
+            )
 
     return result
 

@@ -196,6 +196,47 @@ def test_status_unknown_project_remediates(server):
     assert_fail_with_remediation(r, ["list_projects"])
 
 
+def _write_routed(tmp_path, proj, completion, unrouted=()):
+    pdir = tmp_path / "projects" / proj
+    pdir.mkdir(parents=True, exist_ok=True)
+    (pdir / f"{proj}_routed.json").write_text(json.dumps({
+        "routing": {"traces": [], "vias": [],
+                    "statistics": {"completion_pct": completion, "total_nets": 5,
+                                   "routed_nets": 5, "unrouted_nets": list(unrouted)},
+                    "unrouted_nets": list(unrouted)}}))
+    return pdir
+
+
+def test_status_complete_incomplete_route_offers_finish(server, tmp_path):
+    """A finished-but-incomplete route must tell the poller to finish it with
+    keep_existing, not leave it thinking the board is done."""
+    _write_routed(tmp_path, "incpoll", 80.0, ["net_x"])
+    r = call(server, "get_project_status", {"project_name": "incpoll"})
+    assert r["routing_state"] == "complete"
+    assert r["next_step"]["tool"] == "route_board"
+    assert r["next_step"]["args"]["keep_existing"] is True
+
+
+def test_status_complete_route_points_at_drc_then_export(server, tmp_path):
+    """After a 100% route the poller is steered run_drc → export_outputs →
+    (done) get_board_image as artifacts appear, instead of having to guess."""
+    pdir = _write_routed(tmp_path, "donepoll", 100.0)
+    r = call(server, "get_project_status", {"project_name": "donepoll"})
+    assert r["routing_state"] == "complete"
+    assert r["next_step"]["tool"] == "run_drc"
+
+    (pdir / "donepoll_drc_report.json").write_text(
+        json.dumps({"passed": True, "summary": "ok", "statistics": {}}))
+    r = call(server, "get_project_status", {"project_name": "donepoll"})
+    assert r["next_step"]["tool"] == "export_outputs"
+
+    out = pdir / "output"
+    out.mkdir()
+    (out / "donepoll_gerbers.zip").write_text("zip")
+    r = call(server, "get_project_status", {"project_name": "donepoll"})
+    assert r["next_step"]["tool"] == "get_board_image"
+
+
 def test_route_invalid_effort(server):
     r = call(server, "route_board",
              {"project_name": "any", "effort": "turbo"})
