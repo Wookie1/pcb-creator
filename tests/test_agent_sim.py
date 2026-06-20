@@ -112,6 +112,46 @@ def test_provide_footprint_no_args_offers_both_modes(server):
     assert any("pin_offsets" in a for a in args)
 
 
+def test_provide_footprint_clears_unresolved_loop(server, tmp_path, monkeypatch):
+    """The footprint-resolution loop must actually CLEAR: verify (calls
+    _activate_project_lookup) → provide_footprint (persists) → verify resolved.
+    Regression for _activate_project_lookup wiping the component cache (it passed
+    a None cache to configure_lookup when _init_lookup had not run, so the very
+    next provide_footprint failed with 'cache is not configured')."""
+    import mcp_server
+    # Hermetic cache + a fresh, unconfigured lookup (the path that exposed the bug).
+    monkeypatch.setenv("PCB_COMPONENT_CACHE_PATH", str(tmp_path / "cache.json"))
+    monkeypatch.setattr(mcp_server, "_LOOKUP_CONFIGURED", False)
+    monkeypatch.setattr(mcp_server, "_CACHE", None)
+    monkeypatch.setattr(mcp_server, "_KICAD_INDEX", None)
+
+    proj = "fploop"
+    pdir = tmp_path / "projects" / proj
+    pdir.mkdir(parents=True)
+    elements = [{"element_type": "component", "component_id": "comp_u1",
+                 "designator": "U1", "component_type": "ic", "value": "WONKY",
+                 "package": "WONKY-8_DIPLIKE"}]
+    elements += [{"element_type": "port", "port_id": f"p{i}",
+                  "component_id": "comp_u1", "pin_number": i, "name": str(i),
+                  "electrical_type": "passive"} for i in range(1, 9)]
+    elements.append({"element_type": "net", "net_id": "net_a", "name": "A",
+                     "net_class": "signal", "connected_port_ids": ["p1", "p2"]})
+    (pdir / f"{proj}_netlist.json").write_text(
+        json.dumps({"version": "1.0", "project_name": proj, "elements": elements}))
+
+    v1 = call(server, "verify_footprints", {"project_name": proj})
+    assert v1["resolved"] is False and v1["unresolved_count"] == 1
+
+    pf = call(server, "provide_footprint",
+              {"project_name": proj, "package": "WONKY-8_DIPLIKE",
+               "like_package": "DIP-8"})
+    assert pf["success"], pf          # must NOT be "cache is not configured"
+
+    v2 = call(server, "verify_footprints", {"project_name": proj})
+    assert v2["resolved"] is True and v2["unresolved_count"] == 0
+    assert v2["next_step"]["tool"] == "optimize_placement"
+
+
 def test_add_component_bad_designator(server):
     call(server, "create_circuit",
          {"project_name": "flawed3", "description": "x",

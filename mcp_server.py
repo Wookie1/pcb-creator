@@ -95,7 +95,7 @@ def _init_lookup() -> None:
     pad-map / placement call has real footprint data.  Without this, the KiCad
     tier is silently skipped even when the env var is configured.
     """
-    global _KICAD_INDEX, _CACHE
+    global _KICAD_INDEX, _CACHE, _LOOKUP_CONFIGURED
     from orchestrator.cache import ComponentCache
     from optimizers.pad_geometry import configure_lookup
 
@@ -107,6 +107,9 @@ def _init_lookup() -> None:
         _KICAD_INDEX = KiCadLibraryIndex(config.kicad_library_path)
 
     configure_lookup(kicad_index=_KICAD_INDEX, cache=_CACHE, custom_index=None)
+    # Mark configured so the lazy _ensure_lookup_configured() doesn't build a
+    # second, separate cache — there is one cache, stored in _CACHE.
+    _LOOKUP_CONFIGURED = True
 
 
 def _get_project_custom_index(project_name: str) -> "Any | None":
@@ -136,6 +139,11 @@ def _activate_project_lookup(project_name: str) -> None:
     agent-registered footprints are visible to the placement engine.
     """
     from optimizers.pad_geometry import configure_lookup
+    # Ensure the base lookup (KiCad index + component cache) exists first, so we
+    # never reconfigure with a None cache and silently wipe it — that broke the
+    # provide_footprint → verify_footprints loop when _init_lookup() (main only)
+    # had not run, e.g. on the directly-callable / fastmcp-Client surface.
+    _ensure_lookup_configured()
     custom = _get_project_custom_index(project_name)
     configure_lookup(kicad_index=_KICAD_INDEX, cache=_CACHE, custom_index=custom)
 
@@ -174,7 +182,7 @@ def _ensure_lookup_configured() -> None:
     the component cache are disabled and verbose KiCad footprint names fall back
     to placeholders.  Idempotent and thread-safe.
     """
-    global _LOOKUP_CONFIGURED
+    global _LOOKUP_CONFIGURED, _CACHE, _KICAD_INDEX
     if _LOOKUP_CONFIGURED:
         return
     with _LOOKUP_LOCK:
@@ -194,7 +202,12 @@ def _ensure_lookup_configured() -> None:
             except Exception:
                 kicad_index = None
 
-        configure_lookup(kicad_index=kicad_index, cache=cache)
+        # Store as the module-level source of truth so _activate_project_lookup
+        # can re-apply the same cache/index (plus a custom tier) without ever
+        # passing a None cache to configure_lookup.
+        _CACHE = cache
+        _KICAD_INDEX = kicad_index
+        configure_lookup(kicad_index=_KICAD_INDEX, cache=_CACHE)
         _LOOKUP_CONFIGURED = True
 
 
