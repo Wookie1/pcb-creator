@@ -1008,6 +1008,19 @@ def get_project_status(project_name: str) -> dict:
             "again in ~20s. Do not run other tools or external CLIs for this "
             "project."
         )
+    elif result.get("routing_state") == "failed":
+        # A failed route must hand the poller a concrete recovery, not just a
+        # raw error string to parse — otherwise the agent stalls here.
+        err = result.get("routing_error") or "routing failed."
+        result["status_hint"] = f"Routing failed: {err}"
+        result["next_step"] = next_step(
+            "route_board",
+            {"project_name": project_name, "effort": "best"},
+            f"Routing failed ({err}) Retry once at higher effort; if it still "
+            "fails on a dense board the bottleneck is routing capacity — re-run "
+            "optimize_placement with plane_layers=1 (adds a signal layer) or a "
+            "larger board, then route again.",
+        )
 
     return result
 
