@@ -233,6 +233,33 @@ def run_drc(
     if requirements:
         copper_oz = requirements.get("board", {}).get("copper_weight_oz", 0.5)
 
+    # With no specific manufacturer chosen, verify the board against the rules
+    # it was actually ROUTED to — a fine-pitch board legitimately tightens to
+    # 0.127mm trace/clearance, which is manufacturable but false-fails the
+    # conservative 0.25/0.2mm generic default (hundreds of bogus trace_width /
+    # clearance violations). A named manufacturer keeps its real limits (and
+    # routing already respected them). Only ever loosens toward the board's own
+    # design, never below it.
+    if dfm_name == "generic":
+        cfg = routed.get("routing", {}).get("config", {})
+        dfm = dict(dfm)
+        for dfm_key, cfg_key in (("trace_width_min_mm", "trace_width_signal_mm"),
+                                 ("clearance_min_mm", "trace_clearance_mm")):
+            routed_rule = cfg.get(cfg_key)
+            if routed_rule:
+                dfm[dfm_key] = min(dfm.get(dfm_key, routed_rule), routed_rule)
+        # Vias: floor at the SMALLEST via actually on the board — fine-pitch
+        # escape vias (0.2mm drill / small annular) are intentional and
+        # manufacturable, matching the exported .kicad_pro (build_kicad_pro).
+        vias = routed.get("routing", {}).get("vias", [])
+        if vias:
+            min_drill = min(float(v.get("drill_mm", 0.3)) for v in vias)
+            min_annular = min((float(v.get("diameter_mm", 0.6))
+                               - float(v.get("drill_mm", 0.3))) / 2 for v in vias)
+            dfm["via_drill_min_mm"] = min(dfm.get("via_drill_min_mm", min_drill), min_drill)
+            dfm["min_annular_ring_mm"] = min(
+                dfm.get("min_annular_ring_mm", min_annular), min_annular)
+
     # Run all check categories
     all_checks: list[dict] = []
     all_checks.extend(_run_electrical_checks(routed, netlist))

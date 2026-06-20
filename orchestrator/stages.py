@@ -1108,6 +1108,32 @@ def run_drc(project_dir: Path, project_name: str, config, log=None) -> dict:
             pass
 
     report = _run_drc(routed, netlist_data, req_data)
+
+    # When kicad-cli is installed, supersede the report with KiCad's own DRC —
+    # the authoritative engine the fab uses (correct rules from the exported
+    # .kicad_pro, poured zones, real short/antipad geometry). The internal
+    # report is the portable fallback. We keep the internal current-capacity
+    # check (KiCad has no current rule).
+    try:
+        from optimizers.route_cleanup import find_kicad_cli
+        from validators.kicad_drc import run_kicad_drc
+        from exporters.kicad_exporter import export_kicad_pcb
+        kcli = find_kicad_cli()
+        if kcli:
+            current_check = next((c for c in report.get("checks", [])
+                                  if c.get("rule") == "trace_current_capacity"), None)
+            auth = run_kicad_drc(
+                routed, netlist_data, kcli,
+                export_fn=lambda rt, nl, pcb: export_kicad_pcb(rt, nl, pcb),
+                project_name=project_name, current_check=current_check)
+            if auth is not None:
+                auth["manufacturer"] = report.get("manufacturer")
+                auth["dfm_profile"] = report.get("dfm_profile")
+                report = auth
+                _log("  DRC: using kicad-cli (authoritative)")
+    except Exception as exc:
+        _log(f"  kicad-cli DRC unavailable, using internal report: {exc}")
+
     _p(project_dir, project_name, "drc_report").write_text(json.dumps(report, indent=2))
 
     if report.get("passed"):
