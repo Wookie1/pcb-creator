@@ -27,9 +27,10 @@ Upload to JLCPCB and order your board
 - **Two-sided placement** — small SMD passives can move to the bottom side (`optimize_placement(two_sided=True)`); especially effective on 4-layer boards where the inner planes free both outer layers for signal
 - **Agent-driven MCP interface** — drive the pipeline from any MCP client with an incremental circuit builder, structured `next_step`/`remediation` responses, and a workflow guide (see [MCP Server](#mcp-server))
 - **Small-model friendly** — chunked netlist generation, reasoning-tag stripping, and a `PCB_MODEL_PROFILE=small` mode make the LLM steps work with local 9B–35B models
-- **Fine-pitch-aware routing** — boards with a tight-pitch part (≤0.8mm, e.g. a 0.5mm connector or QFN) automatically route at the manufacturer-minimum trace/clearance and use trace-aware power-via fanout, so escape routing doesn't trip clearance/short DRC; ordinary boards keep the more robust default rules
+- **Fine-pitch escape routing** — boards with a tight-pitch part (≤0.8mm, e.g. a 0.5mm-pitch FFC or QFN) automatically route at the manufacturer-minimum trace/clearance AND get a full dog-bone **escape breakout** (pad → stub → staggered via → protected fanout to a clean grid, GND pins dropped to the plane) handed to Freerouting as protected wiring, so the autorouter starts clear of the pad field instead of shorting across it. Auto-enabled when a fine-pitch part is present; ordinary boards keep the robust defaults
+- **Short-cleanup pass** — after routing, the nets KiCad's DRC reports as shorting (or left incomplete) are ripped up and re-routed with everything else (including all escape wiring) held as protected wiring; reliably clears the through-hole-pad shorts Freerouting leaves in congestion. Driven by kicad-cli's authoritative DRC; no-op without it
 - **IPC-2221 trace sizing** — automatic trace width calculation for current capacity, propagated through series inductors/fuses
-- **DRC with DFM profiles** — checks against JLCPCB standard, JLCPCB 4-layer, PCBWay, OSH Park manufacturing rules
+- **DRC with DFM profiles** — checks against JLCPCB standard, JLCPCB 4-layer, PCBWay, OSH Park manufacturing rules. When kicad-cli is installed, DRC runs KiCad's own engine (the same one the fab uses, with poured zones and the board's actual routed rules) for an authoritative result; a portable internal validator is the fallback
 - **DXF board outline** — attach a DXF file to define non-rectangular board shapes
 - **Assembly drawing PDF** — print-friendly component placement reference with BOM table for manufacturing
 - **Manufacturer-ready output** — Gerber RS-274X, Excellon drill, BOM CSV, pick-and-place CSV, assembly PDF, STEP 3D model
@@ -115,7 +116,8 @@ All settings via environment variables or `.env` file:
 | `PCB_ROUTER_ENGINE` | `freerouting` | `freerouting` or `builtin` |
 | `PCB_FREEROUTING_TIMEOUT` | `300` | Freerouting timeout (seconds) |
 | `PCB_FREEROUTING_HEAP_MB` | *(auto: ~55% RAM, 1024–6144)* | JVM max-heap cap for Freerouting; prevents OOM-killing the host on dense boards |
-| `PCB_ESCAPE_FANOUT` | `false` | Pre-generate dog-bone escapes for single-row fine-pitch parts as protected wiring before routing |
+| `PCB_ESCAPE_FANOUT` | *(auto)* | Tri-state: unset = auto-enable when the board has a fine-pitch part; `true`/`false` force on/off. Pre-generates dog-bone escape breakouts for single-row fine-pitch parts as protected wiring before routing |
+| `PCB_SHORT_CLEANUP` | `true` | After routing, rip+re-route the nets kicad-cli DRC reports as shorting/incomplete (escapes preserved). No-op without kicad-cli |
 | `PCB_OPTIMIZER_ITERATIONS` | *(auto: 200×movable, ≤8000)* | Override the SA placement iteration cap |
 | `PCB_CUSTOM_FOOTPRINT_DIR` | *(none)* | Global writable dir for agent-registered custom footprints (tier 0) |
 | `PCB_MAX_REWORK` | `5` | Max LLM rework attempts per step |
@@ -206,10 +208,15 @@ optimizer flips freely on 4-layer and reluctantly on 2-layer.
 
 `route_board(effort="fast"|"normal"|"best")` trades quality vs wait time
 (~2/5/15 min caps); routing progress streams pass-by-pass from Freerouting.
-By default an incomplete route triggers one automatic re-place (extra
-clearance + congestion penalty) and re-route, keeping the better result.
-`run_drc` returns a severity-ranked summary with a remediation hint per
-failing rule (`get_drc_report(verbose=True)` for the full report).
+A fine-pitch part auto-triggers escape-breakout pre-routing, and after the
+main route a short-cleanup phase rips+re-routes any shorting/incomplete nets
+(a brief no-progress gap while it exports + DRCs is normal — wait for
+`routing_state` to reach `complete`). By default an incomplete route also
+triggers one automatic re-place (extra clearance + congestion penalty) and
+re-route, keeping the better result. `run_drc` returns a severity-ranked
+summary with a remediation hint per failing rule; when kicad-cli is present
+it is KiCad's authoritative DRC (`get_drc_report(verbose=True)` for the full
+report).
 
 Add to your MCP client config (e.g., `claude_desktop_config.json`):
 
