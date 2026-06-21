@@ -294,37 +294,6 @@ _PASS_RE = re.compile(
 
 _HEARTBEAT_INTERVAL_S = 10.0
 
-# Freerouting 2.1.0 has no stagnation detection: on a board that can't reach
-# 100% it keeps running optimization passes whose unrouted count OSCILLATES
-# (e.g. bouncing 9↔42) until the -mp budget is exhausted — minutes of churn that
-# never converges, stacked across the route + retry + cleanup FR runs. We detect
-# the plateau ourselves: once the best (minimum) unrouted count hasn't improved
-# for this many passes, stop early (SIGTERM → import the partial, same as the
-# timeout path), preferring to stop when the current pass re-hits that best so
-# the captured route is a good one. 0 disables. Tunable via env.
-_STAGNATION_PASSES = int(os.environ.get("PCB_FR_STAGNATION_PASSES", "8"))
-
-
-def _should_stop_for_stagnation(pass_num, best_pass, best_incomplete,
-                                cur_incomplete, threshold) -> bool:
-    """True when Freerouting has plateaued and should be stopped early.
-
-    Stop once the best (minimum) unrouted count hasn't improved for `threshold`
-    passes AND either the current pass has re-hit that best (so the flushed
-    partial is a good one) or we've waited 2× the window (an oscillation that
-    never re-hits the best must still terminate). Never stop while routing is
-    still completing (best == 0 means done; best None means no pass yet) or when
-    disabled (threshold 0)."""
-    if not threshold or best_incomplete is None or best_incomplete <= 0:
-        return False
-    if pass_num is None or best_pass is None:
-        return False
-    gap = pass_num - best_pass
-    if gap < threshold:
-        return False
-    return ((cur_incomplete is not None and cur_incomplete <= best_incomplete)
-            or gap >= threshold * 2)
-
 
 def route_with_freerouting(
     placement: dict,
@@ -440,7 +409,7 @@ def route_with_freerouting(
         # 3. Run Freerouting with stdout streaming for live pass progress.
         t0 = time.monotonic()
         state = {"pass_num": None, "incomplete": None, "score": None,
-                 "heartbeat": 0, "best_incomplete": None, "best_pass": None}
+                 "heartbeat": 0}
         state_lock = threading.Lock()
         stderr_tail: list[str] = []
 
@@ -471,11 +440,6 @@ def route_with_freerouting(
                         state["pass_num"] = int(m.group(1))
                         state["score"] = float(m.group(3))
                         state["incomplete"] = int(m.group(4)) if m.group(4) else 0
-                        inc = state["incomplete"]
-                        if (state["best_incomplete"] is None
-                                or inc < state["best_incomplete"]):
-                            state["best_incomplete"] = inc
-                            state["best_pass"] = state["pass_num"]
                     _emit()
             pipe.close()
 
@@ -505,16 +469,6 @@ def route_with_freerouting(
             deadline = t0 + timeout_s
             next_beat = t0 + _HEARTBEAT_INTERVAL_S
             timed_out = False
-            stagnated = False
-
-            def _stop_proc() -> None:
-                proc.terminate()
-                try:
-                    proc.wait(timeout=20)
-                except subprocess.TimeoutExpired:
-                    proc.kill()
-                    proc.wait()
-
             while True:
                 try:
                     proc.wait(timeout=min(1.0, max(0.05, deadline - time.monotonic())))
@@ -528,41 +482,24 @@ def route_with_freerouting(
                         # first pass; later passes only optimize, so the partial is
                         # usually fully or nearly routed.
                         timed_out = True
-                        _stop_proc()
+                        proc.terminate()
+                        try:
+                            proc.wait(timeout=20)
+                        except subprocess.TimeoutExpired:
+                            proc.kill()
+                            proc.wait()
                         break
-                    # Plateau/oscillation guard: if the best unrouted count hasn't
-                    # improved for _STAGNATION_PASSES passes, stop early rather than
-                    # burn the rest of the pass budget oscillating. Prefer to stop
-                    # the moment the current pass re-hits that best (cur <= best) so
-                    # the flushed partial is a good one; force-stop at 2× the window
-                    # so a never-re-hitting oscillation still terminates.
-                    if _STAGNATION_PASSES:
-                        with state_lock:
-                            bp, bi = state["best_pass"], state["best_incomplete"]
-                            pn, cur = state["pass_num"], state["incomplete"]
-                        if _should_stop_for_stagnation(
-                                pn, bp, bi, cur, _STAGNATION_PASSES):
-                            stagnated = True
-                            logger.warning(
-                                "Freerouting stagnated at %d unrouted (no "
-                                "improvement for %d passes since pass %d) — "
-                                "stopping early with the current partial.",
-                                cur if cur is not None else bi, pn - bp, bp)
-                            _stop_proc()
-                            break
                     if now >= next_beat:
                         _emit()
                         next_beat = now + _HEARTBEAT_INTERVAL_S
             for r in readers:
                 r.join(timeout=5)
 
-            if timed_out or stagnated:
+            if timed_out:
                 if ses_path.exists() and ses_path.stat().st_size > 0:
                     logger.warning(
-                        "Freerouting %s — importing the partial route it had "
-                        "written (some nets may be unrouted).",
-                        "timed out after %ss" % timeout_s if timed_out
-                        else "stopped early on stagnation")
+                        "Freerouting timed out after %ss — importing the partial "
+                        "route it had written (some nets may be unrouted).", timeout_s)
                     # Fall through to SES import below.
                 else:
                     raise RuntimeError(
