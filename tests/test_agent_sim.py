@@ -263,6 +263,41 @@ def test_status_complete_route_points_at_drc_then_export(server, tmp_path):
     assert r["next_step"]["tool"] == "get_board_image"
 
 
+def _write_placement(tmp_path, proj, layers, plane_layers, w=40, h=30):
+    pdir = tmp_path / "projects" / proj
+    pdir.mkdir(parents=True, exist_ok=True)
+    (pdir / f"{proj}_placement.json").write_text(json.dumps(
+        {"board": {"layers": layers, "plane_layers": plane_layers,
+                   "width_mm": w, "height_mm": h}, "placements": []}))
+
+
+def test_route_failure_escalation_ladder(server, tmp_path):
+    """A failed route escalates routing CAPACITY before board size: from a
+    2-layer or 2-plane board -> plane_layers=1, then plane_layers=0, and only a
+    larger board once every inner layer is already signal."""
+    import mcp_server
+    _write_placement(tmp_path, "lad2", 2, None)
+    assert mcp_server._route_failure_next_step("lad2", "e")["args"]["plane_layers"] == 1
+    _write_placement(tmp_path, "lad4b", 4, 2)
+    assert mcp_server._route_failure_next_step("lad4b", "e")["args"]["plane_layers"] == 1
+    _write_placement(tmp_path, "lad4a", 4, 1)
+    assert mcp_server._route_failure_next_step("lad4a", "e")["args"]["plane_layers"] == 0
+    _write_placement(tmp_path, "lad4z", 4, 0, w=40, h=30)
+    last = mcp_server._route_failure_next_step("lad4z", "e")["args"]
+    assert "plane_layers" not in last        # board size is the LAST lever
+    assert last["board_width_mm"] > 40 and last["board_height_mm"] > 30
+
+
+def test_poll_interval_backs_off():
+    """Background-job poll cadence backs off so an over-eager agent isn't told to
+    hammer get_project_status on a multi-minute route."""
+    import mcp_server
+    assert mcp_server._poll_interval(None) == 15
+    assert mcp_server._poll_interval(0) == 15
+    assert mcp_server._poll_interval(60) == 30
+    assert mcp_server._poll_interval(300) == 60
+
+
 def test_route_invalid_effort(server):
     r = call(server, "route_board",
              {"project_name": "any", "effort": "turbo"})

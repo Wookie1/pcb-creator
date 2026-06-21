@@ -231,6 +231,68 @@ def _read_project_json(project_name: str, suffix: str) -> dict | None:
     return None
 
 
+def _poll_interval(elapsed_s: float | None) -> int:
+    """Adaptive poll cadence for a background job, in seconds.
+
+    Routing/design run in the background and polling does NOT speed them up — a
+    route can take 15+ minutes. Start at 15s (a short route may finish quickly),
+    then back off so an over-eager agent isn't told to hammer get_project_status
+    every fraction of a second on a multi-minute job."""
+    e = elapsed_s or 0
+    if e < 30:
+        return 15
+    if e < 180:
+        return 30
+    return 60
+
+
+def _route_failure_next_step(project_name: str, err: str) -> dict:
+    """Escalation ladder for a failed route. Add routing CAPACITY first by
+    turning inner planes into signal layers, and only enlarge the board as the
+    last resort — board size is usually fixed by mechanical constraints, so it
+    should change last. The rung is chosen from the current placement, so the
+    ladder advances naturally as the agent follows each suggestion:
+    plane_layers=1 → plane_layers=0 → larger board."""
+    board = (_read_project_json(project_name, "_placement.json") or {}).get("board", {})
+    layers = board.get("layers", 2)
+    plane_layers = board.get("plane_layers")
+    w, h = board.get("width_mm"), board.get("height_mm")
+
+    if layers >= 4 and plane_layers == 0:
+        # Every inner layer is already signal — only board area is left.
+        args = {"project_name": project_name}
+        if w and h:
+            args["board_width_mm"] = round(w * 1.15, 1)
+            args["board_height_mm"] = round(h * 1.15, 1)
+        return next_step(
+            "optimize_placement", args,
+            f"Routing failed ({err}) All inner layers are already signal "
+            "(plane_layers=0), so the only lever left is board area — enlarge it "
+            "~15% and route again. This is the LAST resort: do it only if the "
+            "board size is not fixed by mechanical constraints.",
+        )
+    if layers >= 4 and plane_layers == 1:
+        return next_step(
+            "optimize_placement",
+            {"project_name": project_name, "plane_layers": 0},
+            f"Routing failed ({err}) Free the last inner plane for signal "
+            "(plane_layers=0 → all inner layers route), then route again. Keep "
+            "the board size — enlarging it is the next and final step only if "
+            "this still fails.",
+        )
+    # 2-layer, or 4-layer still carrying both inner planes (plane_layers None/2).
+    return next_step(
+        "optimize_placement",
+        {"project_name": project_name, "plane_layers": 1},
+        f"Routing failed ({err}) The bottleneck is routing capacity, not board "
+        "size. Add a signal layer with plane_layers=1 (In1 stays a GND plane, "
+        "In2 becomes signal; a 2-layer board auto-promotes to 4 layers), then "
+        "route again. If this was the first attempt, route_board(effort='best') "
+        "may finish it without re-placing. Do NOT enlarge the board yet — that "
+        "is the last resort after plane_layers=1 then plane_layers=0.",
+    )
+
+
 # ---------------------------------------------------------------------------
 # Tools
 # ---------------------------------------------------------------------------
@@ -292,9 +354,10 @@ def design_pcb(
                 data={"project_name": project_name},
                 poll_again_in_s=15,
                 status_hint=(
-                    "Design already in progress for this project. Poll "
-                    "get_project_status and read 'design_state'; do not launch "
-                    "another design_pcb."
+                    "Design already in progress for this project. Check "
+                    "get_project_status for 'design_state' in ~15s, then wait "
+                    "the 'poll_again_in_s' it returns between checks; do not "
+                    "poll faster and do not launch another design_pcb."
                 ),
             )
         _DESIGN_JOBS[project_name] = {
@@ -344,16 +407,19 @@ def design_pcb(
             "project_name": project_name,
             "next_step": next_step(
                 "get_project_status", {"project_name": project_name},
-                "Poll until 'design_state' is 'complete' or 'failed'; "
-                "'design_progress' shows the live step, 'design_result' the "
-                "final output.",
+                "Check get_project_status until 'design_state' is 'complete' or "
+                "'failed', waiting the 'poll_again_in_s' it returns between "
+                "checks; 'design_progress' shows the live step, 'design_result' "
+                "the final output.",
             ),
         },
-        poll_again_in_s=20,
+        poll_again_in_s=15,
         status_hint=(
             "Full design pipeline started in the background (this can take "
-            "several minutes). Keep polling get_project_status; do not run "
-            "other tools or external CLIs for this project while it runs."
+            "many minutes). Check get_project_status in ~15s, then wait the "
+            "'poll_again_in_s' it returns between checks — do NOT poll faster, "
+            "it does not speed the pipeline up. Do not run other tools or "
+            "external CLIs for this project while it runs."
         ),
     )
 
@@ -999,35 +1065,37 @@ def get_project_status(project_name: str) -> dict:
                          if prog.get("max_iterations") else ""))
         else:
             detail = f"{result.get('routing_elapsed_s', 0)}s elapsed"
-        result["poll_again_in_s"] = 15
+        wait = _poll_interval(result.get("routing_elapsed_s"))
+        result["poll_again_in_s"] = wait
         result["status_hint"] = (
-            f"Routing in progress ({detail}). Poll get_project_status again in "
-            "~15s. Do not run other tools or external CLIs for this project."
+            f"Routing in progress ({detail}). It runs in the background and a "
+            f"route can take many minutes — check get_project_status again in "
+            f"~{wait}s. Do NOT poll faster than that (it does not speed routing "
+            "up) and do not run other tools or external CLIs for this project."
         )
     elif result.get("design_state") == "running":
         prog = result.get("design_progress") or {}
         detail = (f"step {prog.get('step')}: {prog.get('name')}"
                   if prog.get("name")
                   else f"{result.get('design_elapsed_s', 0)}s elapsed")
-        result["poll_again_in_s"] = 20
+        wait = _poll_interval(result.get("design_elapsed_s"))
+        result["poll_again_in_s"] = wait
         result["status_hint"] = (
-            f"Design pipeline in progress ({detail}). Poll get_project_status "
-            "again in ~20s. Do not run other tools or external CLIs for this "
+            f"Design pipeline in progress ({detail}). It runs in the background "
+            f"and can take many minutes — check get_project_status again in "
+            f"~{wait}s. Do NOT poll faster than that (it does not speed the "
+            "pipeline up) and do not run other tools or external CLIs for this "
             "project."
         )
     elif result.get("routing_state") == "failed":
-        # A failed route must hand the poller a concrete recovery, not just a
-        # raw error string to parse — otherwise the agent stalls here.
+        # A failed route must hand the poller a concrete recovery, not a raw
+        # error to parse. Escalate routing CAPACITY first (plane_layers=1 → 0),
+        # and leave board enlargement for last (size is usually fixed by
+        # mechanics). The rung is read from the current placement, so it advances
+        # as the agent follows each step.
         err = result.get("routing_error") or "routing failed."
         result["status_hint"] = f"Routing failed: {err}"
-        result["next_step"] = next_step(
-            "route_board",
-            {"project_name": project_name, "effort": "best"},
-            f"Routing failed ({err}) Retry once at higher effort; if it still "
-            "fails on a dense board the bottleneck is routing capacity — re-run "
-            "optimize_placement with plane_layers=1 (adds a signal layer) or a "
-            "larger board, then route again.",
-        )
+        result["next_step"] = _route_failure_next_step(project_name, err)
     elif result.get("routing_state") == "complete" and "next_step" not in result:
         # A finished route must point the poller at the next stage instead of
         # leaving it to guess. Progressive: finish an incomplete route, then DRC,
@@ -1045,8 +1113,9 @@ def get_project_status(project_name: str) -> dict:
                  "effort": "best"},
                 f"Route finished at {comp}% with {len(unrouted)} net(s) still "
                 "unrouted. Finish them with keep_existing=True (protects the "
-                "routed majority); if it won't close on a dense board, re-run "
-                "optimize_placement with plane_layers=1 or a larger board.",
+                "routed majority); if it won't close, add routing capacity in "
+                "this order — optimize_placement with plane_layers=1, then "
+                "plane_layers=0, and only enlarge the board as a last resort.",
             )
         elif result.get("output_files"):
             result["next_step"] = next_step(
@@ -2026,8 +2095,10 @@ def route_board(project_name: str, effort: str = "normal",
                 data={"project_name": project_name},
                 poll_again_in_s=15,
                 status_hint=(
-                    "Routing already in progress. Poll get_project_status and "
-                    "read 'routing_state'; do not start another route_board."
+                    "Routing already in progress. Check get_project_status for "
+                    "'routing_state' in ~15s (and follow its poll_again_in_s "
+                    "thereafter); do not poll faster and do not start another "
+                    "route_board."
                 ),
             )
         _ROUTE_JOBS[project_name] = {
@@ -2110,19 +2181,21 @@ def route_board(project_name: str, effort: str = "normal",
             "project_name": project_name,
             "next_step": next_step(
                 "get_project_status", {"project_name": project_name},
-                "Poll until 'routing_state' is 'complete' or 'failed'; "
-                "'routing_progress' shows live progress.",
+                "Check get_project_status until 'routing_state' is 'complete' or "
+                "'failed', waiting the 'poll_again_in_s' it returns between "
+                "checks; 'routing_progress' shows live progress.",
             ),
         },
         poll_again_in_s=15,
         status_hint=(
-            "Routing started in the background (can take seconds to minutes). "
-            "Keep polling get_project_status — progress is reported every pass. "
-            "After the main route, a short-cleanup phase may rip and re-route a "
-            "few shorting/incomplete nets (a brief gap with no pass progress is "
-            "normal); wait for 'routing_state' to reach 'complete'. "
-            "Do not run other tools or external CLIs for this project while "
-            "routing is active."
+            "Routing started in the background (can take seconds to many "
+            "minutes). Check get_project_status in ~15s, then wait the "
+            "'poll_again_in_s' it returns between checks — do NOT poll faster, "
+            "it does not speed routing up. After the main route, a short-cleanup "
+            "phase may rip and re-route a few shorting/incomplete nets (a brief "
+            "gap with no pass progress is normal); wait for 'routing_state' to "
+            "reach 'complete'. Do not run other tools or external CLIs for this "
+            "project while routing is active."
         ),
     )
 
