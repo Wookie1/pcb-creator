@@ -74,6 +74,16 @@ _ROUTE_LOCK = threading.Lock()
 _DESIGN_JOBS: dict[str, dict] = {}
 _DESIGN_LOCK = threading.Lock()
 
+# Poll throttle: last get_project_status response time per project (monotonic).
+# While a route/design job is running, a too-soon poll is HELD until the
+# recommended interval elapses (capped at _MAX_POLL_BLOCK_S so a single call
+# never approaches a client's per-tool timeout). Agents routinely ignore the
+# advisory poll_again_in_s; this enforces it server-side without speeding the
+# job up or starving well-behaved pollers (who pay nothing).
+_LAST_POLL: dict[str, float] = {}
+_POLL_LOCK = threading.Lock()
+_MAX_POLL_BLOCK_S = float(os.environ.get("PCB_MAX_POLL_BLOCK_S", "25"))
+
 # Footprint lookup globals — initialised once by _init_lookup() in main().
 # Per-project custom indexes are built lazily in _get_project_custom_index().
 _KICAD_INDEX: "Any | None" = None   # KiCadLibraryIndex for the system KiCad library
@@ -244,6 +254,39 @@ def _poll_interval(elapsed_s: float | None) -> int:
     if e < 180:
         return 30
     return 60
+
+
+def _throttle_poll(project_name: str, rjob: dict | None,
+                   djob: dict | None) -> None:
+    """Enforce the poll cadence server-side while a job runs.
+
+    If a route/design job is running and the caller polls sooner than the
+    adaptive interval, sleep the remainder (capped at _MAX_POLL_BLOCK_S, so a
+    single call never nears a client's per-tool timeout) before returning. A
+    caller that already waited the recommended interval is not delayed at all.
+    No-op when nothing is running. Caller should re-read the job registry after
+    this returns so the response carries fresh progress."""
+    import time as _time
+    job = None
+    if rjob is not None and rjob.get("state") == "running":
+        job = rjob
+    elif djob is not None and djob.get("state") == "running":
+        job = djob
+    if job is None:
+        return
+    started = job.get("started_at")
+    elapsed = (_time.monotonic() - started) if started is not None else None
+    desired = _poll_interval(elapsed)
+    with _POLL_LOCK:
+        last = _LAST_POLL.get(project_name)
+        wait = 0.0
+        if last is not None:
+            wait = min(max(0.0, desired - (_time.monotonic() - last)),
+                       _MAX_POLL_BLOCK_S)
+    if wait > 0:
+        _time.sleep(wait)
+    with _POLL_LOCK:
+        _LAST_POLL[project_name] = _time.monotonic()
 
 
 def _route_failure_next_step(project_name: str, err: str) -> dict:
@@ -931,6 +974,15 @@ def get_project_status(project_name: str) -> dict:
     with _ROUTE_LOCK:
         rjob = dict(_ROUTE_JOBS.get(project_name)) if project_name in _ROUTE_JOBS else None
 
+    # Enforce the poll cadence: if a job is running and this poll is too soon,
+    # hold it (capped) so the agent physically can't hammer the registry. Then
+    # re-read the registry so the response reflects progress made during the wait.
+    _throttle_poll(project_name, rjob, djob)
+    with _DESIGN_LOCK:
+        djob = dict(_DESIGN_JOBS.get(project_name)) if project_name in _DESIGN_JOBS else None
+    with _ROUTE_LOCK:
+        rjob = dict(_ROUTE_JOBS.get(project_name)) if project_name in _ROUTE_JOBS else None
+
     if not pdir.exists():
         # No directory on disk yet — a background design_pcb thread may not have
         # created it (or crashed before mkdir). Report in-memory job state instead
@@ -1094,8 +1146,9 @@ def get_project_status(project_name: str) -> dict:
         result["status_hint"] = (
             f"Routing in progress ({detail}). It runs in the background and a "
             f"route can take many minutes — check get_project_status again in "
-            f"~{wait}s. Do NOT poll faster than that (it does not speed routing "
-            "up) and do not run other tools or external CLIs for this project."
+            f"~{wait}s. Do NOT poll faster (it does not speed routing up); if "
+            "you do, the call will simply block until the interval elapses. Do "
+            "not run other tools or external CLIs for this project."
         )
     elif result.get("design_state") == "running":
         prog = result.get("design_progress") or {}
@@ -1107,9 +1160,9 @@ def get_project_status(project_name: str) -> dict:
         result["status_hint"] = (
             f"Design pipeline in progress ({detail}). It runs in the background "
             f"and can take many minutes — check get_project_status again in "
-            f"~{wait}s. Do NOT poll faster than that (it does not speed the "
-            "pipeline up) and do not run other tools or external CLIs for this "
-            "project."
+            f"~{wait}s. Do NOT poll faster (it does not speed the pipeline up); "
+            "if you do, the call will simply block until the interval elapses. "
+            "Do not run other tools or external CLIs for this project."
         )
     elif result.get("routing_state") == "failed":
         # A failed route must hand the poller a concrete recovery, not a raw
