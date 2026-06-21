@@ -992,12 +992,21 @@ def run_routing(project_dir: Path, project_name: str, config,
             _log(f"  Freerouting FAILED: {exc}")
             # The built-in A* router is 2-layer only; falling back on a 4-layer
             # board would silently route just the outer layers and report an
-            # incomplete result. Surface the real failure instead.
+            # incomplete result. Surface the real failure instead — but frame it
+            # as a failure of THIS run, not a layer-count limit. (Agents read
+            # "can't route >2 layers" as "the board needs fewer layers" and
+            # abandon a perfectly routable 4-layer board.)
             if num_layers > 2:
-                return {"success": False,
-                        "error": f"Freerouting failed on a {num_layers}-layer "
-                                 f"board and the built-in router cannot route "
-                                 f">2 layers: {exc}"}
+                return {"success": False, "engine": "freerouting",
+                        "error": (f"Freerouting did not finish this routing run on "
+                                  f"the {num_layers}-layer board: {exc} — this is a "
+                                  f"failure of THIS run, NOT a layer-count limit "
+                                  f"({num_layers}-layer routing is fully supported. "
+                                  f"Retry route_board (add keep_existing=True to "
+                                  f"finish from a partial result), or fix the cause "
+                                  f"above (the message says if it was out-of-memory). "
+                                  f"Do NOT reduce the layer count or enlarge the "
+                                  f"board on the basis of this error.")}
             _log("  Falling back to built-in router")
 
     if routed is None:
@@ -1120,6 +1129,40 @@ def _route_is_clean(result: dict) -> bool:
             and bool(result.get("valid", True)))
 
 
+def _route_score(r: dict) -> tuple:
+    """Order routing attempts: success, then completion %, then validity. Used to
+    keep the better of two attempts (never regress)."""
+    return (bool(r.get("success")), r.get("completion_pct", 0),
+            bool(r.get("valid", False)))
+
+
+# At/above this completion the auto-retry FINISHES the residual nets
+# incrementally (protect the routed wiring, route only what's left) instead of
+# re-placing from scratch and re-routing all over — which on a near-complete
+# board is slow (a full extra route that oscillates) and can regress the good
+# result. Below it, the board likely needs a genuinely different placement.
+INCREMENTAL_FINISH_PCT = 85.0
+
+
+def build_incremental_fixed_routing(routed: dict, netlist: dict) -> dict | None:
+    """Protected wiring for an incremental (keep_existing) re-route: every
+    FULLY-CONNECTED net's traces/vias, EXCLUDING nets still incomplete (those
+    stay unprotected so Freerouting re-routes them). None if nothing is routed
+    yet. Shared by route_board(keep_existing) and the near-complete auto-retry."""
+    rt = (routed or {}).get("routing", {})
+    if not (rt.get("traces") or rt.get("vias")):
+        return None
+    try:
+        from validators.validate_routing import incomplete_net_ids
+        incomplete = incomplete_net_ids(routed, netlist)
+    except Exception:
+        incomplete = set()
+    return {
+        "traces": [t for t in rt.get("traces", []) if t.get("net_id") not in incomplete],
+        "vias": [v for v in rt.get("vias", []) if v.get("net_id") not in incomplete],
+    }
+
+
 def _attempt_summary(result: dict) -> dict:
     return {k: result.get(k) for k in
             ("success", "engine", "valid", "completion_pct", "routed_nets",
@@ -1168,6 +1211,7 @@ def run_route_with_retry(project_dir: Path, project_name: str, config,
     stats under 'attempts'.
     """
     _log = log or (lambda *_a: None)
+    routed_path = _p(project_dir, project_name, "routed")
     first = run_routing(project_dir, project_name, config,
                         progress_callback=progress_callback, log=log,
                         effort=effort, max_seconds=max_seconds)
@@ -1176,6 +1220,43 @@ def run_route_with_retry(project_dir: Path, project_name: str, config,
     if _route_is_clean(first) or precondition_failure:
         first["attempts"] = [_attempt_summary(first)]
         return first
+
+    # Near-complete → FINISH the residual nets incrementally rather than
+    # re-placing + re-routing the whole board. The full re-route on a 95% board
+    # is the slow path that oscillates for minutes (and can regress the good
+    # result); an incremental pass protects the routed wiring and only works the
+    # few unrouted nets. Keep whichever is better, so it never regresses.
+    comp = first.get("completion_pct", 0)
+    if first.get("success") and comp >= INCREMENTAL_FINISH_PCT:
+        netlist = _load(_p(project_dir, project_name, "netlist"))
+        first_routed = _load(routed_path) if routed_path.exists() else None
+        fixed = (build_incremental_fixed_routing(first_routed, netlist)
+                 if first_routed else None)
+        if fixed and (fixed["traces"] or fixed["vias"]):
+            _log(f"  Route near-complete ({comp}%) — finishing the residual "
+                 f"{len(first.get('unrouted_nets', []))} net(s) incrementally "
+                 "(protecting the routed wiring) instead of re-placing")
+            if progress_callback is not None:
+                try:
+                    progress_callback({"phase": "incremental_finish",
+                                       "detail": "finishing residual nets"})
+                except Exception:
+                    pass
+            saved_routed = routed_path.read_text() if routed_path.exists() else None
+            finish = run_routing(project_dir, project_name, config,
+                                 progress_callback=progress_callback, log=log,
+                                 effort=effort, max_seconds=max_seconds,
+                                 fixed_routing=fixed)
+            attempts = [_attempt_summary(first), _attempt_summary(finish)]
+            if _route_score(finish) >= _route_score(first):
+                finish["attempts"] = attempts
+                finish["retried"] = True
+                return finish
+            if saved_routed is not None:
+                routed_path.write_text(saved_routed)
+            first["attempts"] = attempts
+            first["retried"] = True
+            return first
 
     focus = sorted(_components_for_unrouted(
         project_dir, project_name, first.get("unrouted_nets", []) or []))
@@ -1234,11 +1315,7 @@ def run_route_with_retry(project_dir: Path, project_name: str, config,
 
     attempts = [_attempt_summary(first), _attempt_summary(second)]
 
-    def _score(r: dict) -> tuple:
-        return (bool(r.get("success")), r.get("completion_pct", 0),
-                bool(r.get("valid", False)))
-
-    if _score(second) >= _score(first):
+    if _route_score(second) >= _route_score(first):
         second["attempts"] = attempts
         second["retried"] = True
         return second

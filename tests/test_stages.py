@@ -303,6 +303,38 @@ class TestUnpinClearsBothSources:
         assert r2["pinned_components"] == []
 
 
+class TestIncrementalFinishHelpers:
+    """The auto-retry finishes a near-complete board incrementally (protect the
+    routed wiring, route only the residual) instead of re-placing + re-routing
+    the whole board — the slow path that oscillates for minutes."""
+
+    def test_build_fixed_routing_excludes_incomplete_nets(self, monkeypatch):
+        import validators.validate_routing as vr
+        from orchestrator.stages import build_incremental_fixed_routing
+        # Pretend net_b is still incomplete — it must be left UNprotected.
+        monkeypatch.setattr(vr, "incomplete_net_ids", lambda r, nl: {"net_b"})
+        routed = {"routing": {
+            "traces": [{"net_id": "net_a"}, {"net_id": "net_b"}],
+            "vias": [{"net_id": "net_a"}, {"net_id": "net_b"}]}}
+        fixed = build_incremental_fixed_routing(routed, {})
+        assert [t["net_id"] for t in fixed["traces"]] == ["net_a"]
+        assert [v["net_id"] for v in fixed["vias"]] == ["net_a"]
+
+    def test_build_fixed_routing_none_when_nothing_routed(self):
+        from orchestrator.stages import build_incremental_fixed_routing
+        assert build_incremental_fixed_routing(None, {}) is None
+        assert build_incremental_fixed_routing(
+            {"routing": {"traces": [], "vias": []}}, {}) is None
+
+    def test_route_score_prefers_success_then_completion(self):
+        from orchestrator.stages import _route_score
+        clean = {"success": True, "completion_pct": 100, "valid": True}
+        partial = {"success": True, "completion_pct": 95, "valid": True}
+        failed = {"success": False, "completion_pct": 99}
+        assert _route_score(clean) > _route_score(partial)
+        assert _route_score(partial) > _route_score(failed)  # success beats %
+
+
 class TestEscapeFanoutGating:
     """Escape fanout is tri-state: AUTO (None) enables it when the board has a
     fine-pitch part; PCB_ESCAPE_FANOUT forces it on/off."""

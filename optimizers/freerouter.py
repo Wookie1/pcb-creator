@@ -517,11 +517,15 @@ def route_with_freerouting(
                         or "java.lang.OutOfMemory" in combined
                         or proc.returncode in (137, -9)):
                     raise RuntimeError(
-                        f"Freerouting ran out of memory (heap cap {heap}MB). The board "
-                        "is too congested to route on the available signal layers. Add "
-                        "a routing layer (e.g. make an inner layer signal instead of a "
-                        "plane via plane_layers), loosen placement density, or raise "
-                        "PCB_FREEROUTING_HEAP_MB if the host has spare RAM."
+                        f"Freerouting ran out of memory (heap cap {heap}MB) — it "
+                        "exhausted the JVM heap before finishing. This is a HOST "
+                        "memory limit, not a layer-count problem (more signal "
+                        "layers make Freerouting use MORE memory, not less). "
+                        "Recovery, in order: raise PCB_FREEROUTING_HEAP_MB if the "
+                        "host has spare RAM, or run the route on a machine with "
+                        "more RAM; otherwise reduce what the router must hold — "
+                        "fewer components, a smaller board, or carry power+ground "
+                        "on planes so they are not routed as traces."
                     )
                 stderr_snippet = combined[-500:] or "no error output"
                 raise RuntimeError(f"Freerouting failed (exit code {proc.returncode}): {stderr_snippet}")

@@ -2238,20 +2238,8 @@ def route_board(project_name: str, effort: str = "normal",
     fixed_routing = None
     if keep_existing:
         existing = _read_project_json(project_name, "_routed.json")
-        rt = (existing or {}).get("routing", {})
-        if rt.get("traces") or rt.get("vias"):
-            netlist = _read_project_json(project_name, "_netlist.json")
-            try:
-                from validators.validate_routing import incomplete_net_ids
-                incomplete = incomplete_net_ids(existing, netlist)
-            except Exception:
-                incomplete = set()
-            fixed_routing = {
-                "traces": [t for t in rt.get("traces", [])
-                           if t.get("net_id") not in incomplete],
-                "vias": [v for v in rt.get("vias", [])
-                         if v.get("net_id") not in incomplete],
-            }
+        netlist = _read_project_json(project_name, "_netlist.json")
+        fixed_routing = stages.build_incremental_fixed_routing(existing, netlist)
 
     def _worker() -> None:
         try:
