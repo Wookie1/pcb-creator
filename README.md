@@ -174,7 +174,10 @@ Designed to work well with small local models: every tool response carries a
 machine-readable `next_step` (the exact call to make next) and, on failure,
 `remediation` options; long operations report live progress via
 `get_project_status` (`status_hint`, `poll_again_in_s`). Call
-`get_workflow_guide()` first for the step-by-step tool order.
+`get_workflow_guide()` first for the step-by-step tool order. An incomplete
+route returns a concrete recovery `next_step` too — a capacity-first
+escalation ladder (free stackup changes before, and only with the user's
+approval, layer-count or board-size changes).
 
 **Three workflows:**
 
