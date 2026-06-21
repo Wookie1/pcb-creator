@@ -272,20 +272,33 @@ def _write_placement(tmp_path, proj, layers, plane_layers, w=40, h=30):
 
 
 def test_route_failure_escalation_ladder(server, tmp_path):
-    """A failed route escalates routing CAPACITY before board size: from a
-    2-layer or 2-plane board -> plane_layers=1, then plane_layers=0, and only a
-    larger board once every inner layer is already signal."""
+    """A failed route escalates routing CAPACITY before board size, and gates
+    the user-constrained changes (layer count, board dimensions) on approval:
+      2-layer -> 4-layer plane_layers=2 (ASK USER)
+      plane_layers=2 -> 1 -> 0          (free, no approval)
+      plane_layers=0 -> larger board    (ASK USER)."""
     import mcp_server
+
     _write_placement(tmp_path, "lad2", 2, None)
-    assert mcp_server._route_failure_next_step("lad2", "e")["args"]["plane_layers"] == 1
+    s = mcp_server._route_failure_next_step("lad2", "e")
+    assert s["args"]["layers"] == 4 and s["args"]["plane_layers"] == 2
+    assert s.get("requires_user_approval") is True   # 2->4 needs permission
+
     _write_placement(tmp_path, "lad4b", 4, 2)
-    assert mcp_server._route_failure_next_step("lad4b", "e")["args"]["plane_layers"] == 1
+    s = mcp_server._route_failure_next_step("lad4b", "e")
+    assert s["args"]["plane_layers"] == 1
+    assert not s.get("requires_user_approval")        # same 4-layer board
+
     _write_placement(tmp_path, "lad4a", 4, 1)
-    assert mcp_server._route_failure_next_step("lad4a", "e")["args"]["plane_layers"] == 0
+    s = mcp_server._route_failure_next_step("lad4a", "e")
+    assert s["args"]["plane_layers"] == 0
+    assert not s.get("requires_user_approval")
+
     _write_placement(tmp_path, "lad4z", 4, 0, w=40, h=30)
-    last = mcp_server._route_failure_next_step("lad4z", "e")["args"]
-    assert "plane_layers" not in last        # board size is the LAST lever
-    assert last["board_width_mm"] > 40 and last["board_height_mm"] > 30
+    s = mcp_server._route_failure_next_step("lad4z", "e")
+    assert "plane_layers" not in s["args"]            # board size is the LAST lever
+    assert s["args"]["board_width_mm"] > 40 and s["args"]["board_height_mm"] > 30
+    assert s.get("requires_user_approval") is True   # resizing needs permission
 
 
 def test_poll_interval_backs_off():

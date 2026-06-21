@@ -247,50 +247,74 @@ def _poll_interval(elapsed_s: float | None) -> int:
 
 
 def _route_failure_next_step(project_name: str, err: str) -> dict:
-    """Escalation ladder for a failed route. Add routing CAPACITY first by
-    turning inner planes into signal layers, and only enlarge the board as the
-    last resort — board size is usually fixed by mechanical constraints, so it
-    should change last. The rung is chosen from the current placement, so the
-    ladder advances naturally as the agent follows each suggestion:
-    plane_layers=1 → plane_layers=0 → larger board."""
+    """Escalation ladder for a failed route. Add routing CAPACITY first, and
+    change physically-constrained things last and only with the USER's approval.
+
+    Rungs, chosen from the current placement so the ladder advances as the agent
+    acts:
+      1. 2-layer  -> 4-layer, plane_layers=2   (cost/stackup change: ASK USER)
+      2. plane_layers=2 -> 1                    (reallocate an inner plane: free)
+      3. plane_layers=1 -> 0                    (free the last inner plane: free)
+      4. plane_layers=0 -> larger board         (size often fixed: ASK USER)
+
+    next_step gets requires_user_approval=True on the rungs (1 and 4) that change
+    something the user likely constrained — board layer count or dimensions — so
+    an agent prepares the exact call but does not run it without confirmation.
+    """
     board = (_read_project_json(project_name, "_placement.json") or {}).get("board", {})
     layers = board.get("layers", 2)
     plane_layers = board.get("plane_layers")
     w, h = board.get("width_mm"), board.get("height_mm")
 
-    if layers >= 4 and plane_layers == 0:
-        # Every inner layer is already signal — only board area is left.
-        args = {"project_name": project_name}
-        if w and h:
-            args["board_width_mm"] = round(w * 1.15, 1)
-            args["board_height_mm"] = round(h * 1.15, 1)
-        return next_step(
-            "optimize_placement", args,
-            f"Routing failed ({err}) All inner layers are already signal "
-            "(plane_layers=0), so the only lever left is board area — enlarge it "
-            "~15% and route again. This is the LAST resort: do it only if the "
-            "board size is not fixed by mechanical constraints.",
+    if layers < 4:
+        # 2-layer -> 4-layer raises board cost and changes the stackup: gate it.
+        step = next_step(
+            "optimize_placement",
+            {"project_name": project_name, "layers": 4, "plane_layers": 2},
+            f"Routing failed ({err}) The fix is more routing capacity, but the "
+            "next step promotes this 2-layer board to a 4-layer stackup, which "
+            "raises board cost and changes manufacturing. ASK THE USER to approve "
+            "going to 4 layers first; only with their approval run this "
+            "optimize_placement (layers=4, plane_layers=2 — GND + power planes "
+            "free both outer layers for signal) and route again. Do NOT promote "
+            "to 4 layers on your own.",
         )
-    if layers >= 4 and plane_layers == 1:
+        step["requires_user_approval"] = True
+        return step
+    if plane_layers is None or plane_layers >= 2:
+        return next_step(
+            "optimize_placement",
+            {"project_name": project_name, "plane_layers": 1},
+            f"Routing failed ({err}) Reallocate an inner plane to signal: "
+            "plane_layers=1 (In1 stays a GND plane, In2 becomes a 3rd signal "
+            "layer — same 4-layer board, no cost change), then route again. Keep "
+            "the layer count and board size.",
+        )
+    if plane_layers == 1:
         return next_step(
             "optimize_placement",
             {"project_name": project_name, "plane_layers": 0},
             f"Routing failed ({err}) Free the last inner plane for signal "
-            "(plane_layers=0 → all inner layers route), then route again. Keep "
-            "the board size — enlarging it is the next and final step only if "
-            "this still fails.",
+            "(plane_layers=0 → all inner layers route; still a 4-layer board), "
+            "then route again. Keep the board size — enlarging it is the next and "
+            "final step only if this still fails.",
         )
-    # 2-layer, or 4-layer still carrying both inner planes (plane_layers None/2).
-    return next_step(
-        "optimize_placement",
-        {"project_name": project_name, "plane_layers": 1},
-        f"Routing failed ({err}) The bottleneck is routing capacity, not board "
-        "size. Add a signal layer with plane_layers=1 (In1 stays a GND plane, "
-        "In2 becomes signal; a 2-layer board auto-promotes to 4 layers), then "
-        "route again. If this was the first attempt, route_board(effort='best') "
-        "may finish it without re-placing. Do NOT enlarge the board yet — that "
-        "is the last resort after plane_layers=1 then plane_layers=0.",
+    # plane_layers == 0: every inner layer is already signal. Only board area is
+    # left, and that is often fixed by an enclosure/mating part -> ask the user.
+    args = {"project_name": project_name}
+    if w and h:
+        args["board_width_mm"] = round(w * 1.15, 1)
+        args["board_height_mm"] = round(h * 1.15, 1)
+    step = next_step(
+        "optimize_placement", args,
+        f"Routing failed ({err}) All inner layers are already signal "
+        "(plane_layers=0), so the only lever left is board area. Board size is "
+        "often fixed by an enclosure or mating part, so ASK THE USER before "
+        "enlarging it; only with their approval re-run optimize_placement ~15% "
+        "larger and route again.",
     )
+    step["requires_user_approval"] = True
+    return step
 
 
 # ---------------------------------------------------------------------------
@@ -1113,9 +1137,10 @@ def get_project_status(project_name: str) -> dict:
                  "effort": "best"},
                 f"Route finished at {comp}% with {len(unrouted)} net(s) still "
                 "unrouted. Finish them with keep_existing=True (protects the "
-                "routed majority); if it won't close, add routing capacity in "
-                "this order — optimize_placement with plane_layers=1, then "
-                "plane_layers=0, and only enlarge the board as a last resort.",
+                "routed majority); if it won't close, add routing capacity — on a "
+                "2-layer board ASK THE USER before going to 4 layers, then "
+                "plane_layers 2 → 1 → 0, and enlarge the board only as a last "
+                "resort (also with user approval, since its size may be fixed).",
             )
         elif result.get("output_files"):
             result["next_step"] = next_step(
