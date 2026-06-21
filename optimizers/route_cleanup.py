@@ -45,11 +45,24 @@ def find_kicad_cli() -> str | None:
     return None
 
 
+# kicad-cli DRC violation types whose involved nets the cleanup can fix by
+# ripping + re-routing them: copper shorts, and clearance violations (a trace/via
+# sitting too close to another net — re-routing that net moves it away). Hole-to-
+# hole / drill spacing is NOT here: it is a via-placement issue, not fixable by
+# re-routing a net (handled at via generation instead).
+_FIXABLE_BY_REROUTE = {
+    "shorting_items",
+    "clearance", "track_clearance", "via_clearance", "hole_clearance",
+    "copper_clearance", "creepage",
+}
+
+
 def drc_shorting_net_names(pcb_path: str | Path, kicad_cli: str,
                            *, timeout: int = 300) -> set[str] | None:
     """Run ``kicad-cli pcb drc`` and return the net NAMES involved in
-    ``shorting_items``. None if the tool can't be run (caller treats as
-    "skip cleanup"). An empty set means "ran, no shorts"."""
+    reroute-fixable violations (shorts + clearance). None if the tool can't be
+    run (caller treats as "skip cleanup"). An empty set means "ran, nothing to
+    fix by re-routing"."""
     pcb_path = Path(pcb_path)
     out = pcb_path.with_suffix(".cleanup_drc.json")
     try:
@@ -70,12 +83,14 @@ def drc_shorting_net_names(pcb_path: str | Path, kicad_cli: str,
 
 
 def _parse_shorting_net_names(drc_data: dict) -> set[str]:
-    """Net names appearing in ``shorting_items`` of a kicad-cli DRC report.
-    Item descriptions read like ``Track [FB_DIV] on F.Cu …`` / ``Pad 1
-    [GATE_Q3] of Q3 …`` — the net name is the first bracketed token."""
+    """Net names appearing in reroute-fixable violations (shorts + clearance) of
+    a kicad-cli DRC report. Item descriptions read like ``Track [FB_DIV] on
+    F.Cu …`` / ``Via [5V] at …`` / ``Pad 1 [GATE_Q3] of Q3 …`` — the net name is
+    the first bracketed token. Both nets of a two-item clearance violation are
+    collected, so re-routing either can resolve it."""
     names: set[str] = set()
     for v in drc_data.get("violations", []):
-        if v.get("type") != "shorting_items":
+        if v.get("type") not in _FIXABLE_BY_REROUTE:
             continue
         for it in v.get("items", []):
             desc = it.get("description", "")

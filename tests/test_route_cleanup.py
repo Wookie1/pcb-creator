@@ -36,10 +36,26 @@ class TestParse:
         data = {"violations": [
             {"type": "shorting_items", "items": [
                 {"description": "Track [FB_DIV] on F.Cu, length 7.8 mm"},
-                {"description": "PTH pad 1 [GATE_Q3] of Q3"}]},
-            {"type": "clearance", "items": [
-                {"description": "Track [IGNORED] ..."}]}]}
+                {"description": "PTH pad 1 [GATE_Q3] of Q3"}]}]}
         assert _parse_shorting_net_names(data) == {"FB_DIV", "GATE_Q3"}
+
+    def test_clearance_nets_are_collected(self):
+        # Clearance violations are now reroute-fixable: BOTH involved nets are
+        # collected so re-routing either resolves the clearance.
+        data = {"violations": [
+            {"type": "clearance", "items": [
+                {"description": "Via [5V] at (1, 2)"},
+                {"description": "Track [GND] on F.Cu"}]},
+            {"type": "via_clearance", "items": [
+                {"description": "Via [3V3] at (3, 4)"}]}]}
+        assert _parse_shorting_net_names(data) == {"5V", "GND", "3V3"}
+
+    def test_non_reroutable_types_ignored(self):
+        # hole_to_hole / silk are not fixable by re-routing a net.
+        data = {"violations": [
+            {"type": "hole_to_hole", "items": [{"description": "Via [GND] at x"}]},
+            {"type": "silk_over_copper", "items": [{"description": "Text [X]"}]}]}
+        assert _parse_shorting_net_names(data) == set()
 
     def test_no_shorts(self):
         assert _parse_shorting_net_names({"violations": []}) == set()

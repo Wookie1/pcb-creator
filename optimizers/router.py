@@ -5141,6 +5141,29 @@ def inner_plane_count(board: dict) -> int:
     return max(0, min(2, int(board.get("plane_layers", 2))))
 
 
+# Minimum drill-edge-to-drill-edge spacing for the hole_to_hole DRC rule. Two
+# vias must be at least this far apart (edge to edge), so centre-to-centre must
+# exceed drill + this.
+HOLE_TO_HOLE_MIN_MM = 0.5
+
+
+def _filter_via_hole_spacing(existing_vias: list[dict], new_vias: list[dict],
+                             min_center_mm: float) -> list[dict]:
+    """Keep only new (stitching/plane) vias whose centre is ≥ min_center_mm from
+    every existing via and every already-kept new via, so none trips the
+    hole-to-hole rule. Existing routing vias are kept as-is and never dropped."""
+    kept_pts = [(v.get("x_mm", 0.0), v.get("y_mm", 0.0)) for v in existing_vias]
+    out: list[dict] = []
+    m2 = min_center_mm * min_center_mm
+    for v in new_vias:
+        x, y = v.get("x_mm", 0.0), v.get("y_mm", 0.0)
+        if any((x - px) ** 2 + (y - py) ** 2 < m2 for px, py in kept_pts):
+            continue
+        kept_pts.append((x, y))
+        out.append(v)
+    return out
+
+
 def apply_copper_fills(
     routed: dict,
     netlist: dict,
@@ -5461,11 +5484,23 @@ def apply_copper_fills(
     # Add copper fills
     result["routing"]["copper_fills"] = fill_regions
 
-    # Add stitching vias (GND outer-layer + power plane SMD stitching)
+    # Add stitching vias (GND outer-layer + power plane SMD stitching), but drop
+    # any whose drill would sit closer than the hole-to-hole minimum to an
+    # existing routing via or an already-kept stitching via — those trip the
+    # hole_to_hole DRC rule (observed: two GND vias 0.25mm apart). Stitching vias
+    # are redundant plane connections, so dropping a too-close one is safe; the
+    # existing routing vias are never dropped.
     stitch_via_dicts = [v.to_dict() for v in stitch_vias]
     if pl >= 2:
         stitch_via_dicts.extend(pwr_stitch_vias)
-    result["routing"]["vias"] = result["routing"].get("vias", []) + stitch_via_dicts
+    existing_vias = result["routing"].get("vias", [])
+    min_center = config.via_drill_mm + HOLE_TO_HOLE_MIN_MM
+    kept = _filter_via_hole_spacing(existing_vias, stitch_via_dicts, min_center)
+    if len(kept) < len(stitch_via_dicts):
+        logger.info("  Dropped %d stitching via(s) too close to another via "
+                    "(hole-to-hole < %.2fmm)",
+                    len(stitch_via_dicts) - len(kept), min_center)
+    result["routing"]["vias"] = existing_vias + kept
 
     # Add power-plane connection stubs (pad → offset via)
     if pl >= 2 and pwr_plane_stubs:
