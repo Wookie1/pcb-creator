@@ -5,6 +5,26 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 
+# Common system locations of the KiCad footprint library (root holding the
+# *.pretty dirs), checked when PCB_KICAD_LIBRARY_PATH is not set. Covers Linux
+# distro installs, /usr/local, and the macOS app bundle.
+_KICAD_LIBRARY_CANDIDATES = (
+    "/usr/share/kicad/footprints",
+    "/usr/local/share/kicad/footprints",
+    "/Applications/KiCad/KiCad.app/Contents/SharedSupport/footprints",
+)
+
+
+def _autodetect_kicad_library() -> str | None:
+    """First existing system KiCad footprint-library root, or None. Lets footprint
+    resolution work out-of-the-box without PCB_KICAD_LIBRARY_PATH."""
+    for cand in _KICAD_LIBRARY_CANDIDATES:
+        p = Path(cand)
+        if p.is_dir() and any(p.glob("*.pretty")):
+            return str(p)
+    return None
+
+
 def _load_dotenv(path: Path) -> None:
     """Load a .env file into os.environ (stdlib only, no dependencies).
 
@@ -162,6 +182,15 @@ class OrchestratorConfig:
         kicad_lib = os.environ.get("PCB_KICAD_LIBRARY_PATH")
         if kicad_lib:
             config.kicad_library_path = kicad_lib
+        else:
+            # AUTO-DETECT the system KiCad footprint library when the env var is
+            # unset. Without this the KiCad-library lookup tier is silently
+            # disabled, so EVERY standard footprint (R_0805, C_0805, …) becomes
+            # an "unresolved footprint" and all placement/routing/export blocks —
+            # which is exactly what happened when an MCP respawn lost the ambient
+            # PCB_KICAD_LIBRARY_PATH. Resolution must not hinge on an env var that
+            # can vanish on restart.
+            config.kicad_library_path = _autodetect_kicad_library()
         custom_fp = os.environ.get("PCB_CUSTOM_FOOTPRINT_DIR")
         if custom_fp:
             config.custom_footprint_dir = custom_fp

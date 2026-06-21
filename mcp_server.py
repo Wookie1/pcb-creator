@@ -115,6 +115,19 @@ def _init_lookup() -> None:
     if config.kicad_library_path:
         from exporters.kicad_mod_parser import KiCadLibraryIndex
         _KICAD_INDEX = KiCadLibraryIndex(config.kicad_library_path)
+        logger.info("Footprint lookup: KiCad library at %s",
+                    config.kicad_library_path)
+    else:
+        # No system KiCad library found (env unset AND auto-detect missed every
+        # known location). Standard footprints (R_0805, C_0805, …) will NOT
+        # resolve, so placement/routing/export will block with "unresolved
+        # footprints" on essentially every board. Make this loud — it is an
+        # environment misconfiguration, not a board problem.
+        logger.warning(
+            "Footprint lookup: NO KiCad library found (PCB_KICAD_LIBRARY_PATH "
+            "unset and no system library at the known paths). Standard "
+            "footprints will not resolve — set PCB_KICAD_LIBRARY_PATH to the "
+            "footprints root (the dir containing the *.pretty folders).")
 
     configure_lookup(kicad_index=_KICAD_INDEX, cache=_CACHE, custom_index=None)
     # Mark configured so the lazy _ensure_lookup_configured() doesn't build a
