@@ -1948,7 +1948,9 @@ def place_component(project_name: str, designator: str, x_mm: float,
 @mcp.tool()
 def unplace_component(project_name: str, designator: str) -> dict:
     """Remove a component's fixed-position pin so optimize_placement may move
-    it again.
+    it again. Clears the pin from BOTH sources — the durable pin store and the
+    placement file's user flag — so the next placement does not resurrect it.
+    To unpin everything at once, use clear_all_pins.
 
     Example: unplace_component("my_board", "J1")
     """
@@ -1956,10 +1958,33 @@ def unplace_component(project_name: str, designator: str) -> dict:
     result = stages.clear_placement_pin(_project_dir(project_name),
                                         project_name, designator)
     if not result.pop("ok"):
-        return fail(result.get("error", "unplace_component failed."))
+        rem = [option("Unpin every component instead", "clear_all_pins",
+                      {"project_name": project_name})]
+        return fail(result.get("error", "unplace_component failed."),
+                    remediation=rem)
     return ok(result, next_step("optimize_placement",
                                 {"project_name": project_name},
                                 "Re-run placement to apply the change."))
+
+
+@mcp.tool()
+def clear_all_pins(project_name: str) -> dict:
+    """Unpin EVERY component so optimize_placement is free to move all of them.
+
+    Wipes the durable pin store AND resets every placement_source="user" flag
+    in the placement file — the single call to use when you want a clean slate
+    rather than unplace_component'ing parts one at a time. Returns the list of
+    designators that were unpinned.
+
+    Example: clear_all_pins("my_board")
+    """
+    from orchestrator import stages
+    result = stages.clear_all_placement_pins(_project_dir(project_name),
+                                             project_name)
+    result.pop("ok", None)
+    return ok(result, next_step(
+        "optimize_placement", {"project_name": project_name},
+        "All pins cleared — re-run placement; every component is free to move."))
 
 
 # ---------------------------------------------------------------------------

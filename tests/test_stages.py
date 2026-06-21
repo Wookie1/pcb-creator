@@ -239,6 +239,70 @@ class TestRunPlacementStage:
         assert coords1 == coords2
 
 
+class TestUnpinClearsBothSources:
+    """A pin lives in two places: the durable store AND the placement file's
+    placement_source=="user" flag (run_placement mirrors the durable pin into
+    the file, and re-scrapes it on the next run). unplace must clear BOTH or the
+    pin is silently resurrected — the 'keeps treating TB3 as pinned from the old
+    placement file' bug."""
+
+    def _cfg(self):
+        from orchestrator.config import OrchestratorConfig
+        return OrchestratorConfig.from_env(
+            base_dir=Path(__file__).resolve().parent.parent)
+
+    def _setup(self, tmp_path):
+        proj = "resur"
+        pdir = tmp_path / proj
+        pdir.mkdir()
+        (pdir / f"{proj}_netlist.json").write_text(json.dumps(_tiny_netlist()))
+        return pdir, proj
+
+    def test_unpin_is_not_resurrected_on_next_placement(self, tmp_path):
+        from orchestrator import stages
+        pdir, proj = self._setup(tmp_path)
+        # Pin a plain resistor (not a connector/keepout, which are type-pinned).
+        assert stages.set_placement_pin(pdir, proj, "R1", 20.0, 15.0)["ok"]
+        r = stages.run_placement(pdir, proj, self._cfg(),
+                                 board_width_mm=40, board_height_mm=30, seed=1)
+        assert r["success"]
+        assert "R1" in r["pinned_components"]
+        pl = json.loads((pdir / f"{proj}_placement.json").read_text())
+        assert next(p for p in pl["placements"]
+                    if p["designator"] == "R1")["placement_source"] == "user"
+
+        # Unpin, then re-place. R1 must now be movable — not resurrected.
+        assert stages.clear_placement_pin(pdir, proj, "R1")["ok"]
+        r2 = stages.run_placement(pdir, proj, self._cfg(), seed=1)
+        assert r2["success"]
+        assert "R1" not in r2["pinned_components"]
+        pl2 = json.loads((pdir / f"{proj}_placement.json").read_text())
+        assert next(p for p in pl2["placements"]
+                    if p["designator"] == "R1")["placement_source"] != "user"
+
+    def test_unpin_unknown_lists_true_pinned_set(self, tmp_path):
+        from orchestrator import stages
+        pdir, proj = self._setup(tmp_path)
+        stages.set_placement_pin(pdir, proj, "R1", 20.0, 15.0)
+        r = stages.clear_placement_pin(pdir, proj, "R2")  # never pinned
+        assert r["ok"] is False and r["code"] == "not_pinned"
+        assert "R1" in r["error"]
+
+    def test_clear_all_pins_wipes_both_sources(self, tmp_path):
+        from orchestrator import stages
+        pdir, proj = self._setup(tmp_path)
+        stages.set_placement_pin(pdir, proj, "R1", 20.0, 15.0)
+        stages.set_placement_pin(pdir, proj, "R2", 30.0, 15.0)
+        stages.run_placement(pdir, proj, self._cfg(),
+                             board_width_mm=40, board_height_mm=30, seed=1)
+        res = stages.clear_all_placement_pins(pdir, proj)
+        assert res["ok"] and set(res["cleared"]) >= {"R1", "R2"}
+        # Nothing pinned in either source afterward.
+        assert stages.all_pinned_designators(pdir, proj) == []
+        r2 = stages.run_placement(pdir, proj, self._cfg(), seed=1)
+        assert r2["pinned_components"] == []
+
+
 class TestEscapeFanoutGating:
     """Escape fanout is tri-state: AUTO (None) enables it when the board has a
     fine-pitch part; PCB_ESCAPE_FANOUT forces it on/off."""

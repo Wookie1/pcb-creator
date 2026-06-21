@@ -257,16 +257,81 @@ def set_placement_pin(project_dir: Path, project_name: str, designator: str,
             "pinned_count": len(pins)}
 
 
+def _user_source_in_placement(project_dir: Path, project_name: str) -> set[str]:
+    """Designators flagged placement_source=="user" in the current placement
+    file — a SECOND pin source besides the durable store (set from requirements
+    hints, or written by set_component_positions/place_component). run_placement
+    re-scrapes and re-injects these, so they must be cleared too or an unpinned
+    component is silently resurrected on the next placement."""
+    placement_path = _p(project_dir, project_name, "placement")
+    if not placement_path.exists():
+        return set()
+    try:
+        pl = _load(placement_path)
+    except Exception:
+        return set()
+    return {it.get("designator") for it in pl.get("placements", [])
+            if it.get("placement_source") == "user"}
+
+
+def _clear_user_source_in_placement(project_dir: Path, project_name: str,
+                                    designators: set[str] | None = None) -> set[str]:
+    """Reset placement_source 'user' → 'auto' in the placement file (for the
+    given designators, or all when None). Returns the set actually reset."""
+    placement_path = _p(project_dir, project_name, "placement")
+    if not placement_path.exists():
+        return set()
+    try:
+        pl = _load(placement_path)
+    except Exception:
+        return set()
+    reset = set()
+    for it in pl.get("placements", []):
+        if it.get("placement_source") == "user" and (
+                designators is None or it.get("designator") in designators):
+            it["placement_source"] = "auto"
+            reset.add(it.get("designator"))
+    if reset:
+        placement_path.write_text(json.dumps(pl, indent=2))
+    return reset
+
+
+def all_pinned_designators(project_dir: Path, project_name: str) -> list[str]:
+    """The TRUE pinned set: union of the durable pin store and the placement
+    file's placement_source=="user" flags. Use this for agent-facing visibility
+    so a pin set by either path is reported (and neither resurrects silently)."""
+    return sorted(set(load_placement_pins(project_dir, project_name))
+                  | _user_source_in_placement(project_dir, project_name))
+
+
 def clear_placement_pin(project_dir: Path, project_name: str,
                         designator: str) -> dict:
+    """Unpin a component from BOTH pin sources — the durable store AND the
+    placement file's user flag — so optimize_placement won't resurrect it."""
     pins = load_placement_pins(project_dir, project_name)
-    if designator not in pins:
+    in_durable = designator in pins
+    if in_durable:
+        del pins[designator]
+        _pins_path(project_dir, project_name).write_text(json.dumps(pins, indent=2))
+    reset = _clear_user_source_in_placement(project_dir, project_name, {designator})
+    if not in_durable and not reset:
+        remaining = all_pinned_designators(project_dir, project_name)
         return {"ok": False, "code": "not_pinned",
                 "error": f"'{designator}' is not pinned. Pinned: "
-                         f"{', '.join(sorted(pins)) or '(none)'}."}
-    del pins[designator]
-    _pins_path(project_dir, project_name).write_text(json.dumps(pins, indent=2))
-    return {"ok": True, "designator": designator, "pinned_count": len(pins)}
+                         f"{', '.join(remaining) or '(none)'}."}
+    remaining = all_pinned_designators(project_dir, project_name)
+    return {"ok": True, "designator": designator,
+            "pinned_count": len(remaining), "pinned": remaining}
+
+
+def clear_all_placement_pins(project_dir: Path, project_name: str) -> dict:
+    """Unpin EVERY component — wipe the durable store and reset all user flags in
+    the placement file — so the next optimize_placement is free to move all."""
+    pins = load_placement_pins(project_dir, project_name)
+    _pins_path(project_dir, project_name).write_text(json.dumps({}, indent=2))
+    reset = _clear_user_source_in_placement(project_dir, project_name, None)
+    cleared = sorted(set(pins) | reset)
+    return {"ok": True, "cleared": cleared, "cleared_count": len(cleared)}
 
 
 def run_placement(
@@ -552,6 +617,10 @@ def run_placement(
         "layers": num_layers,
         "plane_layers": placement["board"].get("plane_layers"),
         "layers_promoted": layers_promoted,
+        # The TRUE pinned set (durable store ∪ placement-file user flags) so the
+        # agent always knows what is fixed and never guesses about a "stale"
+        # pin. Clear with unplace_component (one) or clear_all_pins (all).
+        "pinned_components": all_pinned_designators(project_dir, project_name),
         "placement_path": str(placement_path),
     }
 
