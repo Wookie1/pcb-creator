@@ -97,6 +97,55 @@ def _resolve_board_dims(project_dir: Path, project_name: str) -> tuple[float | N
     return None, None
 
 
+def _suggest_free_position(x_mm, y_mm, rotation_deg, package, pin_count,
+                          other_boxes, bw, bh, edge_clearance, min_clearance):
+    """Find the nearest board coordinate where the component is in-bounds AND
+    clear of every already-pinned component, so a rejected place_component can
+    hand back a concrete retry instead of just "move it".
+
+    Spiral outward from the requested point on a coarse grid; return the first
+    valid (x, y) rounded to 0.5mm, or None if the board has no room."""
+    from optimizers.placement_optimizer import (
+        _get_pad_extent_box, _boxes_overlap_with_clearance,
+    )
+
+    def _valid(cx, cy):
+        b = _get_pad_extent_box(cx, cy, 1.0, 1.0, rotation_deg, package,
+                                pin_count)
+        if (b[0] < edge_clearance - 0.01 or b[1] < edge_clearance - 0.01
+                or b[2] > bw - edge_clearance + 0.01
+                or b[3] > bh - edge_clearance + 0.01):
+            return False
+        return not any(_boxes_overlap_with_clearance(b, ob, min_clearance)
+                       for ob in other_boxes)
+
+    # Clamp the search origin into the board so an off-edge request still
+    # spirals from the nearest in-bounds point.
+    ox = min(max(float(x_mm), edge_clearance), bw - edge_clearance)
+    oy = min(max(float(y_mm), edge_clearance), bh - edge_clearance)
+    step = 2.0
+    max_r = max(bw, bh)
+    r = 0.0
+    while r <= max_r:
+        if r == 0.0:
+            cands = [(ox, oy)]
+        else:
+            cands = []
+            n = max(1, int((2 * r) / step))
+            for k in range(n + 1):
+                t = -r + k * (2 * r / n)
+                cands += [(ox + t, oy - r), (ox + t, oy + r),
+                          (ox - r, oy + t), (ox + r, oy + t)]
+        # Nearest candidates first within the ring.
+        for cx, cy in sorted(cands, key=lambda c: (c[0] - ox) ** 2
+                             + (c[1] - oy) ** 2):
+            if edge_clearance <= cx <= bw - edge_clearance and \
+                    edge_clearance <= cy <= bh - edge_clearance and _valid(cx, cy):
+                return (round(cx * 2) / 2, round(cy * 2) / 2)
+        r += step
+    return None
+
+
 def set_placement_pin(project_dir: Path, project_name: str, designator: str,
                       x_mm: float, y_mm: float, rotation_deg: int = 0,
                       layer: str = "top") -> dict:
@@ -143,25 +192,43 @@ def set_placement_pin(project_dir: Path, project_name: str, designator: str,
     box = _get_pad_extent_box(float(x_mm), float(y_mm), 1.0, 1.0,
                               rotation_deg, package, pin_count)
 
+    # Other pinned components on this layer — needed by both the conflict check
+    # and the free-position suggester.
+    pins = load_placement_pins(project_dir, project_name)
+    des_to_pkg = {e.get("designator"): e.get("package", "")
+                  for e in netlist.get("elements", [])
+                  if e.get("element_type") == "component"}
+    other_boxes = [
+        _get_pad_extent_box(p["x_mm"], p["y_mm"], 1.0, 1.0,
+                            p.get("rotation_deg", 0),
+                            des_to_pkg.get(other_des, ""), 2)
+        for other_des, p in pins.items()
+        if other_des != designator and p.get("layer", "top") == layer
+    ]
+
     # Board-bounds check (when dimensions are known)
     bw, bh = _resolve_board_dims(project_dir, project_name)
     if bw and bh:
         ec = BOARD_EDGE_CLEARANCE_MM
         if (box[0] < ec - 0.01 or box[1] < ec - 0.01
                 or box[2] > bw - ec + 0.01 or box[3] > bh - ec + 0.01):
-            return {"ok": False, "code": "out_of_bounds",
-                    "error": f"{designator} at ({x_mm}, {y_mm}) rot "
-                             f"{rotation_deg} has pads spanning "
-                             f"x [{box[0]:.1f}, {box[2]:.1f}], "
-                             f"y [{box[1]:.1f}, {box[3]:.1f}] — outside the "
-                             f"{bw}x{bh}mm board minus {ec}mm edge clearance. "
-                             "Move it inward, rotate it, or enlarge the board."}
+            sug = _suggest_free_position(
+                x_mm, y_mm, rotation_deg, package, pin_count,
+                other_boxes, bw, bh, ec, MIN_CLEARANCE_MM)
+            r = {"ok": False, "code": "out_of_bounds",
+                 "error": f"{designator} at ({x_mm}, {y_mm}) rot "
+                          f"{rotation_deg} has pads spanning "
+                          f"x [{box[0]:.1f}, {box[2]:.1f}], "
+                          f"y [{box[1]:.1f}, {box[3]:.1f}] — outside the "
+                          f"{bw}x{bh}mm board minus {ec}mm edge clearance. "
+                          "Move it inward, rotate it, or enlarge the board."}
+            if sug:
+                r["suggested_x_mm"], r["suggested_y_mm"] = sug
+                r["error"] += (f" A free spot for it is "
+                               f"({sug[0]}, {sug[1]}).")
+            return r
 
     # Conflict check against other pinned components
-    pins = load_placement_pins(project_dir, project_name)
-    des_to_pkg = {e.get("designator"): e.get("package", "")
-                  for e in netlist.get("elements", [])
-                  if e.get("element_type") == "component"}
     for other_des, p in pins.items():
         if other_des == designator or p.get("layer", "top") != layer:
             continue
@@ -169,10 +236,19 @@ def set_placement_pin(project_dir: Path, project_name: str, designator: str,
             p["x_mm"], p["y_mm"], 1.0, 1.0, p.get("rotation_deg", 0),
             des_to_pkg.get(other_des, ""), 2)
         if _boxes_overlap_with_clearance(box, other_box, MIN_CLEARANCE_MM):
-            return {"ok": False, "code": "pin_overlap",
-                    "error": f"{designator} at ({x_mm}, {y_mm}) overlaps the "
-                             f"already-pinned {other_des} at "
-                             f"({p['x_mm']}, {p['y_mm']}). Move one of them."}
+            sug = (_suggest_free_position(
+                x_mm, y_mm, rotation_deg, package, pin_count, other_boxes,
+                bw, bh, BOARD_EDGE_CLEARANCE_MM, MIN_CLEARANCE_MM)
+                if bw and bh else None)
+            r = {"ok": False, "code": "pin_overlap",
+                 "error": f"{designator} at ({x_mm}, {y_mm}) overlaps the "
+                          f"already-pinned {other_des} at "
+                          f"({p['x_mm']}, {p['y_mm']}). Move one of them."}
+            if sug:
+                r["suggested_x_mm"], r["suggested_y_mm"] = sug
+                r["error"] += (f" A free spot for {designator} is "
+                               f"({sug[0]}, {sug[1]}).")
+            return r
 
     pins[designator] = {"x_mm": float(x_mm), "y_mm": float(y_mm),
                         "rotation_deg": rotation_deg, "layer": layer}

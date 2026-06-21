@@ -1829,11 +1829,13 @@ def place_component(project_name: str, designator: str, x_mm: float,
 
     Validated immediately: the position must keep the component's PADS inside
     the board (1mm edge clearance) and clear of other pinned components —
-    invalid coordinates fail here, not as silent overlaps later. Pinned
-    components are never moved by optimize_placement; everything else is
-    placed around them. Coordinates are mm from the top-left board corner
-    (x right, y down). Re-calling replaces the pin; undo with
-    unplace_component.
+    invalid coordinates fail here, not as silent overlaps later. When a
+    position is rejected, the failure carries a concrete free coordinate
+    (`suggested_x_mm`/`suggested_y_mm`, and a ready-to-run remediation entry) —
+    retry there instead of guessing. Pinned components are never moved by
+    optimize_placement; everything else is placed around them. Coordinates are
+    mm from the top-left board corner (x right, y down). Re-calling replaces
+    the pin; undo with unplace_component.
 
     Example: place_component("my_board", "J1", x_mm=2.5, y_mm=20,
                              rotation_deg=90)
@@ -1847,6 +1849,16 @@ def place_component(project_name: str, designator: str, x_mm: float,
         rem = []
         code = result.get("code")
         if code in ("out_of_bounds", "pin_overlap"):
+            # If the validator found a concrete free spot, offer it as a
+            # ready-to-run retry so the agent doesn't have to guess (and loop).
+            sx, sy = result.get("suggested_x_mm"), result.get("suggested_y_mm")
+            if sx is not None and sy is not None:
+                rem.append(option(
+                    f"Retry at the suggested free position ({sx}, {sy})",
+                    "place_component",
+                    {"project_name": project_name, "designator": designator,
+                     "x_mm": sx, "y_mm": sy, "rotation_deg": rotation_deg,
+                     "layer": layer}))
             rem.append(option("Retry with adjusted coordinates",
                               "place_component",
                               {"project_name": project_name,

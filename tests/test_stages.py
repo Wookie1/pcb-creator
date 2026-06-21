@@ -91,6 +91,96 @@ class TestGridPlacement:
         assert generate_grid_placement_json(json.dumps({"elements": []}), 40, 30) is None
 
 
+class TestMountingHoleCorners:
+    """Mounting holes are pinned by the SA optimizer (by package), so the grid
+    seed is where they stay — seed them at the four corners, not the interior
+    row they used to land in."""
+
+    def _netlist_with_holes(self, n_holes: int) -> dict:
+        els = []
+        for i in range(1, n_holes + 1):
+            els.append({"element_type": "component", "component_id": f"c_h{i}",
+                        "designator": f"H{i}", "component_type": "mounting_hole",
+                        "package": "MountingHole_3.2mm_M3", "value": "M3"})
+        # a couple of normal parts so the interior fill still runs
+        for r in ("R1", "R2"):
+            els.append({"element_type": "component", "component_id": f"c_{r}",
+                        "designator": r, "component_type": "resistor",
+                        "package": "R_0805_2012Metric", "value": "1k"})
+            els.append({"element_type": "port", "port_id": f"p_{r}",
+                        "component_id": f"c_{r}", "pin_number": 1, "name": "1"})
+        return {"version": "1.0", "project_name": "h", "elements": els}
+
+    def test_four_holes_go_to_corners(self):
+        p = generate_grid_placement(self._netlist_with_holes(4), 100, 50, "h")
+        holes = [i for i in p["placements"] if i["designator"].startswith("H")]
+        assert len(holes) == 4
+        # Every hole hugs a corner: near an x-edge AND near a y-edge.
+        for h in holes:
+            assert (h["x_mm"] < 8 or h["x_mm"] > 92)
+            assert (h["y_mm"] < 8 or h["y_mm"] > 42)
+        # All four corners distinct (not stacked in a row).
+        corners = {(round(h["x_mm"]) < 50, round(h["y_mm"]) < 25) for h in holes}
+        assert len(corners) == 4
+
+    def test_extra_holes_beyond_four_still_placed(self):
+        p = generate_grid_placement(self._netlist_with_holes(6), 100, 50, "h")
+        holes = [i for i in p["placements"] if i["designator"].startswith("H")]
+        assert len(holes) == 6  # 4 corners + 2 in the interior fill
+
+    def test_no_holes_unaffected(self):
+        # Boards without mounting holes are byte-identical to before.
+        p = generate_grid_placement(_tiny_netlist(), 40, 30, "t")
+        assert len(p["placements"]) == 4
+
+
+class TestFreePositionSuggestion:
+    """A rejected place_component (overlap / out-of-bounds) hands back a
+    concrete free coordinate so the agent retries instead of looping."""
+
+    def _setup(self, tmp_path) -> tuple[Path, str]:
+        proj = "sug"
+        pdir = tmp_path / proj
+        pdir.mkdir()
+        nl = {"version": "1.0", "project_name": proj, "elements": []}
+        for des in ("TB3", "TB4"):
+            cid = f"c_{des}"
+            nl["elements"].append(
+                {"element_type": "component", "component_id": cid,
+                 "designator": des, "component_type": "connector",
+                 "package": "TerminalBlock_Phoenix_MKDS-1,5_1x02", "value": "x"})
+            for pin in (1, 2):
+                nl["elements"].append(
+                    {"element_type": "port", "port_id": f"{cid}_{pin}",
+                     "component_id": cid, "pin_number": pin, "name": str(pin)})
+        (pdir / f"{proj}_netlist.json").write_text(json.dumps(nl))
+        (pdir / f"{proj}_placement.json").write_text(json.dumps(
+            {"board": {"width_mm": 100, "height_mm": 50}, "placements": []}))
+        return pdir, proj
+
+    def test_overlap_suggests_a_placeable_spot(self, tmp_path):
+        from orchestrator import stages
+        pdir, proj = self._setup(tmp_path)
+        assert stages.set_placement_pin(pdir, proj, "TB3", 62.0, 41.5)["ok"]
+        r = stages.set_placement_pin(pdir, proj, "TB4", 62.5, 41.5)  # overlaps
+        assert r["code"] == "pin_overlap"
+        assert r.get("suggested_x_mm") is not None
+        # The suggestion must actually be free.
+        ok = stages.set_placement_pin(pdir, proj, "TB4",
+                                      r["suggested_x_mm"], r["suggested_y_mm"])
+        assert ok["ok"]
+
+    def test_out_of_bounds_suggests_inward_spot(self, tmp_path):
+        from orchestrator import stages
+        pdir, proj = self._setup(tmp_path)
+        r = stages.set_placement_pin(pdir, proj, "TB3", 99.5, 48.0)  # off-edge
+        assert r["code"] == "out_of_bounds"
+        assert r.get("suggested_x_mm") is not None
+        ok = stages.set_placement_pin(pdir, proj, "TB3",
+                                      r["suggested_x_mm"], r["suggested_y_mm"])
+        assert ok["ok"]
+
+
 class TestRunPlacementStage:
     """stages.run_placement: deterministic grid → repair → SA optimize."""
 

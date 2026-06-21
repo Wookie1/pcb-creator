@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 
 import logging
+import re
 
 logger = logging.getLogger(__name__)
 
@@ -101,14 +102,34 @@ def generate_grid_placement(
 
     def _pins(comp: dict) -> int:
         return comp_pin_counts.get(comp.get("component_id", ""), 0)
+
+    # Mounting holes are mechanical keepouts pinned by the SA optimizer (by
+    # package), so wherever the grid seeds them is where they STAY. Seed them at
+    # the four board corners — matching how enclosures place standoffs — instead
+    # of letting them fall into the size-sorted interior grid (which stacked
+    # H1-H4 in a row near one edge). Only the first four go to corners; any
+    # extras fall through to the normal interior fill.
+    _MOUNTING_HOLE_RE = re.compile(r"MountingHole", re.IGNORECASE)
+    mounting_holes = [(c, w, h) for c, w, h in comp_dims
+                      if c.get("component_type") != "connector"
+                      and _MOUNTING_HOLE_RE.search(c.get("package", ""))]
+    corner_holes = mounting_holes[:4]
+    corner_hole_des = {c["designator"] for c, _, _ in corner_holes}
     others = [(c, w, h) for c, w, h in comp_dims
-              if c.get("component_type") != "connector"]
+              if c.get("component_type") != "connector"
+              and c["designator"] not in corner_hole_des]
     # Largest first for better packing
     others.sort(key=lambda x: x[1] * x[2], reverse=True)
 
     placements: list[dict] = []
     margin = 1.5
     clearance = 1.0
+
+    # Reserve the corners so edge-laid connectors don't collide with a
+    # corner-seeded mounting hole (both are pinned → an unfixable overlap).
+    corner_reserve = 0.0
+    if corner_holes:
+        corner_reserve = max(max(w, h) for _, w, h in corner_holes) + clearance
 
     # High-pin connectors along the left edge are oriented so their pins fan
     # into open board area (enhancement D): a connector whose pin row runs
@@ -152,8 +173,20 @@ def generate_grid_placement(
         bx = _get_pad_extent_box(0.0, 0.0, w, h, r, comp.get("package", ""), pins)
         return r, bx                       # bx = (x_min, y_min, x_max, y_max)
 
+    # Seed mounting holes at the corners (clockwise from top-left). Pads inset
+    # by margin from each edge; positions stick because the SA optimizer pins
+    # mounting-hole packages.
+    for i, (comp, w, h) in enumerate(corner_holes):
+        cxs = margin + w / 2
+        cys = margin + h / 2
+        x = cxs if i in (0, 2) else board_width_mm - cxs
+        y = cys if i in (0, 1) else board_height_mm - cys
+        placements.append(_place_item(comp, w, h, x, y))
+
     ei = 0
-    cur = margin
+    # Start each edge past the reserved corner so a connector can't land on a
+    # corner hole, and stop short of the far corner (handled via edge_cap below).
+    cur = margin + corner_reserve
     # Inward reach of the connectors on each edge, so the interior 'others' can
     # be inset clear of ALL of them (not just the left edge).
     left_reach = margin
@@ -164,12 +197,13 @@ def generate_grid_placement(
         edge = edge_order[ei]
         rot, (xmn, ymn, xmx, ymx) = _conn_geom(comp, w, h, edge)
         span = (ymx - ymn) if edge in ("left", "right") else (xmx - xmn)
-        # Spill to the next edge if this one can't fit the connector.
-        while (cur + span > edge_cap[edge] - margin
+        # Spill to the next edge if this one can't fit the connector (the far
+        # corner is reserved too, hence the extra corner_reserve).
+        while (cur + span > edge_cap[edge] - margin - corner_reserve
                and ei < len(edge_order) - 1):
             ei += 1
             edge = edge_order[ei]
-            cur = margin
+            cur = margin + corner_reserve
             rot, (xmn, ymn, xmx, ymx) = _conn_geom(comp, w, h, edge)
             span = (ymx - ymn) if edge in ("left", "right") else (xmx - xmn)
         # Solve for the origin so the pad-extent box clears the edge margin and

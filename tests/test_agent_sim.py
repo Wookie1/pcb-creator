@@ -334,6 +334,18 @@ def test_place_component_out_of_bounds_remediates(server):
               "x_mm": 0.5, "y_mm": 10})
     assert_fail_with_remediation(r, ["place_component"])
     assert "edge clearance" in r["error"]
+    # The failure offers a concrete, ready-to-run free position (not just
+    # "<new x>") so the agent retries instead of guessing in a loop.
+    concrete = [o for o in r["remediation"]
+                if o["tool"] == "place_component"
+                and isinstance(o["args"].get("x_mm"), (int, float))]
+    assert concrete, r["remediation"]
+    sug = concrete[0]["args"]
+    r2 = call(server, "place_component",
+              {"project_name": "flawed6", "designator": "J1",
+               "x_mm": sug["x_mm"], "y_mm": sug["y_mm"],
+               "rotation_deg": sug.get("rotation_deg", 0)})
+    assert r2["success"], r2
 
     # Valid position is accepted and survives optimize_placement
     r = call(server, "place_component",
