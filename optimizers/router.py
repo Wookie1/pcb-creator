@@ -5145,13 +5145,38 @@ def inner_plane_count(board: dict) -> int:
 # vias must be at least this far apart (edge to edge), so centre-to-centre must
 # exceed drill + this.
 HOLE_TO_HOLE_MIN_MM = 0.5
+# Drill-edge-to-via clearance for keeping stitching vias away from mounting
+# holes (the hole_clearance / hole_to_hole rules a via near an NPTH hole trips).
+HOLE_TO_VIA_CLEARANCE_MM = 0.2
+
+_MOUNTING_HOLE_DRILL_RE = re.compile(r"(\d+(?:\.\d+)?)mm", re.IGNORECASE)
+
+
+def _mounting_hole_keepouts(placements: list[dict], via_diameter_mm: float
+                            ) -> list[tuple[float, float, float]]:
+    """(x, y, min_centre_dist) keepouts for mounting holes, so a stitching via
+    never lands within hole-clearance of an NPTH hole. min_centre_dist =
+    hole_radius + via_radius + clearance."""
+    outs: list[tuple[float, float, float]] = []
+    for p in placements:
+        pkg = p.get("package", "")
+        if "mountinghole" not in pkg.lower():
+            continue
+        m = _MOUNTING_HOLE_DRILL_RE.search(pkg)
+        drill = float(m.group(1)) if m else 3.2
+        min_d = drill / 2 + via_diameter_mm / 2 + HOLE_TO_VIA_CLEARANCE_MM
+        outs.append((p.get("x_mm", 0.0), p.get("y_mm", 0.0), min_d))
+    return outs
 
 
 def _filter_via_hole_spacing(existing_vias: list[dict], new_vias: list[dict],
-                             min_center_mm: float) -> list[dict]:
+                             min_center_mm: float, *,
+                             hole_keepouts: list[tuple[float, float, float]] = ()
+                             ) -> list[dict]:
     """Keep only new (stitching/plane) vias whose centre is ≥ min_center_mm from
-    every existing via and every already-kept new via, so none trips the
-    hole-to-hole rule. Existing routing vias are kept as-is and never dropped."""
+    every existing via and every already-kept new via (the hole_to_hole rule),
+    AND outside every mounting-hole keepout (the hole_clearance rule). Existing
+    routing vias are kept as-is and never dropped."""
     kept_pts = [(v.get("x_mm", 0.0), v.get("y_mm", 0.0)) for v in existing_vias]
     out: list[dict] = []
     m2 = min_center_mm * min_center_mm
@@ -5159,9 +5184,91 @@ def _filter_via_hole_spacing(existing_vias: list[dict], new_vias: list[dict],
         x, y = v.get("x_mm", 0.0), v.get("y_mm", 0.0)
         if any((x - px) ** 2 + (y - py) ** 2 < m2 for px, py in kept_pts):
             continue
+        if any((x - hx) ** 2 + (y - hy) ** 2 < hd * hd
+               for hx, hy, hd in hole_keepouts):
+            continue
         kept_pts.append((x, y))
         out.append(v)
     return out
+
+
+def _remove_dangling_traces(routing: dict, pad_map: dict,
+                            tol: float = 0.06) -> int:
+    """Drop trace segments with a free (unconnected) end — the `track_dangling`
+    DRC warnings, leftover stubs from rip-up/reroute. Same-net aware: an endpoint
+    is 'supported' only by a pad, via, or other trace OF THE SAME NET. Removing a
+    stub off a free end can't disconnect the net (the free end joins nothing).
+    Iterates so a chain of stubs collapses. Mutates routing['traces'] in place;
+    returns how many were removed. Vias are intentionally NOT touched (plane
+    stitching vias connect fills, not traces). Caller should still verify
+    connectivity didn't regress."""
+    traces = routing.get("traces", [])
+    vias = routing.get("vias", [])
+    if not traces:
+        return 0
+
+    pads_by_net: dict = {}
+    for pi in pad_map.values():
+        pads_by_net.setdefault(pi.net_id, []).append(
+            (pi.x_mm, pi.y_mm, pi.pad_width_mm / 2 + tol, pi.pad_height_mm / 2 + tol))
+    vias_by_net: dict = {}
+    for v in vias:
+        vias_by_net.setdefault(v.get("net_id"), []).append(
+            (v.get("x_mm", 0.0), v.get("y_mm", 0.0)))
+
+    def _near_pad(net, x, y):
+        for px, py, hw, hh in pads_by_net.get(net, ()):  # bbox + tol
+            if abs(x - px) <= hw and abs(y - py) <= hh:
+                return True
+        return False
+
+    def _near_via(net, x, y):
+        for vx, vy in vias_by_net.get(net, ()):
+            if (x - vx) ** 2 + (y - vy) ** 2 <= tol * tol:
+                return True
+        return False
+
+    def _on_other_trace(net, x, y, self_idx, kept):
+        for j in kept:
+            if j == self_idx:
+                continue
+            t = traces[j]
+            if t.get("net_id") != net:
+                continue
+            # endpoint coincidence or lying on the segment
+            ax, ay = t["start_x_mm"], t["start_y_mm"]
+            bx, by = t["end_x_mm"], t["end_y_mm"]
+            dx, dy = bx - ax, by - ay
+            L2 = dx * dx + dy * dy
+            if L2 == 0:
+                if (x - ax) ** 2 + (y - ay) ** 2 <= tol * tol:
+                    return True
+                continue
+            u = max(0.0, min(1.0, ((x - ax) * dx + (y - ay) * dy) / L2))
+            px, py = ax + u * dx, ay + u * dy
+            if (x - px) ** 2 + (y - py) ** 2 <= tol * tol:
+                return True
+        return False
+
+    kept = set(range(len(traces)))
+    removed = 0
+    changed = True
+    while changed:
+        changed = False
+        for i in list(kept):
+            t = traces[i]
+            net = t.get("net_id")
+            for (x, y) in ((t["start_x_mm"], t["start_y_mm"]),
+                           (t["end_x_mm"], t["end_y_mm"])):
+                if not (_near_pad(net, x, y) or _near_via(net, x, y)
+                        or _on_other_trace(net, x, y, i, kept)):
+                    kept.discard(i)
+                    removed += 1
+                    changed = True
+                    break
+    if removed:
+        routing["traces"] = [traces[i] for i in sorted(kept)]
+    return removed
 
 
 def apply_copper_fills(
@@ -5197,6 +5304,24 @@ def apply_copper_fills(
 
     # Build pad map
     pad_map = build_pad_map(routed, netlist)
+
+    # Remove dangling trace stubs (track_dangling DRC warnings) before pouring
+    # fill — but only if it doesn't disconnect anything (revert on any new
+    # incomplete net, so this can never trade a warning for a connectivity error).
+    rt = routed.get("routing", {})
+    if rt.get("traces"):
+        try:
+            from validators.validate_routing import incomplete_net_ids
+            before = incomplete_net_ids(routed, netlist)
+            snapshot = list(rt["traces"])
+            n = _remove_dangling_traces(rt, pad_map)
+            if n:
+                if incomplete_net_ids(routed, netlist) - before:
+                    rt["traces"] = snapshot  # regressed connectivity → revert
+                else:
+                    logger.info("  Removed %d dangling trace stub(s)", n)
+        except Exception:
+            pass
 
     # Build net_id -> integer mapping
     elements = netlist.get("elements", [])
@@ -5495,11 +5620,13 @@ def apply_copper_fills(
         stitch_via_dicts.extend(pwr_stitch_vias)
     existing_vias = result["routing"].get("vias", [])
     min_center = config.via_drill_mm + HOLE_TO_HOLE_MIN_MM
-    kept = _filter_via_hole_spacing(existing_vias, stitch_via_dicts, min_center)
+    hole_keepouts = _mounting_hole_keepouts(routed.get("placements", []),
+                                            config.via_diameter_mm)
+    kept = _filter_via_hole_spacing(existing_vias, stitch_via_dicts, min_center,
+                                    hole_keepouts=hole_keepouts)
     if len(kept) < len(stitch_via_dicts):
-        logger.info("  Dropped %d stitching via(s) too close to another via "
-                    "(hole-to-hole < %.2fmm)",
-                    len(stitch_via_dicts) - len(kept), min_center)
+        logger.info("  Dropped %d stitching via(s) too close to another via or "
+                    "a mounting hole", len(stitch_via_dicts) - len(kept))
     result["routing"]["vias"] = existing_vias + kept
 
     # Add power-plane connection stubs (pad → offset via)

@@ -405,13 +405,19 @@ def _footprint(
                     f' (tstamp {_uid()}))'
                 )
             else:
+                # SMD pads connect SOLID to the zone (zone_connect 2), not via
+                # thermal relief (1). A small SMD pad (0805 GND, …) can't fit the
+                # minimum 2 thermal spokes, so thermal relief there trips KiCad's
+                # "starved thermal" DRC. SMD pads have little thermal mass, so a
+                # solid connection is the right call (TH pads keep thermal relief
+                # above — they are large enough and benefit from it for rework).
                 lines.append(
                     f'    (pad "{pin_num}" smd rect'
                     f' (at {dx} {dy})'
                     f' (size {pad_w} {pad_h})'
                     f' (layers "{layer}" "{mask_layer}.Paste" "{mask_layer}.Mask")'
                     f' (net {net_num} "{net_name}")'
-                    f' (zone_connect 1)'
+                    f' (zone_connect 2)'
                     f' (tstamp {_uid()}))'
                 )
 

@@ -138,10 +138,18 @@ class TestInnerSignalTraceFill:
                       {"net_id": "net_sig", "net_name": "SIG", "layer": "inner2",
                        "width_mm": 0.127, "start_x_mm": 5, "start_y_mm": 5,
                        "end_x_mm": 15, "end_y_mm": 5}],
-                      "vias": [], "unrouted_nets": []}}
+                      # Via at each end so the inner trace is via-to-via (a real
+                      # inner-layer segment), not a floating dangling stub.
+                      "vias": [
+                          {"net_id": "net_sig", "net_name": "SIG",
+                           "x_mm": 5, "y_mm": 5},
+                          {"net_id": "net_sig", "net_name": "SIG",
+                           "x_mm": 15, "y_mm": 5}],
+                      "unrouted_nets": []}}
         # Must not raise KeyError('inner2')
         out = apply_copper_fills(routed, netlist, RouterConfig())
-        # inner2 trace preserved; only the In1 GND plane (not In2) generated
+        # inner2 trace preserved (via-connected, not dangling); only the In1 GND
+        # plane (not In2) generated
         assert any(t["layer"] == "inner2" for t in out["routing"]["traces"])
         fills = {f["layer"] for f in out["routing"].get("copper_fills", [])}
         assert "inner1" in fills and "inner2" not in fills
