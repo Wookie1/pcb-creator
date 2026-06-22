@@ -1335,6 +1335,7 @@ def import_kicad_netlist(
     project_name: str,
     file_path: str,
     description: str = "",
+    overwrite: bool = False,
 ) -> dict:
     """Import a KiCad schematic netlist into pcb-creator to continue a mid-stream project.
 
@@ -1388,19 +1389,31 @@ def import_kicad_netlist(
             )],
         )
 
-    # Refuse to overwrite an existing project
+    # Existing-project conflict: refuse unless overwrite=True (then start clean).
     pdir = _project_dir(project_name)
     if pdir.exists() and any(pdir.iterdir()):
-        return fail(
-            f"Project '{project_name}' already exists at {pdir}.",
-            remediation=[
-                option("Retry with a different project_name (e.g. add a suffix)",
-                       "import_kicad_netlist",
-                       {"project_name": f"{project_name}_v2", "file_path": file_path}),
-                option("Check the existing project's state before deciding",
-                       "get_project_status", {"project_name": project_name}),
-            ],
-        )
+        if not overwrite:
+            return fail(
+                f"Project '{project_name}' already exists at {pdir} — not "
+                "overwriting it. Re-import over it with overwrite=True (replaces "
+                "the existing project), or import under a NEW project_name to "
+                "keep it. Do NOT switch to design_pcb — that is the autonomous "
+                "LLM pipeline, not a KiCad import, and won't help here.",
+                remediation=[
+                    option("Re-import over the existing project (replaces it)",
+                           "import_kicad_netlist",
+                           {"project_name": project_name, "file_path": file_path,
+                            "overwrite": True}),
+                    option("Import under a new name (keeps the existing project)",
+                           "import_kicad_netlist",
+                           {"project_name": f"{project_name}_v2",
+                            "file_path": file_path}),
+                    option("Check the existing project's state first",
+                           "get_project_status", {"project_name": project_name}),
+                ],
+            )
+        import shutil
+        shutil.rmtree(pdir, ignore_errors=True)
 
     try:
         result = convert_kicad_netlist(
@@ -1698,12 +1711,16 @@ def _builder_fail(result: dict, project_name: str) -> dict:
 @mcp.tool()
 def create_circuit(project_name: str, description: str,
                    board_width_mm: float, board_height_mm: float,
-                   layers: int = 2) -> dict:
+                   layers: int = 2, overwrite: bool = False) -> dict:
     """Start a new circuit design from scratch (step 1 of the builder flow).
 
     Creates an empty draft you then fill with add_component and connect_pins,
     and compile with finalize_circuit. Each call is small and validated — no
     big JSON needed.
+
+    If the project already exists, this fails unless overwrite=True (which
+    replaces the existing project with a fresh draft). Do not switch to
+    design_pcb to dodge the conflict — use a new project_name or overwrite=True.
 
     Example: create_circuit("led_blinker", "555 LED blinker at 1Hz",
                             board_width_mm=40, board_height_mm=30)
@@ -1711,7 +1728,7 @@ def create_circuit(project_name: str, description: str,
     from orchestrator import circuit_builder as cb
     result = cb.create_draft(_project_dir(project_name), project_name,
                              description, board_width_mm, board_height_mm,
-                             layers)
+                             layers, overwrite=overwrite)
     if not result.pop("ok"):
         return _builder_fail(result, project_name)
     return ok(result, next_step(

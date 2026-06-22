@@ -83,21 +83,13 @@ def _save_draft(project_dir: Path, project_name: str, draft: dict) -> None:
 
 def create_draft(project_dir: Path, project_name: str, description: str,
                  board_width_mm: float, board_height_mm: float,
-                 layers: int = 2) -> dict:
-    """Create a new empty circuit draft."""
+                 layers: int = 2, overwrite: bool = False) -> dict:
+    """Create a new empty circuit draft. overwrite=True replaces an existing
+    project (draft/netlist/placement/routing) with a fresh draft."""
     if not PROJECT_RE.match(project_name):
         return {"ok": False, "code": "bad_project_name",
                 "error": f"Invalid project_name '{project_name}'. Use lowercase "
                          "letters, digits, and underscores (start with a letter)."}
-    if load_draft(project_dir, project_name) is not None:
-        return {"ok": False, "code": "draft_exists",
-                "error": f"A circuit draft already exists for '{project_name}'. "
-                         "Continue with add_component/connect_pins, inspect it "
-                         "with list_circuit, or pick a new project name."}
-    if _netlist_path(project_dir, project_name).exists():
-        return {"ok": False, "code": "netlist_exists",
-                "error": f"Project '{project_name}' already has a netlist "
-                         "(e.g. from a KiCad import). Pick a new project name."}
     if layers not in (2, 4):
         return {"ok": False, "code": "bad_layers",
                 "error": f"layers must be 2 or 4, got {layers}."}
@@ -109,6 +101,20 @@ def create_draft(project_dir: Path, project_name: str, description: str,
     if w < 5 or h < 5 or w > 500 or h > 500:
         return {"ok": False, "code": "bad_board",
                 "error": f"Board {w}x{h}mm is outside the sane range (5-500mm per side)."}
+
+    # Board/layer inputs are valid — now resolve the existing-project conflict
+    # (do this after validation so a bad-input call never deletes anything).
+    exists = (load_draft(project_dir, project_name) is not None
+              or _netlist_path(project_dir, project_name).exists())
+    if exists and not overwrite:
+        return {"ok": False, "code": "draft_exists",
+                "error": f"Project '{project_name}' already exists (a draft or "
+                         "netlist). To START OVER here, pass overwrite=True. To "
+                         "keep it, use a NEW project_name. Do NOT switch to "
+                         "design_pcb for this."}
+    if exists and overwrite and project_dir.exists():
+        import shutil
+        shutil.rmtree(project_dir, ignore_errors=True)
 
     draft = {
         "version": "1.0",
