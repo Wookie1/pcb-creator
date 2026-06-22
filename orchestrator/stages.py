@@ -241,9 +241,16 @@ def set_placement_pin(project_dir: Path, project_name: str, designator: str,
                 bw, bh, BOARD_EDGE_CLEARANCE_MM, MIN_CLEARANCE_MM)
                 if bw and bh else None)
             r = {"ok": False, "code": "pin_overlap",
-                 "error": f"{designator} at ({x_mm}, {y_mm}) overlaps the "
-                          f"already-pinned {other_des} at "
-                          f"({p['x_mm']}, {p['y_mm']}). Move one of them."}
+                 "error": (
+                     f"{designator}'s pads span x [{box[0]:.1f}, {box[2]:.1f}], "
+                     f"y [{box[1]:.1f}, {box[3]:.1f}] and overlap already-pinned "
+                     f"{other_des} (pads x [{other_box[0]:.1f}, {other_box[2]:.1f}], "
+                     f"y [{other_box[1]:.1f}, {other_box[3]:.1f}]). NOTE: these are "
+                     f"footprint pad/keepout EXTENTS including clearance, NOT centre "
+                     f"points — so parts whose centres look far apart can still "
+                     f"collide (e.g. a 3.2mm M3 mounting hole spans ~6mm to clear "
+                     f"the screw head). The check is correct; move one further "
+                     f"apart (do not unpin and hope).")}
             if sug:
                 r["suggested_x_mm"], r["suggested_y_mm"] = sug
                 r["error"] += (f" A free spot for {designator} is "

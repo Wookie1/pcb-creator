@@ -164,6 +164,9 @@ class TestFreePositionSuggestion:
         assert stages.set_placement_pin(pdir, proj, "TB3", 62.0, 41.5)["ok"]
         r = stages.set_placement_pin(pdir, proj, "TB4", 62.5, 41.5)  # overlaps
         assert r["code"] == "pin_overlap"
+        # The message must explain it's EXTENT-based, not centre distance, so an
+        # agent doesn't conclude the overlap check is buggy and unpin parts.
+        assert "EXTENT" in r["error"] and "span" in r["error"]
         assert r.get("suggested_x_mm") is not None
         # The suggestion must actually be free.
         ok = stages.set_placement_pin(pdir, proj, "TB4",
