@@ -1048,9 +1048,17 @@ def run_routing(project_dir: Path, project_name: str, config,
             return (v.get("net_name") or v.get("net_id"),
                     round(v.get("x_mm", 0), 3), round(v.get("y_mm", 0), 3))
         seen_v = {_vk(v) for v in rt.get("vias", [])}
+        n_vias_before = len(rt.get("vias", []))
         for v in fixed_routing.get("vias", []):
             if _vk(v) not in seen_v:
                 rt.setdefault("vias", []).append(v); seen_v.add(_vk(v))
+        # Re-adding vias here happens AFTER apply_copper_fills cut the inner-plane
+        # antipads, so a re-added through-via would have no cutout in a power
+        # plane (inner_plane_antipad). Re-cut the planes against the final vias.
+        if len(rt.get("vias", [])) != n_vias_before:
+            from optimizers.router import regenerate_inner_planes, RouterConfig
+            regenerate_inner_planes(routed, netlist_data,
+                                    RouterConfig(**router_kwargs))
 
         # Recompute completion from the MERGED routing. import_ses only saw the
         # newly-routed SES nets, so when Freerouting wrote a degenerate "nothing
@@ -1084,6 +1092,25 @@ def run_routing(project_dir: Path, project_name: str, config,
                 dy = t.get("end_y_mm", 0) - t.get("start_y_mm", 0)
                 tl += (dx * dx + dy * dy) ** 0.5
             st["total_trace_length_mm"] = round(tl, 1)
+
+    # Reconcile reported completion with the AUTHORITATIVE connectivity check on
+    # a fresh route. The router credits a net as "routed" when it has wiring, but
+    # that wiring can still leave the net's pads in disconnected groups — so it
+    # reported 100% while DRC found 3 disconnected nets, and the agent thought
+    # the board was done. completion_pct / unrouted_nets now reflect real
+    # connectivity (the incremental path above already did this with its
+    # prev_unrouted intersection).
+    if not _incremental and routed is not None:
+        from validators.validate_routing import incomplete_net_ids
+        rt = routed.setdefault("routing", {})
+        st = rt.setdefault("statistics", {})
+        total = st.get("total_nets", 0)
+        incomplete = sorted(incomplete_net_ids(routed, netlist_data))
+        rt["unrouted_nets"] = incomplete
+        st["unrouted_nets"] = len(incomplete)
+        st["routed_nets"] = max(0, total - len(incomplete))
+        st["completion_pct"] = (round(100 * st["routed_nets"] / total, 1)
+                                if total else 100.0)
 
     # Persist the design rules the board was ACTUALLY routed to, so the DRC
     # checks against the same clearance/widths the router used (otherwise the

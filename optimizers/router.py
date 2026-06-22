@@ -3059,6 +3059,37 @@ def generate_inner_plane(
     }
 
 
+def regenerate_inner_planes(routed: dict, netlist: dict,
+                            config: RouterConfig | None = None) -> dict:
+    """Re-cut inner-plane antipads against the CURRENT via set, in place.
+
+    The plane antipads are cut once in `apply_copper_fills`, but `run_routing`'s
+    protected-wiring union can re-add through-vias that Freerouting dropped
+    *after* that — leaving them with no antipad in a power plane (the
+    `inner_plane_antipad` "pad overlaps the 12V plane" error). Call this after
+    any post-fill via change to refresh every `is_plane` fill. No-op when the
+    board has no inner planes. Only the plane fills are rebuilt — GND outer fill
+    and stitching vias are untouched (so nothing is duplicated)."""
+    if config is None:
+        config = RouterConfig()
+    rt = routed.get("routing", {})
+    fills = rt.get("copper_fills", [])
+    if not any(f.get("is_plane") for f in fills):
+        return routed
+    board = routed.get("board", {})
+    placements_list = routed.get("placements", [])
+    pad_map = build_pad_map(routed, netlist)
+    all_vias = rt.get("vias", [])
+    rt["copper_fills"] = [
+        generate_inner_plane(board, placements_list, pad_map, all_vias,
+                             layer=f["layer"], net_id=f["net_id"],
+                             net_name=f.get("net_name", ""), config=config)
+        if f.get("is_plane") else f
+        for f in fills
+    ]
+    return routed
+
+
 def _apply_pre_fill(
     grid: RoutingGrid,
     fill_net_int: int,

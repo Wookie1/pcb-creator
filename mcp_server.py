@@ -2378,16 +2378,22 @@ def run_drc(project_name: str) -> dict:
 
 
 @mcp.tool()
-def export_outputs(project_name: str) -> dict:
+def export_outputs(project_name: str, allow_drc_errors: bool = False) -> dict:
     """Generate manufacturing outputs from the routed board (no LLM).
 
     Produces Gerbers, Excellon drill, BOM CSV, pick-and-place (CPL), populated
     STEP model, and a ZIP package — all written into the project's output/ dir.
 
-    Requires a routed board.
+    Requires a routed board. **Refuses to export a board with DRC ERRORS**
+    (shorts, disconnected nets, clearance/plane violations) — fab files from
+    such a board are not manufacturable. Fix them first (recover connectivity
+    with route_board(keep_existing=True); geometry is auto-cleaned by
+    route_board). Set allow_drc_errors=True ONLY to knowingly export a flawed
+    board for a preliminary quote.
 
     Args:
         project_name: Project slug.
+        allow_drc_errors: Force export despite DRC errors (default False).
 
     Returns:
         {success, output_dir, files: [...], package: <zip path>}  or  {success: False, error}
@@ -2410,6 +2416,32 @@ def export_outputs(project_name: str) -> dict:
     # Activate project-local custom footprints so Gerber export uses the same
     # footprint geometry as placement/routing.
     _activate_project_lookup(project_name)
+
+    # DRC gate: never emit manufacturing files for a board with errors.
+    if not allow_drc_errors:
+        try:
+            drc = stages.run_drc(pdir, project_name, _get_config())
+        except Exception:
+            drc = None
+        if drc and not drc.get("passed", True):
+            n = drc.get("statistics", {}).get("errors", 0)
+            failing = sorted({c["rule"] for c in drc.get("checks", [])
+                              if not c.get("passed")})
+            return fail(
+                f"Refusing to export: the board has {n} DRC error(s) "
+                f"({', '.join(failing)}). Manufacturing files from a board with "
+                "shorts, disconnected nets, or plane-clearance errors are not "
+                "fabricable — do not ship or commit them. Fix the errors first, "
+                "then export. Only pass allow_drc_errors=True to knowingly export "
+                "a flawed board for a preliminary quote.",
+                data={"drc_errors": n, "failing_rules": failing},
+                remediation=[
+                    option("Finish residual connectivity (geometry auto-cleans)",
+                           "route_board",
+                           {"project_name": project_name, "keep_existing": True}),
+                    option("Review the full DRC report", "get_drc_report",
+                           {"project_name": project_name, "verbose": True}),
+                ])
 
     try:
         result = stages.run_export(pdir, project_name, _get_config())
