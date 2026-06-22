@@ -54,15 +54,16 @@ _FIXABLE_BY_REROUTE = {
     "shorting_items",
     "clearance", "track_clearance", "via_clearance", "hole_clearance",
     "copper_clearance", "creepage",
+    # a mask sliver between different-net items — re-routing one away clears it
+    # (and a short to a pad usually pairs a shorting_items with this).
+    "solder_mask_bridge",
 }
 
 
-def drc_shorting_net_names(pcb_path: str | Path, kicad_cli: str,
-                           *, timeout: int = 300) -> set[str] | None:
-    """Run ``kicad-cli pcb drc`` and return the net NAMES involved in
-    reroute-fixable violations (shorts + clearance). None if the tool can't be
-    run (caller treats as "skip cleanup"). An empty set means "ran, nothing to
-    fix by re-routing"."""
+def run_drc_json(pcb_path: str | Path, kicad_cli: str,
+                 *, timeout: int = 300) -> dict | None:
+    """Run ``kicad-cli pcb drc`` and return the parsed JSON report, or None if the
+    tool can't be run (caller treats as 'skip cleanup')."""
     pcb_path = Path(pcb_path)
     out = pcb_path.with_suffix(".cleanup_drc.json")
     try:
@@ -70,7 +71,7 @@ def drc_shorting_net_names(pcb_path: str | Path, kicad_cli: str,
             [kicad_cli, "pcb", "drc", "--format", "json", "--output", str(out),
              "--severity-error", str(pcb_path)],
             capture_output=True, timeout=timeout, check=False)
-        data = json.loads(out.read_text())
+        return json.loads(out.read_text())
     except (FileNotFoundError, OSError, subprocess.SubprocessError,
             json.JSONDecodeError, ValueError):
         return None
@@ -79,7 +80,63 @@ def drc_shorting_net_names(pcb_path: str | Path, kicad_cli: str,
             out.unlink()
         except OSError:
             pass
-    return _parse_shorting_net_names(data)
+
+
+def drc_shorting_net_names(pcb_path: str | Path, kicad_cli: str,
+                           *, timeout: int = 300) -> set[str] | None:
+    """Net NAMES involved in reroute-fixable violations (shorts + clearance).
+    None if kicad-cli couldn't run; an empty set means 'ran, nothing to fix'."""
+    data = run_drc_json(pcb_path, kicad_cli, timeout=timeout)
+    return None if data is None else _parse_shorting_net_names(data)
+
+
+def _item_net(desc: str) -> str | None:
+    """Net name in a DRC item description's first [..] token."""
+    if "[" in desc and "]" in desc:
+        return desc[desc.index("[") + 1:desc.index("]")]
+    return None
+
+
+def parse_cleanup_drc(drc_data: dict) -> tuple[set[str], list[tuple[float, float]],
+                                               set[str]]:
+    """From a kicad-cli DRC report derive what the cleanup needs:
+      • bad_names    — nets to rip + re-route (shorts ∪ clearance)
+      • keepouts     — (x,y) collision loci to wall off on the re-route, so the
+                       re-routed net is forced AWAY from where it shorted /
+                       violated clearance (breaks the 'same mistake every round'
+                       loop)
+      • protect_names — for a short to a PAD, that pad's net is kept PROTECTED so
+                       the keepout sitting on the pad doesn't block the pad's own
+                       connection (net-safe by construction). The foreign (track/
+                       via) net is the one ripped and re-routed clear of it."""
+    bad: set[str] = set()
+    keepouts: list[tuple[float, float]] = []
+    protect: set[str] = set()
+    for v in drc_data.get("violations", []):
+        if v.get("type") not in _FIXABLE_BY_REROUTE:
+            continue
+        items = v.get("items", [])
+        for it in items:
+            n = _item_net(it.get("description", ""))
+            if n:
+                bad.add(n)
+        # Choose the keepout centre: the PAD for a short (wall the pad off);
+        # otherwise the first positioned item.
+        pos_item = None
+        if v.get("type") == "shorting_items":
+            for it in items:
+                if "pad" in it.get("description", "").lower():
+                    pn = _item_net(it.get("description", ""))
+                    if pn:
+                        protect.add(pn)
+                    if it.get("pos"):
+                        pos_item = it
+        if pos_item is None:
+            pos_item = next((it for it in items if it.get("pos")), None)
+        if pos_item and pos_item.get("pos"):
+            p = pos_item["pos"]
+            keepouts.append((round(p.get("x", 0.0), 3), round(p.get("y", 0.0), 3)))
+    return bad, keepouts, protect
 
 
 def _parse_shorting_net_names(drc_data: dict) -> set[str]:
@@ -135,20 +192,23 @@ def build_protected_wiring(routed: dict, escapes: dict,
             "keepouts": escapes.get("keepouts", [])}
 
 
-def _bad_net_ids(routed: dict, netlist: dict, exclude_ids: set[str],
-                 name_to_id: dict[str, str],
-                 drc_net_names_fn: Callable[[dict], set[str] | None]
-                 ) -> set[str] | None:
-    """Union of DRC-shorting nets and incomplete nets, minus excluded ones.
-    None if DRC couldn't run (signal to skip cleanup entirely)."""
-    short_names = drc_net_names_fn(routed)
-    if short_names is None:
+def _analyze(routed: dict, netlist: dict, exclude_ids: set[str],
+             name_to_id: dict[str, str],
+             drc_data_fn: Callable[[dict], dict | None]
+             ) -> tuple[set[str], list[tuple[float, float]]] | None:
+    """(bad_net_ids, keepout_points) for a routed board, or None if DRC couldn't
+    run. bad = (shorts ∪ clearance ∪ incomplete) minus excluded and minus the
+    pad-nets we keep protected (so their pad-keepout doesn't disconnect them)."""
+    data = drc_data_fn(routed)
+    if data is None:
         return None
-    bad = {name_to_id.get(n, n) for n in short_names}
+    bad_names, keepouts, protect_names = parse_cleanup_drc(data)
+    bad = {name_to_id.get(n, n) for n in bad_names}
     bad |= incomplete_net_ids(routed, netlist)
     bad -= exclude_ids
+    bad -= {name_to_id.get(n, n) for n in protect_names}
     bad.discard(None)
-    return bad
+    return bad, keepouts
 
 
 def cleanup_shorts(
@@ -158,15 +218,18 @@ def cleanup_shorts(
     escapes: dict,
     exclude_nets: tuple[str, ...] = (),
     route_fn: Callable[[dict], dict | None],
-    drc_net_names_fn: Callable[[dict], set[str] | None],
+    drc_data_fn: Callable[[dict], dict | None],
     max_iterations: int = 2,
+    keepout_diameter_mm: float = 0.8,
     log: Callable[[str], None] | None = None,
 ) -> tuple[dict, set[str]]:
-    """Iteratively rip+re-route the shorting/incomplete nets until no shorts
-    remain (per DRC) or no further progress. Returns (best_routed, bad_net_ids).
+    """Iteratively rip+re-route the shorting/clearance/incomplete nets until none
+    remain (per DRC) or no further progress. Each pass walls off the violation
+    loci with keepouts, so a re-routed net is forced clear of the pad/trace it
+    shorted instead of re-making the same mistake. Returns (best_routed, bad_ids).
 
     route_fn(fixed_routing) -> routed|None routes the un-protected nets.
-    drc_net_names_fn(routed) -> shorting net names, or None if DRC unavailable.
+    drc_data_fn(routed) -> parsed kicad-cli DRC json, or None if unavailable.
     """
     _log = log or (lambda *_a: None)
     name_to_id: dict[str, str] = {}
@@ -178,22 +241,36 @@ def cleanup_shorts(
     exclude_ids = {name_to_id.get(n, n) for n in exclude_nets}
 
     best = routed
-    best_bad = _bad_net_ids(best, netlist, exclude_ids, name_to_id, drc_net_names_fn)
-    if best_bad is None:
+    first = _analyze(best, netlist, exclude_ids, name_to_id, drc_data_fn)
+    if first is None:
         _log("  Short cleanup skipped: kicad-cli DRC unavailable")
         return best, set()
+    best_bad, _ = first
 
+    acc_keepouts: list[dict] = []
+    seen_kpts: set[tuple[float, float]] = set()
     for i in range(max_iterations):
         if not best_bad:
             break
+        cur = _analyze(best, netlist, exclude_ids, name_to_id, drc_data_fn)
+        if cur is None:
+            break
+        _, kpts = cur
+        for (x, y) in kpts:
+            if (x, y) not in seen_kpts:
+                seen_kpts.add((x, y))
+                acc_keepouts.append({"x_mm": x, "y_mm": y,
+                                     "diameter_mm": keepout_diameter_mm})
         _log(f"  Short cleanup pass {i + 1}: re-routing {len(best_bad)} net(s) "
-             f"with everything else (incl. escapes) protected")
+             f"with everything else (incl. escapes) protected and "
+             f"{len(acc_keepouts)} keepout(s) at the violation site(s)")
         fixed = build_protected_wiring(best, escapes, best_bad)
+        fixed["keepouts"] = list(fixed.get("keepouts", [])) + acc_keepouts
         cand = route_fn(fixed)
         if cand is None:
             break
-        cand_bad = _bad_net_ids(cand, netlist, exclude_ids, name_to_id,
-                                drc_net_names_fn)
+        cand_res = _analyze(cand, netlist, exclude_ids, name_to_id, drc_data_fn)
+        cand_bad = cand_res[0] if cand_res else None
         if cand_bad is None or len(cand_bad) >= len(best_bad):
             _log("  Short cleanup: no improvement — keeping previous route")
             break

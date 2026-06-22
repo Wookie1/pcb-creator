@@ -163,11 +163,28 @@ def generate_escape_routing(
     traces: list[dict] = []
     vias: list[dict] = []
     keepouts: list[dict] = []
-    placed_via_centers: list[tuple[float, float]] = []  # collision across parts
+    placed_via_centers: list[tuple[float, float, str]] = []  # (x,y,net) across parts
+    # Foreign-net stub/fanout traces already placed, so a later escape via keeps
+    # clear of them (not just of other vias). Each: (sx, sy, ex, ey, net_id, halfw).
+    placed_traces: list[tuple] = []
 
     via_r = cfg.via_diameter_mm / 2.0
     via_clear = cfg.via_diameter_mm + cfg.clearance_mm  # min centre distance
     trace_half = cfg.trace_width_mm / 2.0
+
+    def _pt_seg_dist(px, py, ax, ay, bx, by):
+        dx, dy = bx - ax, by - ay
+        L2 = dx * dx + dy * dy
+        u = 0.0 if L2 == 0 else max(0.0, min(1.0, ((px - ax) * dx + (py - ay) * dy) / L2))
+        return math.hypot(px - (ax + u * dx), py - (ay + u * dy))
+
+    def _via_clears_foreign_traces(vx, vy, net_id):
+        for sx, sy, ex, ey, tn, thw in placed_traces:
+            if tn == net_id:
+                continue
+            if _pt_seg_dist(vx, vy, sx, sy, ex, ey) < via_r + thw + cfg.clearance_mm - 1e-6:
+                return False
+        return True
 
     for des, pads in by_part.items():
         if len(pads) < cfg.min_pins:
@@ -213,7 +230,7 @@ def generate_escape_routing(
         drop_signal = cfg.drop_layer or _auto_drop_layer(
             order[0].layer, cfg.num_layers, cfg.plane_layers)
 
-        part_vias: list[tuple[float, float]] = []
+        part_vias: list[tuple[float, float, str]] = []  # (x, y, net_id)
         for i, pad in enumerate(order):
             net_id = pad.net_id
             if not net_id or net_id not in leaving:
@@ -223,20 +240,38 @@ def generate_escape_routing(
             vx = round(pad.x_mm + edir[0] * dist, 3)
             vy = round(pad.y_mm + edir[1] * dist, 3)
 
-            # Collision guard: keep clear of every via already placed.
-            clash = any(math.hypot(vx - ox, vy - oy) < via_clear - 1e-6
-                        for ox, oy in placed_via_centers + part_vias)
-            if clash:
+            # Collision guard, three checks — skip this pad's escape if any fails
+            # (an unescaped pad just falls to the autorouter; a plane-net pad is
+            # still connected by the plane). These prevent the CN1 fine-pitch
+            # clearance violation between two PROTECTED escapes that the short-
+            # cleanup cannot move:
+            #   1. via ↔ any other via (hole-to-hole / copper)
+            #   2. via ↔ foreign-net stub/fanout trace
+            #   3. this pad's STUB ↔ any foreign via (order-independent: catches a
+            #      stub placed later that would sit too close to an earlier via)
+            all_vias = placed_via_centers + part_vias
+            via_via = any(math.hypot(vx - ox, vy - oy) < via_clear - 1e-6
+                          for ox, oy, _ in all_vias)
+            stub_clear = all(
+                on == net_id or _pt_seg_dist(ox, oy, pad.x_mm, pad.y_mm, vx, vy)
+                >= via_r + trace_half + cfg.clearance_mm - 1e-6
+                for ox, oy, on in all_vias)
+            if (via_via or not stub_clear
+                    or not _via_clears_foreign_traces(vx, vy, net_id)):
                 continue
 
             nm = net_names.get(net_id, net_id)
             # Stub: pad → via on the pad's own layer.
-            traces.append({
+            stub = {
                 "start_x_mm": round(pad.x_mm, 3), "start_y_mm": round(pad.y_mm, 3),
                 "end_x_mm": vx, "end_y_mm": vy,
                 "width_mm": cfg.trace_width_mm, "layer": pad.layer,
                 "net_id": net_id, "net_name": nm, "escape_role": "stub",
-            })
+            }
+            traces.append(stub)
+            placed_traces.append((stub["start_x_mm"], stub["start_y_mm"],
+                                  stub["end_x_mm"], stub["end_y_mm"],
+                                  net_id, trace_half))
             to_layer = gnd_plane_layer if is_plane else drop_signal
             vias.append({
                 "x_mm": vx, "y_mm": vy,
@@ -255,6 +290,7 @@ def generate_escape_routing(
                     "width_mm": cfg.trace_width_mm, "layer": drop_signal,
                     "net_id": net_id, "net_name": nm, "escape_role": "fanout",
                 })
+                placed_traces.append((vx, vy, rx, ry, net_id, trace_half))
             else:
                 # A plane-net (GND) escape is excluded from the routing netlist,
                 # so the autorouter cannot see its stub/via and will route other
@@ -268,7 +304,7 @@ def generate_escape_routing(
                         "y_mm": round(pad.y_mm + edir[1] * dist * fr, 3),
                         "diameter_mm": round(ko_d, 3),
                     })
-            part_vias.append((vx, vy))
+            part_vias.append((vx, vy, net_id))
         placed_via_centers.extend(part_vias)
 
     return {"traces": traces, "vias": vias, "keepouts": keepouts}

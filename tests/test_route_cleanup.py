@@ -94,13 +94,22 @@ class TestBuildProtectedWiring:
         assert nets == {"ok"}
 
 
+def _drc(names, *, pos=None):
+    """Minimal kicad-cli DRC json: one clearance violation per net name."""
+    return {"violations": [
+        {"type": "clearance",
+         "items": [{"description": f"Track [{n}] on F.Cu",
+                    **({"pos": pos} if pos else {})}]}
+        for n in names]}
+
+
 class TestCleanupLoop:
     def test_skips_when_drc_unavailable(self):
         routed = _routed([_t("a", 0, 0, 1, 0)])
         out, bad = cleanup_shorts(
             routed, _netlist("a"), escapes={"traces": [], "vias": [], "keepouts": []},
             route_fn=lambda f: (_ for _ in ()).throw(AssertionError("must not route")),
-            drc_net_names_fn=lambda r: None)
+            drc_data_fn=lambda r: None)
         assert out is routed and bad == set()
 
     def test_reroutes_until_clean(self):
@@ -117,7 +126,7 @@ class TestCleanupLoop:
             routed0, _netlist("a", "b"),
             escapes={"traces": [], "vias": [], "keepouts": []},
             route_fn=route_fn,
-            drc_net_names_fn=lambda r: drc[id(r)])
+            drc_data_fn=lambda r: _drc(drc[id(r)]))
         assert out is routed1 and bad == set() and calls["n"] == 1
 
     def test_keeps_previous_when_no_improvement(self):
@@ -128,7 +137,7 @@ class TestCleanupLoop:
             routed0, _netlist("a"),
             escapes={"traces": [], "vias": [], "keepouts": []},
             route_fn=lambda f: routed1,
-            drc_net_names_fn=lambda r: drc[id(r)])
+            drc_data_fn=lambda r: _drc(drc[id(r)]))
         assert out is routed0  # candidate not better → keep original
 
     def test_excluded_nets_not_targeted(self):
@@ -138,5 +147,32 @@ class TestCleanupLoop:
             escapes={"traces": [], "vias": [], "keepouts": []},
             exclude_nets=("GND",),
             route_fn=lambda f: (_ for _ in ()).throw(AssertionError("no reroute")),
-            drc_net_names_fn=lambda r: {"GND"})
+            drc_data_fn=lambda r: _drc({"GND"}))
         assert out is routed and bad == set()
+
+    def test_keepout_added_at_violation_and_pad_net_protected(self):
+        # A short between Track[SDA] and PAD[SCL]: SDA is ripped, SCL is PROTECTED
+        # (not ripped), and a keepout is placed at the SCL pad so the re-route of
+        # SDA is forced clear of it.
+        routed0 = _routed([_t("SDA", 0, 0, 1, 0)])
+        routed1 = _routed([_t("SDA", 5, 5, 6, 6)])
+        short = {"violations": [{"type": "shorting_items", "items": [
+            {"description": "Track [SDA] on B.Cu", "pos": {"x": 1.0, "y": 2.0}},
+            {"description": "PTH pad 1 [SCL] of HDR1", "pos": {"x": 1.4, "y": 2.0}}]}]}
+        seen = {}
+
+        def route_fn(fixed):
+            seen["keepouts"] = fixed.get("keepouts", [])
+            seen["trace_nets"] = {t["net_id"] for t in fixed["traces"]}
+            return routed1
+
+        out, bad = cleanup_shorts(
+            routed0, _netlist("SDA", "SCL"),
+            escapes={"traces": [], "vias": [], "keepouts": []},
+            route_fn=route_fn,
+            drc_data_fn=lambda r: short if r is routed0 else _drc(set()))
+        # keepout placed at the SCL PAD position (1.4, 2.0), not the track
+        assert any(abs(k["x_mm"] - 1.4) < 1e-6 and abs(k["y_mm"] - 2.0) < 1e-6
+                   for k in seen["keepouts"])
+        # SCL's wiring stayed protected (it was not in the ripped set)
+        assert out is routed1

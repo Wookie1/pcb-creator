@@ -759,7 +759,7 @@ def _short_cleanup(routed, placement_data, netlist_data, exclude_nets,
     No-op (returns routed unchanged) when kicad-cli isn't available."""
     import tempfile
     from optimizers.route_cleanup import (
-        find_kicad_cli, cleanup_shorts, drc_shorting_net_names,
+        find_kicad_cli, cleanup_shorts, run_drc_json,
     )
     kcli = find_kicad_cli()
     if not kcli:
@@ -800,12 +800,18 @@ def _short_cleanup(routed, placement_data, netlist_data, exclude_nets,
         with tempfile.TemporaryDirectory(prefix="pcb-cleanup-drc-") as td:
             pcb = Path(td) / "cleanup.kicad_pcb"
             export_kicad_pcb(rt, netlist_data, pcb)
-            return drc_shorting_net_names(pcb, kcli, timeout=300)
+            return run_drc_json(pcb, kcli, timeout=300)
+
+    # Keepout big enough to push a via/trace clear of the violation site.
+    via_d = router_kwargs.get("via_diameter_mm", 0.6)
+    clr = router_kwargs.get("clearance_mm", 0.2)
+    keepout_d = max(0.8, via_d + 2 * clr)
 
     best, _bad = cleanup_shorts(
         routed, netlist_data, escapes=escape_wiring,
         exclude_nets=tuple(exclude_nets), route_fn=_route_fn,
-        drc_net_names_fn=_drc_fn, max_iterations=2, log=log)
+        drc_data_fn=_drc_fn, max_iterations=2,
+        keepout_diameter_mm=keepout_d, log=log)
     return best
 
 
