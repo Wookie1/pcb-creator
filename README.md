@@ -123,7 +123,7 @@ All settings via environment variables or `.env` file:
 | `PCB_MAX_REWORK` | `5` | Max LLM rework attempts per step |
 | `PCB_SKIP_QA` | `false` | Skip per-step LLM QA reviews (validators still run) |
 | `PCB_LLM_TIMEOUT` | `1800` | LLM request timeout in seconds |
-| `PCB_KICAD_LIBRARY_PATH` | *(none)* | KiCad footprint library root (for tiered lookup) |
+| `PCB_KICAD_LIBRARY_PATH` | *(auto-detected)* | KiCad footprint library root (for tiered lookup). When unset, common system paths (`/usr/share/kicad/footprints`, `/usr/local/share/…`, the macOS app bundle) are auto-detected, so standard footprints resolve out of the box. |
 | `PCB_COMPONENT_CACHE_PATH` | `~/.pcb-creator/component_cache.json` | Resolved component cache |
 | `PCB_LLM_ENRICHMENT_WORKERS` | `4` | Parallel LLM calls for spec/footprint enrichment |
 
@@ -190,7 +190,9 @@ approval, layer-count or board-size changes).
    `remove_component`, `disconnect_pins`, `mark_no_connect`. Components that
    must sit at exact coordinates (edge connectors, mounting holes) are fixed
    with `place_component` — validated immediately against board bounds and
-   other pinned parts, and never moved by the optimizer.
+   other pinned parts, and never moved by the optimizer. Unpin with
+   `unplace_component` (one) or `clear_all_pins` (all) — both clear the pin
+   from the durable store *and* the placement file so it can't be resurrected.
 2. **Import KiCad:** `import_kicad_netlist` → `verify_footprints` /
    `provide_footprint` → placement → routing → DRC → export.
 3. **Autonomous:** `design_pcb` runs the full LLM pipeline in the background
