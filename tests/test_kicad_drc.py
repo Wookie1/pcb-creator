@@ -46,6 +46,18 @@ class TestBuildReport:
         assert any(c["rule"] == "connectivity" for c in rep["checks"])
         assert rep["passed"] is False
 
+    def test_inner_plane_antipad_comes_from_extra_checks(self):
+        # kicad-cli DRCs a pcbnew RE-POUR of empty zones, not the copper_fills
+        # geometry the gerbers ship. The copper_fills-based inner_plane_antipad
+        # check is carried via extra_checks so a solid/under-cleared inner plane
+        # (which shorts foreign pads in the gerbers) still fails the report.
+        ipa = {"rule": "inner_plane_antipad", "category": "dfm", "passed": False,
+               "violations": [{"rule": "inner_plane_antipad", "severity": "error",
+                               "message": "Inner plane In1.Cu has no antipad cutouts"}]}
+        rep = build_kicad_drc_report(_drc([]), extra_checks=[ipa])
+        assert any(c["rule"] == "inner_plane_antipad" for c in rep["checks"])
+        assert rep["passed"] is False
+
     def test_clean_board_passes(self):
         rep = build_kicad_drc_report(_drc([]))
         assert rep["passed"] is True

@@ -243,6 +243,17 @@ def test_status_complete_incomplete_route_offers_finish(server, tmp_path):
     assert r["next_step"]["args"]["keep_existing"] is True
 
 
+def test_status_surfaces_completion_and_unrouted_nets(server, tmp_path):
+    """routing_stats must read from routing.statistics (not a missing top-level
+    key) and list the exact open nets, so the agent targets recovery instead of
+    seeing a false 0% and an empty net list."""
+    _write_routed(tmp_path, "statpoll", 93.6, ["net_a", "net_b", "net_c"])
+    r = call(server, "get_project_status", {"project_name": "statpoll"})
+    rs = r["routing_stats"]
+    assert rs["completion_pct"] == 93.6
+    assert rs["unrouted_nets"] == ["net_a", "net_b", "net_c"]
+
+
 def test_status_complete_route_points_at_drc_then_export(server, tmp_path):
     """After a 100% route the poller is steered run_drc → export_outputs →
     (done) get_board_image as artifacts appear, instead of having to guess."""

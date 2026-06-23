@@ -107,8 +107,20 @@ def _run_electrical_checks(routed: dict, netlist: dict) -> list[dict]:
         "checked_count": len(vias),
     })
 
-    # Connectivity
+    # Connectivity. _check_connectivity EXCLUDES nets the router left unrouted
+    # (their pads can't be union-found), so an unrouted net silently produces no
+    # error. Fold those back in explicitly: a net the router could not complete
+    # is a connectivity FAILURE, not something to skip — otherwise a board that
+    # finished at <100% reports DRC-clean and ships with open nets.
     errors, warnings = _check_connectivity(routed, netlist)
+    unrouted = routing.get("unrouted_nets")
+    if not isinstance(unrouted, (list, tuple, set)):
+        unrouted = []  # statistics also stores a COUNT under this key — ignore
+    for net_id in unrouted:
+        errors.append(
+            f"Net {net_id} is unrouted — the router left it incomplete "
+            f"(recover with route_board(keep_existing=True))"
+        )
     results.append({
         "rule": "connectivity",
         "category": "electrical",

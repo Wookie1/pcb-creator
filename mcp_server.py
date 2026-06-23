@@ -750,23 +750,37 @@ def _design_pcb_sync(
         "errors": errors,
     }
 
-    # Add routing stats if available
+    # Add routing stats if available. Stats live under routing.statistics; the
+    # old top-level lookup always missed them, so the agent saw completion_pct=0
+    # on a 93.6%-routed board and couldn't tell which nets were open.
     routed = _read_project_json(project_name, "_routed.json")
     if routed:
-        stats = routed.get("statistics", {})
+        routing = routed.get("routing", {})
+        stats = routing.get("statistics") or routed.get("statistics", {})
+        unrouted = routing.get("unrouted_nets")
+        if not isinstance(unrouted, (list, tuple)):
+            unrouted = []
         result["routing_stats"] = {
             "completion_pct": stats.get("completion_pct", 0),
             "total_nets": stats.get("total_nets", 0),
             "routed_nets": stats.get("routed_nets", 0),
             "via_count": stats.get("via_count", 0),
             "trace_length_mm": stats.get("total_trace_length_mm", 0),
+            # The exact open nets — so the agent can target recovery
+            # (route_board keep_existing / re-place these) instead of guessing.
+            "unrouted_nets": list(unrouted),
         }
 
-    # Add DRC summary
+    # Add DRC summary. authoritative tells the agent whether this verdict came
+    # from kicad-cli (trustworthy) or the internal heuristic fallback (which
+    # misses THT-pad shorts/mask bridges — a clean result there is NOT a
+    # manufacturability guarantee).
     drc = _read_project_json(project_name, "_drc_report.json")
     if drc:
         result["drc_summary"] = {
             "passed": drc.get("passed", False),
+            "authoritative": drc.get("authoritative", False),
+            "drc_engine": drc.get("drc_engine", "internal"),
             "summary": drc.get("summary", ""),
             "errors": drc.get("statistics", {}).get("errors", 0),
             "warnings": drc.get("statistics", {}).get("warnings", 0),
@@ -2434,13 +2448,39 @@ def export_outputs(project_name: str, allow_drc_errors: bool = False) -> dict:
     # footprint geometry as placement/routing.
     _activate_project_lookup(project_name)
 
-    # DRC gate: never emit manufacturing files for a board with errors.
+    # DRC gate — FAIL CLOSED. Manufacturing files must never leave on a board we
+    # cannot certify. Two refusal cases:
+    #   (1) authoritative DRC found errors  -> board is not fabricable
+    #   (2) DRC could not run authoritatively (kicad-cli missing / export failed)
+    #       -> we CANNOT certify the board, so we must not ship it. The old gate
+    #          failed OPEN here (exception -> drc=None -> export proceeded), which
+    #          is exactly how a 7-error board shipped: the internal validator said
+    #          "clean" because kicad-cli never ran.
     if not allow_drc_errors:
         try:
             drc = stages.run_drc(pdir, project_name, _get_config())
-        except Exception:
-            drc = None
-        if drc and not drc.get("passed", True):
+        except Exception as exc:
+            drc = {"_run_error": str(exc)}
+
+        if not drc.get("authoritative"):
+            why = drc.get("_run_error") or (
+                "kicad-cli (the authoritative DRC engine) is not available, so "
+                "geometry shorts/clearance/thermal could not be checked")
+            return fail(
+                "Refusing to export: DRC could not be verified authoritatively "
+                f"({why}). The internal heuristic check is NOT a manufacturability "
+                "guarantee — it misses through-hole-pad shorts, mask bridges and "
+                "starved thermals. Install/locate kicad-cli (set PCB_KICAD_CLI) so "
+                "the board can be certified, or pass allow_drc_errors=True to "
+                "knowingly export an UNVERIFIED board for a preliminary quote.",
+                data={"drc_engine": drc.get("drc_engine", "internal"),
+                      "authoritative": False},
+                remediation=[
+                    option("Review the DRC report", "get_drc_report",
+                           {"project_name": project_name, "verbose": True}),
+                ])
+
+        if not drc.get("passed", True):
             n = drc.get("statistics", {}).get("errors", 0)
             failing = sorted({c["rule"] for c in drc.get("checks", [])
                               if not c.get("passed")})

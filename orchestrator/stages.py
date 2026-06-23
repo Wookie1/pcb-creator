@@ -1124,6 +1124,23 @@ def run_routing(project_dir: Path, project_name: str, config,
         "via_drill_mm": router_kwargs.get("via_drill_mm", 0.3),
     })
 
+    # FINAL inner-plane re-cut, UNCONDITIONAL, right before persisting. Short
+    # cleanup and the protected-wiring union both move/add vias after the planes
+    # were last cut, and the earlier re-cut only fires in narrow conditions — so
+    # the persisted planes could be STALE (foreign vias/pads with no antipad =
+    # solid copper shorting them, which both the gerbers and DRC then inherit).
+    # Re-cutting here against the final via/pad set is the one chokepoint that
+    # guarantees the planes match what ships. No-ops when there are no planes.
+    if routed is not None and any(
+            f.get("is_plane")
+            for f in routed.get("routing", {}).get("copper_fills", [])):
+        try:
+            from optimizers.router import regenerate_inner_planes, RouterConfig
+            regenerate_inner_planes(routed, netlist_data,
+                                    RouterConfig(**router_kwargs))
+        except Exception as exc:
+            _log(f"  Inner-plane final re-cut skipped: {exc}")
+
     routed_path = _p(project_dir, project_name, "routed")
     routed_path.write_text(json.dumps(routed, indent=2))
 
@@ -1417,13 +1434,29 @@ def run_drc(project_dir: Path, project_name: str, config, log=None) -> dict:
     # router-reconciled internal check (KiCad's ratsnest disagrees with the
     # router and would loop agents on "100% routed but N unconnected"), and
     # KiCad has no current-capacity rule.
+    # drc_engine records WHICH engine produced this verdict. "internal" is the
+    # heuristic fallback — it MISSES THT-pad shorts, mask bridges, and starved
+    # thermals, so a clean "internal" report is NOT a manufacturability
+    # guarantee. Callers that gate on DRC (export) must treat authoritative ==
+    # False as "could not certify", never as "clean".
+    report["drc_engine"] = "internal"
+    report["authoritative"] = False
     try:
         from optimizers.route_cleanup import find_kicad_cli
         from validators.kicad_drc import run_kicad_drc
         from exporters.kicad_exporter import export_kicad_pcb
         kcli = find_kicad_cli()
         if kcli:
-            _carry = {"connectivity", "trace_current_capacity"}
+            # Carry these INTERNAL checks into the authoritative report:
+            #  - connectivity: router-reconciled (now incl. unrouted nets)
+            #  - trace_current_capacity: KiCad has no current-capacity rule
+            #  - inner_plane_antipad: validates the copper_fills plane geometry
+            #    that the GERBERS actually paint. kicad-cli only sees a pcbnew
+            #    RE-POUR of empty board-sized zones — a different rendering than
+            #    what ships — so without this a solid/antipad-less inner plane
+            #    (which shorts every foreign pad in the gerbers) passes DRC.
+            _carry = {"connectivity", "trace_current_capacity",
+                      "inner_plane_antipad"}
             extra = [c for c in report.get("checks", [])
                      if c.get("rule") in _carry]
             auth = run_kicad_drc(
@@ -1433,10 +1466,19 @@ def run_drc(project_dir: Path, project_name: str, config, log=None) -> dict:
             if auth is not None:
                 auth["manufacturer"] = report.get("manufacturer")
                 auth["dfm_profile"] = report.get("dfm_profile")
+                auth["drc_engine"] = "kicad-cli"
+                auth["authoritative"] = True
                 report = auth
                 _log("  DRC: using kicad-cli (authoritative)")
+            else:
+                _log("  DRC: kicad-cli export/run failed — internal report is "
+                     "NOT authoritative (geometry unverified)")
+        else:
+            _log("  DRC: kicad-cli not found — internal report is NOT "
+                 "authoritative (geometry unverified)")
     except Exception as exc:
-        _log(f"  kicad-cli DRC unavailable, using internal report: {exc}")
+        _log(f"  kicad-cli DRC unavailable, using internal report (NOT "
+             f"authoritative): {exc}")
 
     _p(project_dir, project_name, "drc_report").write_text(json.dumps(report, indent=2))
 
