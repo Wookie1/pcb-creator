@@ -176,3 +176,34 @@ class TestCleanupLoop:
                    for k in seen["keepouts"])
         # SCL's wiring stayed protected (it was not in the ripped set)
         assert out is routed1
+
+
+# --- keepout sizing (THT-pad shorts) -------------------------------------
+
+from optimizers.route_cleanup import (
+    _sized_keepout_diameter, _keepout_feature_index,
+)
+
+
+def test_keepout_sized_to_tht_pad_extent():
+    # A THT pad spanning 1.7mm at the violation locus must yield a keepout that
+    # covers the pad + clearance, not the tiny 0.8mm default that re-clips it.
+    feats = [(10.0, 10.0, 1.7)]            # (x, y, extent) — 1.7mm THT pad
+    dia = _sized_keepout_diameter(10.0, 10.0, feats, clearance_mm=0.2,
+                                  default_mm=0.8)
+    assert dia == 1.7 + 2 * 0.2            # pad extent + clearance both sides
+    assert dia > 0.8                       # strictly larger than the old default
+
+
+def test_keepout_falls_back_to_default_off_feature():
+    # A trace-vs-trace nick (no pad/via at the locus) keeps the default.
+    feats = [(50.0, 50.0, 1.7)]            # far away
+    dia = _sized_keepout_diameter(10.0, 10.0, feats, clearance_mm=0.2,
+                                  default_mm=0.8)
+    assert dia == 0.8
+
+
+def test_keepout_feature_index_includes_vias():
+    routed = {"routing": {"vias": [{"x_mm": 5, "y_mm": 6, "diameter_mm": 0.6}]}}
+    feats = _keepout_feature_index(routed, {"elements": []})
+    assert (5, 6, 0.6) in feats

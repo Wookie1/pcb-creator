@@ -21,6 +21,7 @@ orchestrator (`stages._short_cleanup`) wires in the real export+DRC+route.
 from __future__ import annotations
 
 import json
+import math
 import os
 import shutil
 import subprocess
@@ -30,18 +31,32 @@ from typing import Callable
 from validators.validate_routing import incomplete_net_ids
 
 
+_KICAD_CLI_CANDIDATES = (
+    "/usr/bin/kicad-cli",
+    "/usr/local/bin/kicad-cli",
+    "/opt/homebrew/bin/kicad-cli",
+    "/Applications/KiCad/KiCad.app/Contents/MacOS/kicad-cli",
+)
+
+
 def find_kicad_cli() -> str | None:
     """Locate a usable ``kicad-cli`` binary, or None. Honours ``PCB_KICAD_CLI``,
-    then ``PATH``, then the macOS app bundle."""
+    then ``PATH``, then well-known absolute locations.
+
+    The absolute-path fallback matters: the MCP server is often spawned with a
+    stripped PATH (no /usr/bin), so ``shutil.which`` finds nothing and the
+    authoritative DRC silently degrades to the optimistic internal validator.
+    Probing the known install paths keeps DRC authoritative regardless of PATH.
+    """
     env = os.environ.get("PCB_KICAD_CLI")
     if env and Path(env).exists():
         return env
     found = shutil.which("kicad-cli")
     if found:
         return found
-    mac = "/Applications/KiCad/KiCad.app/Contents/MacOS/kicad-cli"
-    if Path(mac).exists():
-        return mac
+    for cand in _KICAD_CLI_CANDIDATES:
+        if Path(cand).exists():
+            return cand
     return None
 
 
@@ -211,6 +226,44 @@ def _analyze(routed: dict, netlist: dict, exclude_ids: set[str],
     return bad, keepouts
 
 
+def _keepout_feature_index(routed: dict, netlist: dict
+                           ) -> list[tuple[float, float, float]]:
+    """(x, y, extent_mm) for every pad and via, so a short-cleanup keepout can be
+    sized to the feature it must wall off. A through-hole pad spans ~1.7 mm; a
+    fixed 0.8 mm keepout (0.4 mm radius) only dots its centre and leaves the
+    re-routed net free to re-clip the annular ring — the 'same short every round'
+    loop. Sizing to the real extent forces the re-route fully clear."""
+    feats: list[tuple[float, float, float]] = []
+    try:
+        from optimizers.pad_geometry import build_pad_map
+        for p in build_pad_map(routed, netlist).values():
+            feats.append((p.x_mm, p.y_mm, max(p.pad_width_mm, p.pad_height_mm)))
+    except Exception:
+        pass
+    for v in routed.get("routing", {}).get("vias", []):
+        feats.append((v["x_mm"], v["y_mm"], v.get("diameter_mm", 0.6)))
+    return feats
+
+
+def _sized_keepout_diameter(x: float, y: float,
+                            feats: list[tuple[float, float, float]],
+                            clearance_mm: float, default_mm: float) -> float:
+    """Keepout diameter covering the pad/via at (x, y) PLUS clearance on each
+    side, so the re-route is pushed clear of the whole feature — not a dot at its
+    centre. Falls back to default_mm when the locus isn't on a known feature
+    (e.g. a trace-vs-trace clearance nick)."""
+    best_ext = None
+    best_d = 0.30  # match the violation locus to a feature within 0.3 mm
+    for (fx, fy, ext) in feats:
+        d = math.hypot(fx - x, fy - y)
+        if d <= best_d:
+            best_d = d
+            best_ext = ext
+    if best_ext is None:
+        return default_mm
+    return max(default_mm, best_ext + 2 * clearance_mm)
+
+
 def cleanup_shorts(
     routed: dict,
     netlist: dict,
@@ -247,6 +300,10 @@ def cleanup_shorts(
         return best, set()
     best_bad, _ = first
 
+    feats = _keepout_feature_index(routed, netlist)
+    clearance_mm = routed.get("routing", {}).get("config", {}).get(
+        "clearance_mm", 0.2)
+
     acc_keepouts: list[dict] = []
     seen_kpts: set[tuple[float, float]] = set()
     for i in range(max_iterations):
@@ -259,8 +316,9 @@ def cleanup_shorts(
         for (x, y) in kpts:
             if (x, y) not in seen_kpts:
                 seen_kpts.add((x, y))
-                acc_keepouts.append({"x_mm": x, "y_mm": y,
-                                     "diameter_mm": keepout_diameter_mm})
+                dia = _sized_keepout_diameter(x, y, feats, clearance_mm,
+                                              keepout_diameter_mm)
+                acc_keepouts.append({"x_mm": x, "y_mm": y, "diameter_mm": dia})
         _log(f"  Short cleanup pass {i + 1}: re-routing {len(best_bad)} net(s) "
              f"with everything else (incl. escapes) protected and "
              f"{len(acc_keepouts)} keepout(s) at the violation site(s)")
