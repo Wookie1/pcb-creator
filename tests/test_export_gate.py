@@ -1,6 +1,7 @@
 """export_outputs must refuse to emit manufacturing files for a board with DRC
-errors (the agent kept shipping boards with shorts / disconnected nets), with an
-explicit allow_drc_errors override for a knowingly-preliminary quote."""
+errors (the agent kept shipping boards with shorts / disconnected nets). There is
+NO override — manufacturing files are only ever wanted for a buildable board."""
+import inspect
 import json
 import mcp_server
 from orchestrator import stages
@@ -42,16 +43,11 @@ def test_export_blocked_on_drc_errors(tmp_path, monkeypatch):
     assert "connectivity" in r["failing_rules"]
 
 
-def test_override_forces_export(tmp_path, monkeypatch):
-    proj = _project(tmp_path, monkeypatch)
-    drc_called = {"v": False}
-    monkeypatch.setattr(stages, "run_drc",
-                        lambda *a, **k: drc_called.update(v=True) or _FAIL_DRC)
-    monkeypatch.setattr(stages, "run_export",
-                        lambda *a, **k: {"success": True, "files": []})
-    r = mcp_server.export_outputs(proj, allow_drc_errors=True)
-    assert r["success"] is True
-    assert drc_called["v"] is False                   # gate skipped entirely
+def test_no_override_parameter_exists(tmp_path, monkeypatch):
+    """There must be NO allow_drc_errors escape hatch — the agent abused it to
+    ship a flawed board, and no board state justifies forcing the export."""
+    assert "allow_drc_errors" not in inspect.signature(
+        mcp_server.export_outputs).parameters
 
 
 def test_export_proceeds_when_clean(tmp_path, monkeypatch):
@@ -78,10 +74,9 @@ def test_export_blocked_when_drc_unverifiable(tmp_path, monkeypatch):
     assert r["authoritative"] is False
 
 
-def test_open_nets_block_export_even_with_override(tmp_path, monkeypatch):
-    """A board with unrouted nets is electrically incomplete — refused even with
-    allow_drc_errors=True (the override is only for cosmetic/clearance DRC).
-    This is the stop for the agent shipping a 95.8%-routed board via the flag."""
+def test_open_nets_block_export(tmp_path, monkeypatch):
+    """A board with unrouted nets is electrically incomplete — its gerbers are
+    never emitted (the 95.8%-routed-board case the agent tried to force)."""
     proj = _project(tmp_path, monkeypatch)
     # routed.json with 2 open nets
     (tmp_path / proj / f"{proj}_routed.json").write_text(json.dumps(
@@ -91,7 +86,7 @@ def test_open_nets_block_export_even_with_override(tmp_path, monkeypatch):
     exported = {"v": False}
     monkeypatch.setattr(stages, "run_export",
                         lambda *a, **k: exported.update(v=True) or {"success": True})
-    r = mcp_server.export_outputs(proj, allow_drc_errors=True)
+    r = mcp_server.export_outputs(proj)
     assert r["success"] is False
     assert exported["v"] is False                      # gerbers never generated
     assert "not fully connected" in r["error"]

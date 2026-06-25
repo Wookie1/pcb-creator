@@ -2409,27 +2409,24 @@ def run_drc(project_name: str) -> dict:
 
 
 @mcp.tool()
-def export_outputs(project_name: str, allow_drc_errors: bool = False) -> dict:
+def export_outputs(project_name: str) -> dict:
     """Generate manufacturing outputs from the routed board (no LLM).
 
     Produces Gerbers, Excellon drill, BOM CSV, pick-and-place (CPL), populated
     STEP model, and a ZIP package — all written into the project's output/ dir.
 
-    Requires a routed board. **Refuses to export a board with DRC ERRORS**
-    (shorts, disconnected nets, clearance/plane violations) — fab files from
-    such a board are not manufacturable. Fix them first (recover connectivity
-    with route_board(keep_existing=True); geometry is auto-cleaned by
-    route_board).
-
-    allow_drc_errors=True force-exports despite *cosmetic/clearance* DRC for a
-    knowingly-preliminary quote — but it does NOT override CONNECTIVITY: a board
-    with unrouted/disconnected nets is electrically incomplete and is refused
-    unconditionally. There is no valid quote for a board that cannot work.
+    Requires a routed board that passes DRC. **Refuses to export otherwise** —
+    there is no override, because manufacturing files are only ever wanted for a
+    board that can actually be built:
+      - open/disconnected nets       -> finish with route_board(keep_existing=True)
+      - geometry DRC errors          -> route_board auto-cleans clearance/short/
+                                        thermal; re-route, then export
+      - DRC can't be certified       -> install/locate kicad-cli (PCB_KICAD_CLI)
+    To inspect an imperfect board instead of manufacturing it, use export_kicad
+    (writes the .kicad_pcb) or get_board_image.
 
     Args:
         project_name: Project slug.
-        allow_drc_errors: Force export despite cosmetic/clearance DRC errors
-            (default False). Never overrides open-net connectivity failures.
 
     Returns:
         {success, output_dir, files: [...], package: <zip path>}  or  {success: False, error}
@@ -2453,12 +2450,11 @@ def export_outputs(project_name: str, allow_drc_errors: bool = False) -> dict:
     # footprint geometry as placement/routing.
     _activate_project_lookup(project_name)
 
-    # ABSOLUTE connectivity gate — NOT overridable by allow_drc_errors. A board
-    # with open nets is electrically incomplete: its gerbers describe a board that
-    # physically cannot work, so there is no legitimate "preliminary quote" reason
-    # to emit them. allow_drc_errors covers only cosmetic/clearance DRC, never
-    # missing copper. (The agent reached for allow_drc_errors=True to ship a
-    # 95.8%-routed board with 2 open nets — this is the stop for exactly that.)
+    # Connectivity gate. A board with open nets is electrically incomplete: its
+    # gerbers describe a board that physically cannot work, so they are never
+    # emitted. (The agent had reached for an allow_drc_errors override to ship a
+    # 95.8%-routed board with 2 open nets; that override is now removed entirely —
+    # there is no board state where forcing manufacturing files is correct.)
     # Use the router's reconciled unrouted_nets — the honest field that matches
     # the authoritative kicad-cli connectivity (2 on v18r8). NOT a fresh
     # incomplete_net_ids() call: that internal union-find false-positives on
@@ -2470,9 +2466,9 @@ def export_outputs(project_name: str, allow_drc_errors: bool = False) -> dict:
         shown = ", ".join(open_nets[:6]) + ("…" if len(open_nets) > 6 else "")
         return fail(
             f"Refusing to export: {len(open_nets)} net(s) are not fully connected "
-            f"({shown}). A board with missing connections is not manufacturable — "
-            "and allow_drc_errors does NOT override this (it only covers cosmetic / "
-            "clearance DRC, never missing copper). Finish the open nets first.",
+            f"({shown}). A board with missing connections is not manufacturable; "
+            "manufacturing files are only produced for a buildable board. Finish "
+            "the open nets first.",
             data={"unrouted_nets": open_nets},
             remediation=[
                 option("Incrementally finish the open nets (protects the routed "
@@ -2491,49 +2487,46 @@ def export_outputs(project_name: str, allow_drc_errors: bool = False) -> dict:
     #          failed OPEN here (exception -> drc=None -> export proceeded), which
     #          is exactly how a 7-error board shipped: the internal validator said
     #          "clean" because kicad-cli never ran.
-    if not allow_drc_errors:
-        try:
-            drc = stages.run_drc(pdir, project_name, _get_config())
-        except Exception as exc:
-            drc = {"_run_error": str(exc)}
+    try:
+        drc = stages.run_drc(pdir, project_name, _get_config())
+    except Exception as exc:
+        drc = {"_run_error": str(exc)}
 
-        if not drc.get("authoritative"):
-            why = drc.get("_run_error") or (
-                "kicad-cli (the authoritative DRC engine) is not available, so "
-                "geometry shorts/clearance/thermal could not be checked")
-            return fail(
-                "Refusing to export: DRC could not be verified authoritatively "
-                f"({why}). The internal heuristic check is NOT a manufacturability "
-                "guarantee — it misses through-hole-pad shorts, mask bridges and "
-                "starved thermals. Install/locate kicad-cli (set PCB_KICAD_CLI) so "
-                "the board can be certified, or pass allow_drc_errors=True to "
-                "knowingly export an UNVERIFIED board for a preliminary quote.",
-                data={"drc_engine": drc.get("drc_engine", "internal"),
-                      "authoritative": False},
-                remediation=[
-                    option("Review the DRC report", "get_drc_report",
-                           {"project_name": project_name, "verbose": True}),
-                ])
+    if not drc.get("authoritative"):
+        why = drc.get("_run_error") or (
+            "kicad-cli (the authoritative DRC engine) is not available, so "
+            "geometry shorts/clearance/thermal could not be checked")
+        return fail(
+            "Refusing to export: DRC could not be verified authoritatively "
+            f"({why}). The internal heuristic check is NOT a manufacturability "
+            "guarantee — it misses through-hole-pad shorts, mask bridges and "
+            "starved thermals. Install/locate kicad-cli (set PCB_KICAD_CLI) so "
+            "the board can be certified, then export.",
+            data={"drc_engine": drc.get("drc_engine", "internal"),
+                  "authoritative": False},
+            remediation=[
+                option("Review the DRC report", "get_drc_report",
+                       {"project_name": project_name, "verbose": True}),
+            ])
 
-        if not drc.get("passed", True):
-            n = drc.get("statistics", {}).get("errors", 0)
-            failing = sorted({c["rule"] for c in drc.get("checks", [])
-                              if not c.get("passed")})
-            return fail(
-                f"Refusing to export: the board has {n} DRC error(s) "
-                f"({', '.join(failing)}). Manufacturing files from a board with "
-                "shorts, disconnected nets, or plane-clearance errors are not "
-                "fabricable — do not ship or commit them. Fix the errors first, "
-                "then export. Only pass allow_drc_errors=True to knowingly export "
-                "a flawed board for a preliminary quote.",
-                data={"drc_errors": n, "failing_rules": failing},
-                remediation=[
-                    option("Finish residual connectivity (geometry auto-cleans)",
-                           "route_board",
-                           {"project_name": project_name, "keep_existing": True}),
-                    option("Review the full DRC report", "get_drc_report",
-                           {"project_name": project_name, "verbose": True}),
-                ])
+    if not drc.get("passed", True):
+        n = drc.get("statistics", {}).get("errors", 0)
+        failing = sorted({c["rule"] for c in drc.get("checks", [])
+                          if not c.get("passed")})
+        return fail(
+            f"Refusing to export: the board has {n} DRC error(s) "
+            f"({', '.join(failing)}). Manufacturing files from a board with "
+            "shorts, disconnected nets, or plane-clearance errors are not "
+            "fabricable — do not ship or commit them. Fix the errors first, then "
+            "export (route_board auto-cleans clearance/short/thermal geometry).",
+            data={"drc_errors": n, "failing_rules": failing},
+            remediation=[
+                option("Finish residual connectivity (geometry auto-cleans)",
+                       "route_board",
+                       {"project_name": project_name, "keep_existing": True}),
+                option("Review the full DRC report", "get_drc_report",
+                       {"project_name": project_name, "verbose": True}),
+            ])
 
     try:
         result = stages.run_export(pdir, project_name, _get_config())
