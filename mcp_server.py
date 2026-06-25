@@ -2419,12 +2419,17 @@ def export_outputs(project_name: str, allow_drc_errors: bool = False) -> dict:
     (shorts, disconnected nets, clearance/plane violations) — fab files from
     such a board are not manufacturable. Fix them first (recover connectivity
     with route_board(keep_existing=True); geometry is auto-cleaned by
-    route_board). Set allow_drc_errors=True ONLY to knowingly export a flawed
-    board for a preliminary quote.
+    route_board).
+
+    allow_drc_errors=True force-exports despite *cosmetic/clearance* DRC for a
+    knowingly-preliminary quote — but it does NOT override CONNECTIVITY: a board
+    with unrouted/disconnected nets is electrically incomplete and is refused
+    unconditionally. There is no valid quote for a board that cannot work.
 
     Args:
         project_name: Project slug.
-        allow_drc_errors: Force export despite DRC errors (default False).
+        allow_drc_errors: Force export despite cosmetic/clearance DRC errors
+            (default False). Never overrides open-net connectivity failures.
 
     Returns:
         {success, output_dir, files: [...], package: <zip path>}  or  {success: False, error}
@@ -2447,6 +2452,36 @@ def export_outputs(project_name: str, allow_drc_errors: bool = False) -> dict:
     # Activate project-local custom footprints so Gerber export uses the same
     # footprint geometry as placement/routing.
     _activate_project_lookup(project_name)
+
+    # ABSOLUTE connectivity gate — NOT overridable by allow_drc_errors. A board
+    # with open nets is electrically incomplete: its gerbers describe a board that
+    # physically cannot work, so there is no legitimate "preliminary quote" reason
+    # to emit them. allow_drc_errors covers only cosmetic/clearance DRC, never
+    # missing copper. (The agent reached for allow_drc_errors=True to ship a
+    # 95.8%-routed board with 2 open nets — this is the stop for exactly that.)
+    # Use the router's reconciled unrouted_nets — the honest field that matches
+    # the authoritative kicad-cli connectivity (2 on v18r8). NOT a fresh
+    # incomplete_net_ids() call: that internal union-find false-positives on
+    # plane_layers=0 / surface-pour boards (43 vs the real 2) and would block
+    # every board.
+    routed_data = _read_project_json(project_name, "_routed.json")
+    open_nets = list((routed_data or {}).get("routing", {}).get("unrouted_nets") or [])
+    if open_nets:
+        shown = ", ".join(open_nets[:6]) + ("…" if len(open_nets) > 6 else "")
+        return fail(
+            f"Refusing to export: {len(open_nets)} net(s) are not fully connected "
+            f"({shown}). A board with missing connections is not manufacturable — "
+            "and allow_drc_errors does NOT override this (it only covers cosmetic / "
+            "clearance DRC, never missing copper). Finish the open nets first.",
+            data={"unrouted_nets": open_nets},
+            remediation=[
+                option("Incrementally finish the open nets (protects the routed "
+                       "majority)", "route_board",
+                       {"project_name": project_name, "keep_existing": True}),
+                option("On 4-layer: free an inner signal layer for capacity, then "
+                       "re-route", "optimize_placement",
+                       {"project_name": project_name, "plane_layers": 1}),
+            ])
 
     # DRC gate — FAIL CLOSED. Manufacturing files must never leave on a board we
     # cannot certify. Two refusal cases:

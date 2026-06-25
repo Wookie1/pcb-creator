@@ -78,6 +78,26 @@ def test_export_blocked_when_drc_unverifiable(tmp_path, monkeypatch):
     assert r["authoritative"] is False
 
 
+def test_open_nets_block_export_even_with_override(tmp_path, monkeypatch):
+    """A board with unrouted nets is electrically incomplete — refused even with
+    allow_drc_errors=True (the override is only for cosmetic/clearance DRC).
+    This is the stop for the agent shipping a 95.8%-routed board via the flag."""
+    proj = _project(tmp_path, monkeypatch)
+    # routed.json with 2 open nets
+    (tmp_path / proj / f"{proj}_routed.json").write_text(json.dumps(
+        {"routing": {"traces": [], "vias": [],
+                     "unrouted_nets": ["net_a", "net_b"],
+                     "statistics": {"completion_pct": 95.8}}}))
+    exported = {"v": False}
+    monkeypatch.setattr(stages, "run_export",
+                        lambda *a, **k: exported.update(v=True) or {"success": True})
+    r = mcp_server.export_outputs(proj, allow_drc_errors=True)
+    assert r["success"] is False
+    assert exported["v"] is False                      # gerbers never generated
+    assert "not fully connected" in r["error"]
+    assert r["unrouted_nets"] == ["net_a", "net_b"]
+
+
 def test_export_blocked_when_drc_raises(tmp_path, monkeypatch):
     """An exception in DRC must fail CLOSED, not silently let the export through
     (the old `except: drc=None` then `if drc and ...` skipped the gate)."""
