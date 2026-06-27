@@ -1161,6 +1161,44 @@ def _restore_pad_markings(
             )
 
 
+def _snap_endpoints_to_pads(
+    traces: list[TraceSegment],
+    vias: list[Via],
+    pad_a: PadInfo,
+    pad_b: PadInfo,
+    grid_res: float,
+) -> None:
+    """Snap a routed edge's endpoints onto exact pad centres, in place.
+
+    Grid-snapped A* coords can be off by up to a cell, which KiCad renders as
+    airwires. Pull the first/last trace endpoints onto pad_a/pad_b, and any via
+    sitting within ~1.5 cells of a pad onto that pad's exact centre (preserving
+    the via's from_layer/to_layer span).
+    """
+    if traces:
+        t0 = traces[0]
+        traces[0] = TraceSegment(
+            pad_a.x_mm, pad_a.y_mm,
+            t0.end_x_mm, t0.end_y_mm,
+            t0.width_mm, t0.layer, t0.net_id, t0.net_name,
+        )
+        tN = traces[-1]
+        traces[-1] = TraceSegment(
+            tN.start_x_mm, tN.start_y_mm,
+            pad_b.x_mm, pad_b.y_mm,
+            tN.width_mm, tN.layer, tN.net_id, tN.net_name,
+        )
+
+    snap_tol = grid_res * 1.5
+    for vi, v in enumerate(vias):
+        if abs(v.x_mm - pad_a.x_mm) < snap_tol and abs(v.y_mm - pad_a.y_mm) < snap_tol:
+            vias[vi] = Via(pad_a.x_mm, pad_a.y_mm, v.drill_mm, v.diameter_mm,
+                           v.from_layer, v.to_layer, v.net_id, v.net_name)
+        elif abs(v.x_mm - pad_b.x_mm) < snap_tol and abs(v.y_mm - pad_b.y_mm) < snap_tol:
+            vias[vi] = Via(pad_b.x_mm, pad_b.y_mm, v.drill_mm, v.diameter_mm,
+                           v.from_layer, v.to_layer, v.net_id, v.net_name)
+
+
 def route_net(
     grid: RoutingGrid,
     net_info: NetInfo,
@@ -1259,33 +1297,7 @@ def route_net(
             net_info.net_id, net_info.name,
         )
 
-        # Snap trace endpoints to exact pad positions (grid-snapped coords
-        # may be off by up to 1 grid cell, causing KiCad to show airwires)
-        if traces:
-            t0 = traces[0]
-            traces[0] = TraceSegment(
-                pad_a.x_mm, pad_a.y_mm,
-                t0.end_x_mm, t0.end_y_mm,
-                t0.width_mm, t0.layer, t0.net_id, t0.net_name,
-            )
-            tN = traces[-1]
-            traces[-1] = TraceSegment(
-                tN.start_x_mm, tN.start_y_mm,
-                pad_b.x_mm, pad_b.y_mm,
-                tN.width_mm, tN.layer, tN.net_id, tN.net_name,
-            )
-
-        # Snap vias near pad endpoints to exact pad positions
-        # (when a trace arrives on a different layer than the pad,
-        # the via must align with the snapped trace endpoint)
-        snap_tol = grid_res * 1.5
-        for vi, v in enumerate(vias):
-            if abs(v.x_mm - pad_a.x_mm) < snap_tol and abs(v.y_mm - pad_a.y_mm) < snap_tol:
-                vias[vi] = Via(pad_a.x_mm, pad_a.y_mm, v.drill_mm, v.diameter_mm,
-                               v.from_layer, v.to_layer, v.net_id, v.net_name)
-            elif abs(v.x_mm - pad_b.x_mm) < snap_tol and abs(v.y_mm - pad_b.y_mm) < snap_tol:
-                vias[vi] = Via(pad_b.x_mm, pad_b.y_mm, v.drill_mm, v.diameter_mm,
-                               v.from_layer, v.to_layer, v.net_id, v.net_name)
+        _snap_endpoints_to_pads(traces, vias, pad_a, pad_b, grid_res)
 
         all_traces.extend(traces)
         all_vias.extend(vias)
@@ -1373,30 +1385,7 @@ def route_net_congestion(
             net_info.net_id, net_info.name,
         )
 
-        # Snap endpoints to exact pad positions
-        if traces:
-            t0 = traces[0]
-            traces[0] = TraceSegment(
-                pad_a.x_mm, pad_a.y_mm,
-                t0.end_x_mm, t0.end_y_mm,
-                t0.width_mm, t0.layer, t0.net_id, t0.net_name,
-            )
-            tN = traces[-1]
-            traces[-1] = TraceSegment(
-                tN.start_x_mm, tN.start_y_mm,
-                pad_b.x_mm, pad_b.y_mm,
-                tN.width_mm, tN.layer, tN.net_id, tN.net_name,
-            )
-
-        # Snap vias near pad endpoints to exact pad positions
-        snap_tol = grid_res * 1.5
-        for vi, v in enumerate(vias):
-            if abs(v.x_mm - pad_a.x_mm) < snap_tol and abs(v.y_mm - pad_a.y_mm) < snap_tol:
-                vias[vi] = Via(pad_a.x_mm, pad_a.y_mm, v.drill_mm, v.diameter_mm,
-                               v.from_layer, v.to_layer, v.net_id, v.net_name)
-            elif abs(v.x_mm - pad_b.x_mm) < snap_tol and abs(v.y_mm - pad_b.y_mm) < snap_tol:
-                vias[vi] = Via(pad_b.x_mm, pad_b.y_mm, v.drill_mm, v.diameter_mm,
-                               v.from_layer, v.to_layer, v.net_id, v.net_name)
+        _snap_endpoints_to_pads(traces, vias, pad_a, pad_b, grid_res)
 
         all_traces.extend(traces)
         all_vias.extend(vias)
