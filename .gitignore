@@ -45,3 +45,7 @@ scripts/spike_output/
 /carrier_board.kicad_pcb
 /carrier_board.kicad_pro
 /carrier_board.kicad_prl
+
+# coverage artifacts
+.coverage
+htmlcov/
