@@ -853,9 +853,14 @@ def get_workflow_guide() -> dict:
                     {"order": 2, "tool": "add_component",
                      "args_template": {"project_name": "my_board",
                                        "designator": "U1", "component_type": "ic",
-                                       "value": "NE555", "package": "DIP-8"},
+                                       "value": "NE555", "package": "DIP-8",
+                                       "functional_group": "timer"},
                      "note": "Repeat per component. The response lists the pins "
-                             "you can connect."},
+                             "you can connect. Pass functional_group (a short "
+                             "block label like 'power'/'mcu'/'usb', grouped by "
+                             "role) so related parts place together and route "
+                             "easier — optional but recommended; same label for "
+                             "every part in a block."},
                     {"order": 3, "tool": "connect_pins",
                      "args_template": {"project_name": "my_board",
                                        "net_name": "VCC",
@@ -1756,7 +1761,8 @@ def create_circuit(project_name: str, description: str,
 @mcp.tool()
 def add_component(project_name: str, designator: str, component_type: str,
                   value: str, package: str, pinout: str | None = None,
-                  pin_count: int | None = None) -> dict:
+                  pin_count: int | None = None,
+                  functional_group: str | None = None) -> dict:
     """Add one component to the circuit draft. Returns its pin table.
 
     component_type: resistor, capacitor, inductor, led, diode, transistor_npn,
@@ -1775,6 +1781,14 @@ def add_component(project_name: str, designator: str, component_type: str,
     transistors get base/emitter/collector or gate/source/drain (SOT-23
     convention); 3-pin regulators get IN/GND/OUT. pin_count overrides the
     count derived from the package name when they disagree.
+
+    functional_group: optional short lowercase label for the functional block
+    this part belongs to (e.g. "power", "mcu", "usb", "analog"). Parts sharing
+    a label are placed close together, which reduces inter-block crossings and
+    eases routing. Group by role, not type — a decoupling cap belongs to its
+    IC's block. Use a handful of meaningful blocks; do NOT put everything in
+    one group or invent a unique group per part. Omitting it is safe — the
+    optimizer falls back to its shared-net heuristic.
     """
     _ensure_lookup_configured()
     from orchestrator import circuit_builder as cb
@@ -1782,6 +1796,7 @@ def add_component(project_name: str, designator: str, component_type: str,
     result = cb.add_component(_project_dir(project_name), project_name,
                               designator, component_type, value, package,
                               pinout=pinout, pin_count=pin_count,
+                              functional_group=functional_group,
                               footprint_lookup=get_footprint_def)
     if not result.pop("ok"):
         return _builder_fail(result, project_name)

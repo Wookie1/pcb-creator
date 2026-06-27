@@ -133,11 +133,16 @@ def create_draft(project_dir: Path, project_name: str, description: str,
 def add_component(project_dir: Path, project_name: str, designator: str,
                   component_type: str, value: str, package: str,
                   pinout: str | None = None, pin_count: int | None = None,
+                  functional_group: str | None = None,
                   footprint_lookup=None) -> dict:
     """Add one component to the draft. Returns its resolved pin table.
 
     pin_count: authoritative override when given (else derived from pinout,
         the package name, the footprint, or the component type).
+    functional_group: optional functional-block label (e.g. 'power', 'mcu').
+        Carried into the netlist and used by the placement optimizer to pull
+        same-block parts together. Omitted/blank → the optimizer falls back to
+        its shared-net heuristic for this part.
     footprint_lookup: callable(package, pin_count) -> FootprintDef | None
         (injected so the MCP layer can pass the configured tiered lookup).
     """
@@ -236,6 +241,8 @@ def add_component(project_dir: Path, project_name: str, designator: str,
         "pin_alts": {str(k): v for k, v in pin_alts.items()},
         "pin_types": {str(k): v for k, v in pin_types.items()},
     }
+    if functional_group and functional_group.strip():
+        comp["functional_group"] = functional_group.strip()
     draft["components"][designator] = comp
     _save_draft(project_dir, project_name, draft)
 
@@ -566,14 +573,17 @@ def finalize(project_dir: Path, project_name: str) -> dict:
     for des in sorted(draft["components"]):
         comp = draft["components"][des]
         cid = _comp_id(des)
-        elements.append({
+        comp_elem = {
             "element_type": "component",
             "component_id": cid,
             "designator": des,
             "component_type": comp["component_type"],
             "value": comp["value"],
             "package": comp["package"],
-        })
+        }
+        if comp.get("functional_group"):
+            comp_elem["functional_group"] = comp["functional_group"]
+        elements.append(comp_elem)
         for n in range(1, comp["pin_count"] + 1):
             canonical = f"{des}.{n}"
             name = comp.get("pin_names", {}).get(str(n)) or str(n)

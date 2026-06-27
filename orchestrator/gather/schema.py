@@ -51,6 +51,14 @@ REQUIREMENTS_SCHEMA = {
                         "type": "string",
                         "description": "What this component does in the circuit",
                     },
+                    "functional_group": {
+                        "type": "string",
+                        "description": "Optional functional block this part "
+                        "belongs to (e.g. 'power', 'mcu', 'usb', 'analog'). "
+                        "Components sharing a label are placed close together, "
+                        "which eases routing. Carried into the netlist and used "
+                        "by the placement optimizer.",
+                    },
                 },
             },
         },

@@ -86,6 +86,10 @@
           "type": "string",
           "description": "Human-readable description of this component's role in the circuit."
         },
+        "functional_group": {
+          "type": "string",
+          "description": "Optional functional block this component belongs to, e.g. 'power', 'mcu', 'usb', 'analog', 'connectors'. Components sharing a label are pulled together during placement, which reduces inter-block net crossings and eases routing. Use short, consistent lowercase labels."
+        },
         "properties": {
           "type": "object",
           "description": "Optional key-value pairs for additional specifications.",

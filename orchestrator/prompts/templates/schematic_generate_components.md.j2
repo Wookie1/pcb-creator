@@ -14,7 +14,12 @@ Produce a JSON array of component objects. Each component has these required fie
 - `value`: with units (e.g., "220ohm", "100nF")
 - `package`: e.g., "0805", "TQFP-32"
 - `description`: describe purpose, show calculations
+- `functional_group` (optional but recommended): the functional block this part belongs to — a short lowercase label such as "power", "mcu", "usb", "analog", "clock", "connectors". Parts in the same block are placed close together, which reduces inter-block crossings and makes routing easier. Use the SAME label for every part in a block; reuse the requirement's group if one is given. Omit only for a genuinely standalone part.
 - `properties` (optional): key specs like forward_voltage, etc.
+
+### Functional Grouping Rules
+
+Assign `functional_group` by the part's role, not its type. A decoupling cap sits in the block of the IC it bypasses (e.g. "mcu"), not a generic "passives" bucket. Keep groups meaningful: do NOT put every component in one group, and do NOT invent a unique group per component — aim for a handful of blocks that mirror the circuit's sections.
 
 ### Designator Rules
 

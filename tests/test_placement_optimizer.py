@@ -511,3 +511,86 @@ class TestValidatorFiducialExemption:
         )
         errors, warnings = validate_cross_reference(placement, netlist)
         assert any("R99" in e for e in errors)
+
+
+# ── Functional grouping (declared functional_group, fed into grouping cost) ──
+
+from optimizers.placement_optimizer import (
+    _build_grouping_pairs,
+    _read_functional_groups,
+)
+
+
+def _net(name, *ports, net_class="signal"):
+    return {"net_id": f"net_{name.lower()}", "name": name,
+            "connected_port_ids": list(ports), "net_class": net_class}
+
+
+class TestFunctionalGrouping:
+    def test_shared_net_floor_preserved_without_groups(self):
+        """No declared groups → exactly the prior shared-net behavior."""
+        nets = [NetInfo(net_id="n1", name="N1", designators=["R1", "R2"], net_class="signal"),
+                NetInfo(net_id="n2", name="N2", designators=["R1", "R2"], net_class="signal")]
+        # R1/R2 share 2 nets → a pair; passing groups=None must not change that.
+        assert _build_grouping_pairs(nets) == [("R1", "R2")]
+        assert _build_grouping_pairs(nets, None) == [("R1", "R2")]
+
+    def test_declared_group_adds_pair_not_in_shared_net_floor(self):
+        """Two parts in the same group but sharing <2 nets become a pair."""
+        nets = [NetInfo(net_id="n1", name="N1", designators=["U1", "C1"], net_class="signal")]
+        # U1/C1 share only 1 net → no shared-net pair on their own.
+        assert _build_grouping_pairs(nets) == []
+        # Tag them into the same block → they get pulled together.
+        pairs = _build_grouping_pairs(nets, {"U1": "mcu", "C1": "mcu"})
+        assert ("C1", "U1") in pairs
+
+    def test_floor_and_declared_union_and_dedupe(self):
+        """A declared pair that is also a shared-net pair appears once."""
+        nets = [NetInfo(net_id="n1", name="N1", designators=["R1", "R2"], net_class="signal"),
+                NetInfo(net_id="n2", name="N2", designators=["R1", "R2"], net_class="signal")]
+        pairs = _build_grouping_pairs(nets, {"R1": "power", "R2": "power"})
+        assert pairs.count(("R1", "R2")) == 1
+
+    def test_degenerate_everything_group_is_dropped(self):
+        """A group holding almost all parts carries no signal → floor only."""
+        nets = [NetInfo(net_id="n1", name="N1", designators=["A1", "B1"], net_class="signal")]
+        groups = {d: "main" for d in
+                  ["A1", "B1", "C1", "D1", "E1", "F1", "G1", "H1"]}
+        # 8/8 components in one group → dropped; only the shared-net floor
+        # (here empty, since each shares <2 nets) remains.
+        assert _build_grouping_pairs(nets, groups) == []
+
+    def test_read_functional_groups_top_level_and_nested(self):
+        """Label is read from the first-class field and from properties."""
+        netlist = {"elements": [
+            {"element_type": "component", "designator": "U1",
+             "functional_group": "mcu"},
+            {"element_type": "component", "designator": "C1",
+             "properties": {"functional_group": "mcu"}},
+            {"element_type": "component", "designator": "R1"},  # no label
+            {"element_type": "port", "designator": "ignored"},
+        ]}
+        assert _read_functional_groups(netlist) == {"U1": "mcu", "C1": "mcu"}
+
+    def test_optimize_placement_runs_with_declared_groups(self):
+        """End-to-end: a netlist carrying functional_group optimizes cleanly."""
+        netlist = _minimal_netlist(
+            {"designator": "U1", "component_type": "ic", "package": "SOIC-8", "pins": 8},
+            {"designator": "C1", "component_type": "capacitor"},
+            {"designator": "J1", "component_type": "connector"},
+            nets=[_net("VCC", "port_u1_8", "port_c1_1", "port_j1_1"),
+                  _net("GND", "port_u1_1", "port_c1_2", "port_j1_2")],
+        )
+        # Tag U1+C1 into the mcu block; J1 stands alone.
+        for e in netlist["elements"]:
+            if e.get("designator") in ("U1", "C1"):
+                e["functional_group"] = "mcu"
+        placement = _placement(
+            _place("U1", ctype="ic", pkg="SOIC-8", x=10, y=10, w=5, h=4),
+            _place("C1", ctype="capacitor", x=40, y=25),
+            _place("J1", ctype="connector", x=2, y=15),
+        )
+        out = optimize_placement(placement, netlist, SAConfig(seed=1, max_iterations=200))
+        # Optimizer returns a valid placement with all components present.
+        got = {p["designator"] for p in out["placements"]}
+        assert got == {"U1", "C1", "J1"}

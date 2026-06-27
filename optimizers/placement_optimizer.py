@@ -267,15 +267,85 @@ def _grouping_cost(
     return cost
 
 
-def _build_grouping_pairs(nets: list[NetInfo]) -> list[tuple[str, str]]:
-    """Find component pairs that share 2+ nets (functionally related)."""
+def _build_grouping_pairs(
+    nets: list[NetInfo],
+    groups: dict[str, str] | None = None,
+) -> list[tuple[str, str]]:
+    """Component pairs that should be placed close together.
+
+    Two sources, unioned into a single set of pairs:
+
+      1. Shared-net heuristic (always on): components sharing 2+ nets are
+         functionally related. This is the FLOOR — it is exactly the prior
+         behavior, so a missing or wrong declared group can never drop the
+         result below what the tool did before.
+      2. Declared functional groups (optional): components the schematic
+         engineer tagged with the same ``functional_group`` label (e.g. a power
+         section, an MCU section, a USB block). Full mesh within each group.
+         This is the explicit-hierarchy signal — the LLM knows the real circuit
+         blocks, whereas the shared-net heuristic only guesses them from
+         topology.
+
+    A declared pair that is also a shared-net pair is deduped to one pair
+    (weight is uniform per pair in ``_grouping_cost``), so the two sources
+    reinforce without double-counting. The only downside of a mis-tag is a few
+    spurious affinity pairs of bounded weight; the heuristic floor is
+    untouched.
+    """
+    pairs: set[tuple[str, str]] = set()
+
+    # Source 1 — shared-net floor (prior behavior).
     shared_count: dict[tuple[str, str], int] = {}
     for net in nets:
         for i, d1 in enumerate(net.designators):
             for d2 in net.designators[i + 1:]:
                 pair = tuple(sorted([d1, d2]))
                 shared_count[pair] = shared_count.get(pair, 0) + 1
-    return [(a, b) for (a, b), count in shared_count.items() if count >= 2]
+    pairs.update(p for p, count in shared_count.items() if count >= 2)
+
+    # Source 2 — declared functional groups (LLM-authored hierarchy).
+    if groups:
+        members: dict[str, list[str]] = {}
+        for des, label in groups.items():
+            if label:
+                members.setdefault(label, []).append(des)
+        total = len(groups)
+        # A group that holds almost everything carries no placement signal —
+        # it would just pull the whole board together. Drop a degenerate
+        # "everything" tag (e.g. the LLM labelling every part "main") and fall
+        # back to the shared-net floor for those parts.
+        max_members = max(3, int(total * 0.6))
+        for dess in members.values():
+            dess = sorted(set(dess))
+            if len(dess) < 2 or len(dess) > max_members:
+                continue
+            for i, a in enumerate(dess):
+                for b in dess[i + 1:]:
+                    pairs.add((a, b))
+
+    return sorted(pairs)
+
+
+def _read_functional_groups(netlist: dict) -> dict[str, str]:
+    """Designator -> functional-group label, read from the netlist components.
+
+    Reads the first-class ``functional_group`` field, falling back to
+    ``properties.functional_group`` (the LLM sometimes nests it). Components
+    with no label are simply absent, so the optimizer falls back to the
+    shared-net heuristic for them.
+    """
+    groups: dict[str, str] = {}
+    for elem in netlist.get("elements", []):
+        if elem.get("element_type") != "component":
+            continue
+        des = elem.get("designator", "")
+        label = elem.get("functional_group")
+        if not label:
+            props = elem.get("properties") or {}
+            label = props.get("functional_group")
+        if des and isinstance(label, str) and label.strip():
+            groups[des] = label.strip()
+    return groups
 
 
 CONGESTION_CELL_MM = 5.0     # pad-density bucket size
@@ -612,14 +682,21 @@ def optimize_placement(
     # Build placement quality associations
     decoupling = find_decoupling_associations(netlist)
     crystal_assocs = find_crystal_associations(netlist)
-    grouping_pairs = _build_grouping_pairs(nets)
+    declared_groups = _read_functional_groups(netlist)
+    grouping_pairs = _build_grouping_pairs(nets, declared_groups)
 
     if decoupling:
         logger.info(f"  Decoupling associations: {len(decoupling)} (cap→IC pairs)")
     if crystal_assocs:
         logger.info(f"  Crystal associations: {len(crystal_assocs)} (crystal→IC pairs)")
     if grouping_pairs:
-        logger.info(f"  Grouping pairs: {len(grouping_pairs)} (components sharing 2+ nets)")
+        if declared_groups:
+            n_labels = len(set(declared_groups.values()))
+            src = (f"shared-net floor + {n_labels} declared functional "
+                   f"group(s) over {len(declared_groups)} components")
+        else:
+            src = "components sharing 2+ nets"
+        logger.info(f"  Grouping pairs: {len(grouping_pairs)} ({src})")
 
     # Flip-eligible components for two-sided placement: small non-polarized
     # SMD passives only. Connectors, ICs, TH parts, keepouts, and anything
