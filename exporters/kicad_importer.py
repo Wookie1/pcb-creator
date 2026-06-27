@@ -123,6 +123,8 @@ def _find_field(sexpr: list, field_name: str) -> list | None:
 
     E.g., _find_field(segment_sexpr, "start") finds ["start", "1.0", "2.0"]
     """
+    if not isinstance(sexpr, list):
+        return None
     for item in sexpr:
         if isinstance(item, list) and len(item) > 0 and item[0] == field_name:
             return item
@@ -131,11 +133,10 @@ def _find_field(sexpr: list, field_name: str) -> list | None:
 
 def _find_all(sexpr: list, field_name: str) -> list[list]:
     """Find all sub-expressions matching a field name."""
-    results = []
-    for item in sexpr:
-        if isinstance(item, list) and len(item) > 0 and item[0] == field_name:
-            results.append(item)
-    return results
+    if not isinstance(sexpr, list):
+        return []
+    return [item for item in sexpr
+            if isinstance(item, list) and len(item) > 0 and item[0] == field_name]
 
 
 def _to_float(val: str | int | float) -> float:

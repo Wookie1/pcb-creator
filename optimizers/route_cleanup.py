@@ -97,14 +97,6 @@ def run_drc_json(pcb_path: str | Path, kicad_cli: str,
             pass
 
 
-def drc_shorting_net_names(pcb_path: str | Path, kicad_cli: str,
-                           *, timeout: int = 300) -> set[str] | None:
-    """Net NAMES involved in reroute-fixable violations (shorts + clearance).
-    None if kicad-cli couldn't run; an empty set means 'ran, nothing to fix'."""
-    data = run_drc_json(pcb_path, kicad_cli, timeout=timeout)
-    return None if data is None else _parse_shorting_net_names(data)
-
-
 def _item_net(desc: str) -> str | None:
     """Net name in a DRC item description's first [..] token."""
     if "[" in desc and "]" in desc:

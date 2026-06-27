@@ -28,10 +28,6 @@ from .runner import STEP_NAMES, run_workflow_streaming
 
 logger = logging.getLogger("pcb-creator.gui")
 
-# Number of outputs every handler must yield/return.
-# status, state, chat_display, input_group, chat_input, submit, approve, steps, viewer, settings, export_row
-_N_OUTPUTS = 11
-
 
 # ---------------------------------------------------------------------------
 # Provider presets

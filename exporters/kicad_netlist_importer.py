@@ -25,6 +25,12 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+from .kicad_importer import (
+    parse_kicad_sexpr as _parse,
+    _find_field as _find,
+    _find_all,
+)
+
 
 # ---------------------------------------------------------------------------
 # Component-type inference from reference-designator prefix
@@ -143,74 +149,6 @@ def _net_id(name: str, seen: set[str]) -> str:
 def _strip_footprint_library(fp: str) -> str:
     """'Resistor_SMD:R_0805_2012Metric' → 'R_0805_2012Metric'."""
     return fp.split(":")[-1] if ":" in fp else fp
-
-
-# ---------------------------------------------------------------------------
-# S-expression parser (shared with kicad_importer, inlined to stay standalone)
-# ---------------------------------------------------------------------------
-
-def _tokenize(text: str) -> list[str]:
-    tokens: list[str] = []
-    i, n = 0, len(text)
-    while i < n:
-        c = text[i]
-        if c in " \t\n\r":
-            i += 1
-        elif c == "(":
-            tokens.append("("); i += 1
-        elif c == ")":
-            tokens.append(")"); i += 1
-        elif c == '"':
-            j = i + 1
-            while j < n:
-                if text[j] == "\\" and j + 1 < n:
-                    j += 2
-                elif text[j] == '"':
-                    break
-                else:
-                    j += 1
-            tokens.append(f'"{text[i+1:j]}"')
-            i = j + 1
-        else:
-            j = i
-            while j < n and text[j] not in ' \t\n\r()"':
-                j += 1
-            tokens.append(text[i:j])
-            i = j
-    return tokens
-
-
-def _parse_sexpr(tokens: list[str], pos: int = 0) -> tuple[list, int]:
-    result: list = []
-    i = pos
-    while i < len(tokens):
-        t = tokens[i]
-        if t == "(":
-            sub, i = _parse_sexpr(tokens, i + 1)
-            result.append(sub)
-        elif t == ")":
-            return result, i + 1
-        else:
-            result.append(t[1:-1] if (t.startswith('"') and t.endswith('"')) else t)
-            i += 1
-    return result, i
-
-
-def _parse(text: str) -> list:
-    tokens = _tokenize(text)
-    result, _ = _parse_sexpr(tokens, 0)
-    return result
-
-
-def _find(sexpr: list, key: str) -> list | None:
-    for item in sexpr:
-        if isinstance(item, list) and item and item[0] == key:
-            return item
-    return None
-
-
-def _find_all(sexpr: list, key: str) -> list[list]:
-    return [item for item in sexpr if isinstance(item, list) and item and item[0] == key]
 
 
 # ---------------------------------------------------------------------------

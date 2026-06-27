@@ -9,8 +9,6 @@ import litellm
 
 logger = logging.getLogger(__name__)
 
-from .base import LLMClient
-
 # Allow litellm to pass through non-standard params (e.g. "thinking")
 # rather than raising UnsupportedParamsError
 litellm.drop_params = True
@@ -51,7 +49,7 @@ def truncate_repetition(text: str, window: int = 100, min_repeats: int = 3,
     return text
 
 
-class LiteLLMClient(LLMClient):
+class LiteLLMClient:
     def __init__(
         self,
         model: str,

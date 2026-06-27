@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import json
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from typing import TYPE_CHECKING
 
 from orchestrator.gather.curated_specs import lookup_footprint_dims, lookup_specs
 from orchestrator.gather.schema import validate_requirements
-from orchestrator.llm.base import LLMClient
 from orchestrator.prompts.builder import PromptBuilder
 from orchestrator.steps.step_1_schematic import extract_json
+
+if TYPE_CHECKING:
+    from orchestrator.llm.litellm_client import LiteLLMClient
 
 
 class RequirementsGatherer:
@@ -29,7 +32,7 @@ class RequirementsGatherer:
 
     def __init__(
         self,
-        llm: LLMClient,
+        llm: "LiteLLMClient",
         prompt_builder: PromptBuilder,
         *,
         cache: object | None = None,
@@ -136,13 +139,6 @@ class RequirementsGatherer:
         print(f"\nMax attempts ({max_attempts}) reached.")
         return None
 
-    def plan(self, user_input: str) -> dict | None:
-        """Public API: generate a design plan with assumptions and questions.
-
-        Returns parsed plan dict or None on failure.
-        """
-        return self._plan(user_input)
-
     def translate(
         self,
         user_input: str,
@@ -186,10 +182,6 @@ class RequirementsGatherer:
         return m in cls._PROCEED_SIGNALS or any(
             m.startswith(s) for s in cls._PROCEED_SIGNALS
         )
-
-    def _plan(self, user_input: str) -> dict | None:
-        """Single-round plan (for agent mode / backward compat)."""
-        return self._plan_with_history(user_input, [])
 
     def _plan_with_history(
         self,

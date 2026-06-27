@@ -16,14 +16,6 @@ class NetInfo:
 
 
 @dataclass
-class RatsnestResult:
-    """Cost metrics for a placement."""
-    total_wire_length: float
-    crossing_count: int
-    mst_edges: list[tuple[str, str, float]] = field(default_factory=list)  # (des_a, des_b, length)
-
-
-@dataclass
 class DecouplingAssociation:
     """A decoupling capacitor associated with an IC."""
     cap_designator: str
@@ -365,44 +357,6 @@ def count_crossings(
                 crossings += 1
 
     return crossings
-
-
-def compute_cost(
-    nets: list[NetInfo],
-    positions: dict[str, tuple[float, float]],
-    wire_weight: float = 1.0,
-    crossing_weight: float = 5.0,
-) -> RatsnestResult:
-    """Compute weighted placement cost.
-
-    Args:
-        nets: Connectivity info.
-        positions: Designator -> (x, y) map.
-        wire_weight: Weight for total wire length.
-        crossing_weight: Weight for crossing count.
-
-    Returns:
-        RatsnestResult with metrics and combined cost accessible via
-        total_wire_length and crossing_count.
-    """
-    wl = total_wire_length(nets, positions)
-    cx = count_crossings(nets, positions)
-
-    # Build flat list of MST edges for visualization
-    mst_edges: list[tuple[str, str, float]] = []
-    for net in nets:
-        pts = [positions[d] for d in net.designators if d in positions]
-        des_list = [d for d in net.designators if d in positions]
-        if len(pts) < 2:
-            continue
-        for ia, ib, length in compute_mst_edges(pts):
-            mst_edges.append((des_list[ia], des_list[ib], length))
-
-    return RatsnestResult(
-        total_wire_length=wl,
-        crossing_count=cx,
-        mst_edges=mst_edges,
-    )
 
 
 class IncrementalCost:

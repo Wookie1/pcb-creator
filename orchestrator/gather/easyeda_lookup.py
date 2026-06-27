@@ -152,31 +152,3 @@ def fetch_footprint(value: str, lcsc_id: str = "") -> "FootprintDef | None":
 
     # No LCSC ID or failed — cannot search by name through this API
     return None
-
-
-def fetch_specs(lcsc_id: str) -> dict | None:
-    """Extract basic specs from EasyEDA component metadata.
-
-    Currently returns pin_count and package if available.
-    """
-    if not lcsc_id:
-        return None
-
-    cad = _get_cad_data(lcsc_id)
-    if cad is None:
-        return None
-
-    try:
-        specs: dict = {}
-        # EasyEDA CAD data often has these attributes
-        if hasattr(cad, "info"):
-            info = cad.info
-            pkg = getattr(info, "package", None) or getattr(info, "footprint", None)
-            if pkg:
-                specs["package"] = str(pkg)
-
-        return specs if specs else None
-
-    except Exception as e:
-        logger.debug(f"Failed to extract specs from EasyEDA: {e}")
-        return None

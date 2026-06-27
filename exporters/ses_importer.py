@@ -12,7 +12,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from .kicad_importer import _tokenize, _parse_sexpr
+from .kicad_importer import _tokenize, _parse_sexpr, _find_field as _find, _find_all
 
 
 # ---------------------------------------------------------------------------
@@ -65,29 +65,6 @@ def _via_layers(padstack_name: str, num_layers: int) -> tuple[str, str]:
     return order[0], order[-1]
 
 
-# ---------------------------------------------------------------------------
-# S-expression navigation helpers
-# ---------------------------------------------------------------------------
-
-def _find(sexpr: list, name: str) -> list | None:
-    """Find first sub-expression starting with 'name'."""
-    if not isinstance(sexpr, list):
-        return None
-    for item in sexpr:
-        if isinstance(item, list) and len(item) > 0 and item[0] == name:
-            return item
-    return None
-
-
-def _find_all(sexpr: list, name: str) -> list[list]:
-    """Find all sub-expressions starting with 'name'."""
-    results = []
-    if not isinstance(sexpr, list):
-        return results
-    for item in sexpr:
-        if isinstance(item, list) and len(item) > 0 and item[0] == name:
-            results.append(item)
-    return results
 
 
 def _find_value(sexpr: list, name: str, default: str = "") -> str:

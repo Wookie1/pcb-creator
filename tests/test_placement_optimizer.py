@@ -14,7 +14,6 @@ sys.path.insert(0, os.path.join(_root, "validators"))
 from optimizers.ratsnest import (
     NetInfo,
     build_connectivity,
-    compute_cost,
     compute_mst_edges,
     count_crossings,
     total_wire_length,
@@ -139,12 +138,6 @@ class TestRatsnest:
             NetInfo("n2", "N2", "signal", ["C", "D"]),
         ]
         assert count_crossings(nets, positions) == 0
-
-    def test_empty_nets(self):
-        """No nets — zero cost."""
-        result = compute_cost([], {})
-        assert result.total_wire_length == 0
-        assert result.crossing_count == 0
 
     def test_build_connectivity(self):
         """build_connectivity extracts nets with correct designators."""

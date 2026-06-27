@@ -2445,50 +2445,6 @@ def _apply_thermal_relief(
         _fill_spoke(range(-(hw + spoke_len), hw + 1), range(-spoke_hw, spoke_hw + 1))
 
 
-def _remove_islands(
-    filled: list[bool],
-    grid: RoutingGrid,
-    layer: str,
-    fill_net_int: int,
-) -> int:
-    """Remove fill islands not connected to fill-net pads/traces.
-
-    Uses BFS from cells that are both filled AND have the fill net ID on the grid.
-    Returns number of island cells removed.
-    """
-    cols, rows = grid.cols, grid.rows
-    total = cols * rows
-    visited = [False] * total
-    layer_data = grid.layers[layer]
-
-    # BFS seeds: filled cells that are part of the fill net on the grid
-    queue: deque[int] = deque()
-    for idx in range(total):
-        if filled[idx] and layer_data[idx] == fill_net_int:
-            visited[idx] = True
-            queue.append(idx)
-
-    # BFS expand through filled cells
-    while queue:
-        idx = queue.popleft()
-        col, row = idx % cols, idx // cols
-        for dc, dr in [(0, 1), (0, -1), (1, 0), (-1, 0)]:
-            nc, nr = col + dc, row + dr
-            if 0 <= nc < cols and 0 <= nr < rows:
-                nidx = nr * cols + nc
-                if filled[nidx] and not visited[nidx]:
-                    visited[nidx] = True
-                    queue.append(nidx)
-
-    # Remove unvisited filled cells (islands)
-    removed = 0
-    for idx in range(total):
-        if filled[idx] and not visited[idx]:
-            filled[idx] = False
-            removed += 1
-    return removed
-
-
 def _bitmap_to_polygons(
     filled: list[bool],
     grid: RoutingGrid,
@@ -3824,6 +3780,11 @@ def route_board(
     config: RouterConfig | None = None,
 ) -> dict:
     """Route all nets on the board.
+
+    ponytail: KEEP — not dead. This A* router is the no-Java routing engine
+    (PCB_ROUTER_ENGINE=builtin / eval_boards --engine builtin) and the 2-layer
+    Freerouting-failure fallback (stages.run_routing). Freerouting needs Java 17+;
+    this is the only router on a Java-less box. Do not delete in audits.
 
     Uses multi-trial net ordering optimization: tries several orderings of the
     signal nets and keeps the one with the highest completion percentage.

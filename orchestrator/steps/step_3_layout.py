@@ -1,7 +1,6 @@
 """Step 3: Board Layout — generate placement, validate, QA, rework loop."""
 
 import json
-import subprocess
 import sys
 from pathlib import Path
 
@@ -498,22 +497,7 @@ class LayoutStep(StepBase):
             str(netlist_path),
         ]
 
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            cwd=str(self.config.base_dir),
-        )
-
-        try:
-            return json.loads(result.stdout)
-        except json.JSONDecodeError:
-            return {
-                "valid": False,
-                "errors": [f"Validator crashed: {result.stderr or result.stdout}"],
-                "warnings": [],
-                "summary": "Validator execution failed",
-            }
+        return self._run_validator_cmd(cmd)
 
     def _parse_dxf_outline(
         self,

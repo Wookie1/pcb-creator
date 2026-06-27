@@ -109,14 +109,11 @@ class OrchestratorConfig:
 
     # Tiered lookup settings
     kicad_library_path: str | None = None     # Root of KiCad footprint library (.pretty dirs)
-    custom_footprint_dir: str | None = None   # Global writable dir for agent-registered footprints
     component_cache_path: str = "~/.pcb-creator/component_cache.json"
     llm_enrichment_workers: int = 4           # Max parallel LLM calls for spec/footprint enrichment
 
     # Paths (relative to base_dir)
     base_dir: Path = field(default_factory=lambda: Path.cwd())
-    standards_path: str = "STANDARDS.md"
-    schema_path: str = "schemas/circuit_schema.json"
     validator_path: str = "validators/validate_netlist.py"
     projects_dir: str = "projects"
 
@@ -191,9 +188,6 @@ class OrchestratorConfig:
             # PCB_KICAD_LIBRARY_PATH. Resolution must not hinge on an env var that
             # can vanish on restart.
             config.kicad_library_path = _autodetect_kicad_library()
-        custom_fp = os.environ.get("PCB_CUSTOM_FOOTPRINT_DIR")
-        if custom_fp:
-            config.custom_footprint_dir = custom_fp
         cache_path_env = os.environ.get("PCB_COMPONENT_CACHE_PATH")
         if cache_path_env:
             config.component_cache_path = cache_path_env

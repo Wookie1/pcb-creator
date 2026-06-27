@@ -3,7 +3,6 @@
 import json
 import logging
 import re
-import subprocess
 import sys
 from pathlib import Path
 
@@ -17,10 +16,6 @@ if _validators_dir not in sys.path:
     sys.path.insert(0, _validators_dir)
 
 from pinout import build_pinout_from_requirements, expected_pin_count
-
-import logging
-
-logger = logging.getLogger(__name__)
 
 
 def _strip_reasoning(raw: str) -> str:
@@ -138,7 +133,6 @@ def _auto_merge_shared_nets(netlist: dict) -> tuple[dict, list[str]]:
 
     # Remove merged nets
     if merged_into:
-        removed = {find_root(k) != k and k or -1 for k in merged_into}
         # Get actual indices to remove (those that were merged INTO another)
         to_remove = set()
         for src, _ in merged_into.items():
@@ -740,22 +734,7 @@ class SchematicStep(StepBase):
         if requirements_path.exists():
             cmd.extend(["--requirements", str(requirements_path)])
 
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            cwd=str(self.config.base_dir),
-        )
-
-        try:
-            return json.loads(result.stdout)
-        except json.JSONDecodeError:
-            return {
-                "valid": False,
-                "errors": [f"Validator crashed: {result.stderr or result.stdout}"],
-                "warnings": [],
-                "summary": "Validator execution failed",
-            }
+        return self._run_validator_cmd(cmd)
 
     def _generate_chunked(self, requirements_text: str, project_name: str, pinout_table: str, pin_count_table: str = "", attempt: int = 1) -> str:
         """Generate netlist in 3 phases (components, ports, nets) for large boards.
