@@ -1282,10 +1282,10 @@ def route_net(
         for vi, v in enumerate(vias):
             if abs(v.x_mm - pad_a.x_mm) < snap_tol and abs(v.y_mm - pad_a.y_mm) < snap_tol:
                 vias[vi] = Via(pad_a.x_mm, pad_a.y_mm, v.drill_mm, v.diameter_mm,
-                               v.layer_from, v.layer_to, v.net_id, v.net_name)
+                               v.from_layer, v.to_layer, v.net_id, v.net_name)
             elif abs(v.x_mm - pad_b.x_mm) < snap_tol and abs(v.y_mm - pad_b.y_mm) < snap_tol:
                 vias[vi] = Via(pad_b.x_mm, pad_b.y_mm, v.drill_mm, v.diameter_mm,
-                               v.layer_from, v.layer_to, v.net_id, v.net_name)
+                               v.from_layer, v.to_layer, v.net_id, v.net_name)
 
         all_traces.extend(traces)
         all_vias.extend(vias)
@@ -1393,10 +1393,10 @@ def route_net_congestion(
         for vi, v in enumerate(vias):
             if abs(v.x_mm - pad_a.x_mm) < snap_tol and abs(v.y_mm - pad_a.y_mm) < snap_tol:
                 vias[vi] = Via(pad_a.x_mm, pad_a.y_mm, v.drill_mm, v.diameter_mm,
-                               v.layer_from, v.layer_to, v.net_id, v.net_name)
+                               v.from_layer, v.to_layer, v.net_id, v.net_name)
             elif abs(v.x_mm - pad_b.x_mm) < snap_tol and abs(v.y_mm - pad_b.y_mm) < snap_tol:
                 vias[vi] = Via(pad_b.x_mm, pad_b.y_mm, v.drill_mm, v.diameter_mm,
-                               v.layer_from, v.layer_to, v.net_id, v.net_name)
+                               v.from_layer, v.to_layer, v.net_id, v.net_name)
 
         all_traces.extend(traces)
         all_vias.extend(vias)
@@ -2590,7 +2590,6 @@ def _add_stitching_vias(
             while queue:
                 cidx = queue.popleft()
                 cr, cc = divmod(cidx, cols)
-                cc = cidx - cr * cols
                 for dc, dr in ((0, 1), (0, -1), (1, 0), (-1, 0)):
                     nc, nr = cc + dc, cr + dr
                     if 0 <= nc < cols and 0 <= nr < rows:
@@ -2609,7 +2608,6 @@ def _add_stitching_vias(
     seeded_bot: set[int] = set()
     for idx in range(total):
         r, c = divmod(idx, cols)
-        c = idx - r * cols
         for layer, comp, seeded in [("top", top_comp, seeded_top), ("bottom", bot_comp, seeded_bot)]:
             if comp[idx] >= 0:
                 val = grid.get(c, r, layer)
@@ -3093,36 +3091,6 @@ def _apply_pre_fill(
         # Where thermal relief cleared fill, reset grid cell to EMPTY
         for idx in range(cols * rows):
             if layer_data[idx] == fill_net_int and not filled[idx]:
-                layer_data[idx] = EMPTY
-
-
-def _clear_pre_fill(
-    grid: RoutingGrid,
-    fill_net_int: int,
-    pad_map: dict[str, PadInfo],
-    fill_net_id: str,
-) -> None:
-    """Remove pre-filled GND cells from the routing grid (undo pre-fill).
-
-    Resets cells marked with fill_net_int back to EMPTY, except for cells
-    that correspond to actual GND pad locations.
-    """
-    cols = grid.cols
-
-    # Build set of grid cells that are GND pad locations (keep these)
-    pad_cells: set[tuple[str, int]] = set()
-    for pad in pad_map.values():
-        if pad.net_id != fill_net_id:
-            continue
-        layers = ["top", "bottom"] if pad.layer == "all" else [pad.layer]
-        pc, pr = grid.mm_to_grid(pad.x_mm, pad.y_mm)
-        for layer in layers:
-            pad_cells.add((layer, pr * cols + pc))
-
-    for layer in ["top", "bottom"]:
-        layer_data = grid.layers[layer]
-        for idx in range(len(layer_data)):
-            if layer_data[idx] == fill_net_int and (layer, idx) not in pad_cells:
                 layer_data[idx] = EMPTY
 
 
