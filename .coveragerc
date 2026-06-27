@@ -1,0 +1,33 @@
+# Coverage config — target is 100% of the deterministic LOGIC CORE.
+#
+# The modules omitted below are the IO / glue boundary: they exist mainly to
+# talk to an LLM, the network, a Java subprocess, an HTTP server, or a GUI.
+# Covering them to 100% would mean mocking those externals, so the tests would
+# assert the mock wiring rather than real behavior. They are smoke-tested where
+# practical but deliberately excluded from the coverage target.
+[run]
+source = optimizers,exporters,validators,orchestrator,visualizers,mcp_server
+omit =
+    # GUI / CLI entry points
+    orchestrator/gradio_app.py
+    orchestrator/cli.py
+    orchestrator/__main__.py
+    # LLM clients & LLM-driven flows
+    orchestrator/llm/litellm_client.py
+    orchestrator/gather/conversation.py
+    orchestrator/vision_review.py
+    # Orchestration / threads / HTTP server
+    orchestrator/runner.py
+    orchestrator/approval_server.py
+    # Network-backed lookups (EasyEDA/LCSC, 3D model fetch)
+    orchestrator/gather/easyeda_lookup.py
+    exporters/model_fetcher.py
+
+[report]
+exclude_lines =
+    pragma: no cover
+    if __name__ == .__main__.:
+    raise NotImplementedError
+    if TYPE_CHECKING:
+    \.\.\.$
+show_missing = True
