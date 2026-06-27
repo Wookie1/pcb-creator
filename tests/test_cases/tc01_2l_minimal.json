@@ -1,0 +1,254 @@
+{
+  "project_name": "tc01_2l_minimal",
+  "description": "NE555 astable multivibrator blinks three red LEDs at ~1.3 Hz from 5 V DC power \u2014 smallest possible regression baseline",
+  "power": {
+    "voltage": "5V",
+    "source": "DC power jack"
+  },
+  "board": {
+    "width_mm": 50.0,
+    "height_mm": 35.0,
+    "layers": 2,
+    "corner_radius_mm": 1.0,
+    "outline_type": "rectangle"
+  },
+  "manufacturing": {
+    "manufacturer": "jlcpcb_standard"
+  },
+  "components": [
+    {
+      "ref": "J1",
+      "type": "connector",
+      "value": "DC power jack 5V",
+      "package": "DC_Jack_2.1x5.5",
+      "purpose": "5 V power input",
+      "functional_group": "power"
+    },
+    {
+      "ref": "U1",
+      "type": "ic",
+      "value": "NE555",
+      "package": "DIP8",
+      "purpose": "Astable oscillator ~1.3 Hz",
+      "functional_group": "timer"
+    },
+    {
+      "ref": "R1",
+      "type": "resistor",
+      "value": "10kohm",
+      "package": "0805",
+      "purpose": "Timing Ra (VCC\u2192DISCH)",
+      "functional_group": "timer"
+    },
+    {
+      "ref": "R2",
+      "type": "resistor",
+      "value": "100kohm",
+      "package": "0805",
+      "purpose": "Timing Rb (DISCH\u2192TIMING node)",
+      "functional_group": "timer"
+    },
+    {
+      "ref": "R3",
+      "type": "resistor",
+      "value": "10kohm",
+      "package": "0805",
+      "purpose": "RESET pull-up to VCC",
+      "functional_group": "timer"
+    },
+    {
+      "ref": "C1",
+      "type": "capacitor",
+      "value": "10uF",
+      "package": "1206",
+      "purpose": "Timing capacitor to GND",
+      "functional_group": "timer"
+    },
+    {
+      "ref": "C2",
+      "type": "capacitor",
+      "value": "100nF",
+      "package": "0805",
+      "purpose": "VCC bypass near U1",
+      "functional_group": "timer"
+    },
+    {
+      "ref": "C3",
+      "type": "capacitor",
+      "value": "10nF",
+      "package": "0805",
+      "purpose": "CTRL pin noise suppression",
+      "functional_group": "timer"
+    },
+    {
+      "ref": "R4",
+      "type": "resistor",
+      "value": "150ohm",
+      "package": "0805",
+      "purpose": "Current limit for D1",
+      "functional_group": "leds"
+    },
+    {
+      "ref": "R5",
+      "type": "resistor",
+      "value": "150ohm",
+      "package": "0805",
+      "purpose": "Current limit for D2",
+      "functional_group": "leds"
+    },
+    {
+      "ref": "R6",
+      "type": "resistor",
+      "value": "150ohm",
+      "package": "0805",
+      "purpose": "Current limit for D3",
+      "functional_group": "leds"
+    },
+    {
+      "ref": "D1",
+      "type": "led",
+      "value": "red",
+      "package": "0805_LED",
+      "purpose": "Blinking LED 1",
+      "functional_group": "leds"
+    },
+    {
+      "ref": "D2",
+      "type": "led",
+      "value": "red",
+      "package": "0805_LED",
+      "purpose": "Blinking LED 2",
+      "functional_group": "leds"
+    },
+    {
+      "ref": "D3",
+      "type": "led",
+      "value": "red",
+      "package": "0805_LED",
+      "purpose": "Blinking LED 3",
+      "functional_group": "leds"
+    }
+  ],
+  "connections": [
+    {
+      "net_name": "VCC",
+      "net_class": "power",
+      "pins": [
+        "J1.1",
+        "U1.VCC",
+        "R1.1",
+        "R3.1",
+        "C2.1"
+      ]
+    },
+    {
+      "net_name": "GND",
+      "net_class": "ground",
+      "pins": [
+        "J1.2",
+        "U1.GND",
+        "C1.2",
+        "C2.2",
+        "C3.2",
+        "D1.cathode",
+        "D2.cathode",
+        "D3.cathode"
+      ]
+    },
+    {
+      "net_name": "RESET",
+      "net_class": "signal",
+      "pins": [
+        "U1.RESET",
+        "R3.2"
+      ]
+    },
+    {
+      "net_name": "DISCH",
+      "net_class": "signal",
+      "pins": [
+        "U1.DISCH",
+        "R1.2",
+        "R2.1"
+      ]
+    },
+    {
+      "net_name": "TIMING",
+      "net_class": "signal",
+      "pins": [
+        "U1.TRIG",
+        "U1.THRESH",
+        "R2.2",
+        "C1.1"
+      ]
+    },
+    {
+      "net_name": "CTRL",
+      "net_class": "signal",
+      "pins": [
+        "U1.CTRL",
+        "C3.1"
+      ]
+    },
+    {
+      "net_name": "LED_DRV",
+      "net_class": "signal",
+      "pins": [
+        "U1.OUT",
+        "R4.1",
+        "R5.1",
+        "R6.1"
+      ]
+    },
+    {
+      "net_name": "D1_AN",
+      "net_class": "signal",
+      "pins": [
+        "R4.2",
+        "D1.anode"
+      ]
+    },
+    {
+      "net_name": "D2_AN",
+      "net_class": "signal",
+      "pins": [
+        "R5.2",
+        "D2.anode"
+      ]
+    },
+    {
+      "net_name": "D3_AN",
+      "net_class": "signal",
+      "pins": [
+        "R6.2",
+        "D3.anode"
+      ]
+    }
+  ],
+  "placement_hints": [
+    {
+      "ref": "J1",
+      "edge": "left"
+    },
+    {
+      "ref": "U1",
+      "x_mm": 25.0,
+      "y_mm": 17.0
+    },
+    {
+      "ref": "D1",
+      "edge": "right"
+    },
+    {
+      "ref": "D2",
+      "edge": "right",
+      "near": "D1"
+    },
+    {
+      "ref": "D3",
+      "edge": "right",
+      "near": "D2"
+    }
+  ],
+  "attachments": []
+}

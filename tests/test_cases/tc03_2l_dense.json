@@ -1,0 +1,610 @@
+{
+  "project_name": "tc03_2l_dense",
+  "description": "Arduino-class ATmega328P-AU (TQFP-32) development board with CH340G USB-UART, 16 MHz crystal, 5 V LDO, ISP header, digital/analog I/O headers \u2014 stresses the fine-pitch escape router and auto-reset circuit on 2 layers",
+  "power": {
+    "voltage": "5V",
+    "source": "USB-B connector"
+  },
+  "board": {
+    "width_mm": 82.0,
+    "height_mm": 62.0,
+    "layers": 2,
+    "corner_radius_mm": 1.5,
+    "outline_type": "rectangle"
+  },
+  "manufacturing": {
+    "manufacturer": "jlcpcb_standard"
+  },
+  "components": [
+    {
+      "ref": "J1",
+      "type": "connector",
+      "value": "USB-B",
+      "package": "USB_B",
+      "purpose": "USB power + UART programming",
+      "functional_group": "usb"
+    },
+    {
+      "ref": "J2",
+      "type": "connector",
+      "value": "ISP 2x3",
+      "package": "Connector_PinHeader_2.54mm_2x03",
+      "purpose": "In-circuit AVR programming",
+      "functional_group": "isp"
+    },
+    {
+      "ref": "J3",
+      "type": "connector",
+      "value": "Digital I/O 1x10",
+      "package": "Connector_PinHeader_2.54mm_1x10",
+      "purpose": "PD2-PD7, PB0, PB1, VCC, GND",
+      "functional_group": "io"
+    },
+    {
+      "ref": "J4",
+      "type": "connector",
+      "value": "Analog I/O 1x8",
+      "package": "Connector_PinHeader_2.54mm_1x08",
+      "purpose": "PC0-PC5, VCC, GND",
+      "functional_group": "io"
+    },
+    {
+      "ref": "J5",
+      "type": "connector",
+      "value": "Power header 1x4",
+      "package": "Connector_PinHeader_2.54mm_1x04",
+      "purpose": "VBUS/5 V/GND power rails out",
+      "functional_group": "power"
+    },
+    {
+      "ref": "U1",
+      "type": "ic",
+      "value": "ATmega328P-AU",
+      "package": "TQFP32",
+      "purpose": "8-bit AVR MCU (Arduino bootloader)",
+      "functional_group": "mcu"
+    },
+    {
+      "ref": "Y1",
+      "type": "crystal",
+      "value": "16MHz",
+      "package": "HC-49S",
+      "purpose": "MCU system clock",
+      "functional_group": "mcu"
+    },
+    {
+      "ref": "C5",
+      "type": "capacitor",
+      "value": "22pF",
+      "package": "0402",
+      "purpose": "Crystal load cap X1",
+      "functional_group": "mcu"
+    },
+    {
+      "ref": "C6",
+      "type": "capacitor",
+      "value": "22pF",
+      "package": "0402",
+      "purpose": "Crystal load cap X2",
+      "functional_group": "mcu"
+    },
+    {
+      "ref": "C7",
+      "type": "capacitor",
+      "value": "100nF",
+      "package": "0805",
+      "purpose": "U1 VCC bypass 1",
+      "functional_group": "mcu"
+    },
+    {
+      "ref": "C8",
+      "type": "capacitor",
+      "value": "100nF",
+      "package": "0805",
+      "purpose": "U1 VCC bypass 2",
+      "functional_group": "mcu"
+    },
+    {
+      "ref": "C9",
+      "type": "capacitor",
+      "value": "100nF",
+      "package": "0805",
+      "purpose": "AVCC bypass",
+      "functional_group": "mcu"
+    },
+    {
+      "ref": "C10",
+      "type": "capacitor",
+      "value": "4.7uF",
+      "package": "1206",
+      "purpose": "AVCC bulk cap",
+      "functional_group": "mcu"
+    },
+    {
+      "ref": "C11",
+      "type": "capacitor",
+      "value": "100nF",
+      "package": "0402",
+      "purpose": "AREF bypass",
+      "functional_group": "mcu"
+    },
+    {
+      "ref": "R2",
+      "type": "resistor",
+      "value": "10kohm",
+      "package": "0805",
+      "purpose": "RESET pull-up",
+      "functional_group": "mcu"
+    },
+    {
+      "ref": "SW1",
+      "type": "switch",
+      "value": "push button 6mm",
+      "package": "SW_Push_6mm",
+      "purpose": "Manual RESET",
+      "functional_group": "mcu"
+    },
+    {
+      "ref": "U2",
+      "type": "ic",
+      "value": "CH340G",
+      "package": "SOP16",
+      "purpose": "USB-to-UART bridge",
+      "functional_group": "usb"
+    },
+    {
+      "ref": "C12",
+      "type": "capacitor",
+      "value": "100nF",
+      "package": "0805",
+      "purpose": "U2 VCC bypass",
+      "functional_group": "usb"
+    },
+    {
+      "ref": "C13",
+      "type": "capacitor",
+      "value": "100nF",
+      "package": "0805",
+      "purpose": "CH340G 3.3 V cap",
+      "functional_group": "usb"
+    },
+    {
+      "ref": "C14",
+      "type": "capacitor",
+      "value": "100nF",
+      "package": "0402",
+      "purpose": "Auto-reset DTR coupling cap",
+      "functional_group": "usb"
+    },
+    {
+      "ref": "R3",
+      "type": "resistor",
+      "value": "33ohm",
+      "package": "0402",
+      "purpose": "USB D- series termination",
+      "functional_group": "usb"
+    },
+    {
+      "ref": "R4",
+      "type": "resistor",
+      "value": "33ohm",
+      "package": "0402",
+      "purpose": "USB D+ series termination",
+      "functional_group": "usb"
+    },
+    {
+      "ref": "U3",
+      "type": "ic",
+      "value": "AMS1117-5.0",
+      "package": "SOT-223",
+      "purpose": "5 V LDO (from higher VBUS)",
+      "functional_group": "power"
+    },
+    {
+      "ref": "C1",
+      "type": "capacitor",
+      "value": "10uF",
+      "package": "1206",
+      "purpose": "LDO input bulk cap",
+      "functional_group": "power"
+    },
+    {
+      "ref": "C2",
+      "type": "capacitor",
+      "value": "100nF",
+      "package": "0805",
+      "purpose": "LDO input HF bypass",
+      "functional_group": "power"
+    },
+    {
+      "ref": "C3",
+      "type": "capacitor",
+      "value": "10uF",
+      "package": "1206",
+      "purpose": "LDO output bulk cap",
+      "functional_group": "power"
+    },
+    {
+      "ref": "C4",
+      "type": "capacitor",
+      "value": "100nF",
+      "package": "0805",
+      "purpose": "LDO output HF bypass",
+      "functional_group": "power"
+    },
+    {
+      "ref": "D1",
+      "type": "led",
+      "value": "red",
+      "package": "0805_LED",
+      "purpose": "Power indicator LED",
+      "functional_group": "power"
+    },
+    {
+      "ref": "R1",
+      "type": "resistor",
+      "value": "470ohm",
+      "package": "0805",
+      "purpose": "Power LED current limit",
+      "functional_group": "power"
+    }
+  ],
+  "connections": [
+    {
+      "net_name": "VBUS",
+      "net_class": "power",
+      "pins": [
+        "J1.VBUS",
+        "U3.VIN",
+        "C1.1",
+        "C2.1",
+        "J5.1"
+      ]
+    },
+    {
+      "net_name": "GND",
+      "net_class": "ground",
+      "pins": [
+        "J1.GND",
+        "U3.GND",
+        "C1.2",
+        "C2.2",
+        "C3.2",
+        "C4.2",
+        "U1.GND",
+        "U1.AGND",
+        "C5.2",
+        "C6.2",
+        "C7.2",
+        "C8.2",
+        "C9.2",
+        "C10.2",
+        "C11.2",
+        "U2.GND",
+        "C12.2",
+        "C13.2",
+        "D1.cathode",
+        "SW1.2",
+        "J2.GND",
+        "J3.10",
+        "J4.8",
+        "J5.3",
+        "J5.4"
+      ]
+    },
+    {
+      "net_name": "VCC_5V",
+      "net_class": "power",
+      "pins": [
+        "U3.VOUT",
+        "C3.1",
+        "C4.1",
+        "U1.VCC",
+        "U1.AVCC",
+        "C7.1",
+        "C8.1",
+        "C9.1",
+        "C10.1",
+        "U2.VCC",
+        "C12.1",
+        "R1.1",
+        "R2.1",
+        "J2.VCC",
+        "J3.1",
+        "J4.1",
+        "J5.2"
+      ]
+    },
+    {
+      "net_name": "V3_USB",
+      "net_class": "signal",
+      "pins": [
+        "U2.V3",
+        "C13.1"
+      ]
+    },
+    {
+      "net_name": "RESET",
+      "net_class": "signal",
+      "pins": [
+        "U1.RESET",
+        "R2.2",
+        "SW1.1",
+        "J2.RESET",
+        "C14.1"
+      ]
+    },
+    {
+      "net_name": "DTR_LINE",
+      "net_class": "signal",
+      "pins": [
+        "U2.DTR",
+        "C14.2"
+      ]
+    },
+    {
+      "net_name": "USB_DM",
+      "net_class": "signal",
+      "pins": [
+        "J1.DM",
+        "R3.1"
+      ]
+    },
+    {
+      "net_name": "USB_DM_IC",
+      "net_class": "signal",
+      "pins": [
+        "R3.2",
+        "U2.UD_MINUS"
+      ]
+    },
+    {
+      "net_name": "USB_DP",
+      "net_class": "signal",
+      "pins": [
+        "J1.DP",
+        "R4.1"
+      ]
+    },
+    {
+      "net_name": "USB_DP_IC",
+      "net_class": "signal",
+      "pins": [
+        "R4.2",
+        "U2.UD_PLUS"
+      ]
+    },
+    {
+      "net_name": "UART_TXD",
+      "net_class": "signal",
+      "pins": [
+        "U1.PD1",
+        "U2.RXD"
+      ]
+    },
+    {
+      "net_name": "UART_RXD",
+      "net_class": "signal",
+      "pins": [
+        "U1.PD0",
+        "U2.TXD"
+      ]
+    },
+    {
+      "net_name": "XTAL1",
+      "net_class": "signal",
+      "pins": [
+        "U1.XTAL1",
+        "Y1.1",
+        "C5.1"
+      ]
+    },
+    {
+      "net_name": "XTAL2",
+      "net_class": "signal",
+      "pins": [
+        "U1.XTAL2",
+        "Y1.2",
+        "C6.1"
+      ]
+    },
+    {
+      "net_name": "AREF",
+      "net_class": "signal",
+      "pins": [
+        "U1.AREF",
+        "C11.1"
+      ]
+    },
+    {
+      "net_name": "PWR_LED",
+      "net_class": "signal",
+      "pins": [
+        "R1.2",
+        "D1.anode"
+      ]
+    },
+    {
+      "net_name": "ISP_MOSI",
+      "net_class": "signal",
+      "pins": [
+        "U1.MOSI",
+        "J2.MOSI"
+      ]
+    },
+    {
+      "net_name": "ISP_MISO",
+      "net_class": "signal",
+      "pins": [
+        "U1.MISO",
+        "J2.MISO"
+      ]
+    },
+    {
+      "net_name": "ISP_SCK",
+      "net_class": "signal",
+      "pins": [
+        "U1.SCK",
+        "J2.SCK"
+      ]
+    },
+    {
+      "net_name": "PD2",
+      "net_class": "signal",
+      "pins": [
+        "U1.PD2",
+        "J3.2"
+      ]
+    },
+    {
+      "net_name": "PD3",
+      "net_class": "signal",
+      "pins": [
+        "U1.PD3",
+        "J3.3"
+      ]
+    },
+    {
+      "net_name": "PD4",
+      "net_class": "signal",
+      "pins": [
+        "U1.PD4",
+        "J3.4"
+      ]
+    },
+    {
+      "net_name": "PD5",
+      "net_class": "signal",
+      "pins": [
+        "U1.PD5",
+        "J3.5"
+      ]
+    },
+    {
+      "net_name": "PD6",
+      "net_class": "signal",
+      "pins": [
+        "U1.PD6",
+        "J3.6"
+      ]
+    },
+    {
+      "net_name": "PD7",
+      "net_class": "signal",
+      "pins": [
+        "U1.PD7",
+        "J3.7"
+      ]
+    },
+    {
+      "net_name": "PB0",
+      "net_class": "signal",
+      "pins": [
+        "U1.PB0",
+        "J3.8"
+      ]
+    },
+    {
+      "net_name": "PB1",
+      "net_class": "signal",
+      "pins": [
+        "U1.PB1",
+        "J3.9"
+      ]
+    },
+    {
+      "net_name": "PC0",
+      "net_class": "signal",
+      "pins": [
+        "U1.PC0",
+        "J4.2"
+      ]
+    },
+    {
+      "net_name": "PC1",
+      "net_class": "signal",
+      "pins": [
+        "U1.PC1",
+        "J4.3"
+      ]
+    },
+    {
+      "net_name": "PC2",
+      "net_class": "signal",
+      "pins": [
+        "U1.PC2",
+        "J4.4"
+      ]
+    },
+    {
+      "net_name": "PC3",
+      "net_class": "signal",
+      "pins": [
+        "U1.PC3",
+        "J4.5"
+      ]
+    },
+    {
+      "net_name": "PC4",
+      "net_class": "signal",
+      "pins": [
+        "U1.PC4",
+        "J4.6"
+      ]
+    },
+    {
+      "net_name": "PC5",
+      "net_class": "signal",
+      "pins": [
+        "U1.PC5",
+        "J4.7"
+      ]
+    }
+  ],
+  "placement_hints": [
+    {
+      "ref": "J1",
+      "edge": "bottom"
+    },
+    {
+      "ref": "U2",
+      "near": "J1"
+    },
+    {
+      "ref": "U3",
+      "near": "J1"
+    },
+    {
+      "ref": "U1",
+      "x_mm": 41.0,
+      "y_mm": 31.0
+    },
+    {
+      "ref": "Y1",
+      "near": "U1"
+    },
+    {
+      "ref": "J2",
+      "edge": "top"
+    },
+    {
+      "ref": "J3",
+      "edge": "right"
+    },
+    {
+      "ref": "J4",
+      "edge": "right",
+      "near": "J3"
+    },
+    {
+      "ref": "J5",
+      "edge": "left"
+    },
+    {
+      "ref": "SW1",
+      "edge": "top",
+      "near": "U1"
+    }
+  ],
+  "attachments": []
+}

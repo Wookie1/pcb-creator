@@ -1,0 +1,539 @@
+{
+  "project_name": "tc05_4l_planes1",
+  "description": "STM32F103C8T6 (LQFP-48) data-logger board: CAN bus, SD-card SPI, USART, SWD \u2014 4-layer with one inner GND plane (plane_layers=1); In1.Cu is a solid GND pour, In2.Cu and the outer layers route signals \u2014 tests GND-plane integrity path",
+  "power": {
+    "voltage": "5V",
+    "source": "DC barrel jack 5.5/2.1mm"
+  },
+  "board": {
+    "width_mm": 72.0,
+    "height_mm": 56.0,
+    "layers": 4,
+    "corner_radius_mm": 1.5,
+    "outline_type": "rectangle"
+  },
+  "manufacturing": {
+    "manufacturer": "jlcpcb_standard"
+  },
+  "components": [
+    {
+      "ref": "J1",
+      "type": "connector",
+      "value": "DC barrel jack 5V",
+      "package": "DC_Jack_2.1x5.5",
+      "purpose": "5 V power input",
+      "functional_group": "power"
+    },
+    {
+      "ref": "U3",
+      "type": "ic",
+      "value": "LM1117-3.3",
+      "package": "SOT-223",
+      "purpose": "3.3 V 800 mA LDO",
+      "functional_group": "power"
+    },
+    {
+      "ref": "C1",
+      "type": "capacitor",
+      "value": "10uF",
+      "package": "1206",
+      "purpose": "LDO input bulk",
+      "functional_group": "power"
+    },
+    {
+      "ref": "C2",
+      "type": "capacitor",
+      "value": "100nF",
+      "package": "0805",
+      "purpose": "LDO input bypass",
+      "functional_group": "power"
+    },
+    {
+      "ref": "C3",
+      "type": "capacitor",
+      "value": "10uF",
+      "package": "1206",
+      "purpose": "LDO output bulk",
+      "functional_group": "power"
+    },
+    {
+      "ref": "C4",
+      "type": "capacitor",
+      "value": "100nF",
+      "package": "0805",
+      "purpose": "LDO output bypass",
+      "functional_group": "power"
+    },
+    {
+      "ref": "D1",
+      "type": "led",
+      "value": "red",
+      "package": "0805_LED",
+      "purpose": "Power indicator",
+      "functional_group": "power"
+    },
+    {
+      "ref": "R1",
+      "type": "resistor",
+      "value": "470ohm",
+      "package": "0805",
+      "purpose": "Power LED limit",
+      "functional_group": "power"
+    },
+    {
+      "ref": "U1",
+      "type": "ic",
+      "value": "STM32F103C8T6",
+      "package": "LQFP-48",
+      "purpose": "ARM Cortex-M3 MCU",
+      "functional_group": "mcu"
+    },
+    {
+      "ref": "Y1",
+      "type": "crystal",
+      "value": "8MHz",
+      "package": "HC-49S",
+      "purpose": "HSE system clock",
+      "functional_group": "mcu"
+    },
+    {
+      "ref": "C5",
+      "type": "capacitor",
+      "value": "22pF",
+      "package": "0402",
+      "purpose": "HSE load cap X1",
+      "functional_group": "mcu"
+    },
+    {
+      "ref": "C6",
+      "type": "capacitor",
+      "value": "22pF",
+      "package": "0402",
+      "purpose": "HSE load cap X2",
+      "functional_group": "mcu"
+    },
+    {
+      "ref": "C7",
+      "type": "capacitor",
+      "value": "100nF",
+      "package": "0805",
+      "purpose": "U1 VDD bypass 1",
+      "functional_group": "mcu"
+    },
+    {
+      "ref": "C8",
+      "type": "capacitor",
+      "value": "100nF",
+      "package": "0805",
+      "purpose": "U1 VDD bypass 2",
+      "functional_group": "mcu"
+    },
+    {
+      "ref": "C9",
+      "type": "capacitor",
+      "value": "100nF",
+      "package": "0805",
+      "purpose": "VDDA bypass",
+      "functional_group": "mcu"
+    },
+    {
+      "ref": "R2",
+      "type": "resistor",
+      "value": "10kohm",
+      "package": "0805",
+      "purpose": "NRST pull-up",
+      "functional_group": "mcu"
+    },
+    {
+      "ref": "SW1",
+      "type": "switch",
+      "value": "push button 6mm",
+      "package": "SW_Push_6mm",
+      "purpose": "MCU RESET button",
+      "functional_group": "mcu"
+    },
+    {
+      "ref": "U2",
+      "type": "ic",
+      "value": "SN65HVD230",
+      "package": "SOIC8",
+      "purpose": "3.3 V CAN bus transceiver",
+      "functional_group": "can"
+    },
+    {
+      "ref": "R3",
+      "type": "resistor",
+      "value": "120ohm",
+      "package": "0805",
+      "purpose": "CAN bus 120 \u03a9 termination",
+      "functional_group": "can"
+    },
+    {
+      "ref": "C10",
+      "type": "capacitor",
+      "value": "100nF",
+      "package": "0402",
+      "purpose": "CAN IC bypass",
+      "functional_group": "can"
+    },
+    {
+      "ref": "J3",
+      "type": "connector",
+      "value": "CAN 1x3",
+      "package": "Connector_PinHeader_2.54mm_1x03",
+      "purpose": "CANH/CANL/GND header",
+      "functional_group": "can"
+    },
+    {
+      "ref": "J4",
+      "type": "connector",
+      "value": "MicroSD card slot",
+      "package": "MicroSD_HC_Vertical",
+      "purpose": "MicroSD card via SPI",
+      "functional_group": "storage"
+    },
+    {
+      "ref": "C11",
+      "type": "capacitor",
+      "value": "100nF",
+      "package": "0402",
+      "purpose": "SD card VCC bypass",
+      "functional_group": "storage"
+    },
+    {
+      "ref": "R4",
+      "type": "resistor",
+      "value": "10kohm",
+      "package": "0402",
+      "purpose": "SD card CS pull-up",
+      "functional_group": "storage"
+    },
+    {
+      "ref": "R5",
+      "type": "resistor",
+      "value": "10kohm",
+      "package": "0402",
+      "purpose": "SD card MISO pull-up",
+      "functional_group": "storage"
+    },
+    {
+      "ref": "J2",
+      "type": "connector",
+      "value": "SWD debug 2x5",
+      "package": "Connector_PinHeader_1.27mm_2x05",
+      "purpose": "ARM SWD debug",
+      "functional_group": "debug"
+    },
+    {
+      "ref": "J5",
+      "type": "connector",
+      "value": "UART 1x4",
+      "package": "Connector_PinHeader_2.54mm_1x04",
+      "purpose": "USART1 UART header",
+      "functional_group": "uart"
+    },
+    {
+      "ref": "D2",
+      "type": "led",
+      "value": "green",
+      "package": "0805_LED",
+      "purpose": "Activity indicator",
+      "functional_group": "mcu"
+    },
+    {
+      "ref": "R6",
+      "type": "resistor",
+      "value": "100ohm",
+      "package": "0805",
+      "purpose": "Activity LED limit",
+      "functional_group": "mcu"
+    }
+  ],
+  "connections": [
+    {
+      "net_name": "VIN",
+      "net_class": "power",
+      "pins": [
+        "J1.1",
+        "U3.VIN",
+        "C1.1",
+        "C2.1"
+      ]
+    },
+    {
+      "net_name": "GND",
+      "net_class": "ground",
+      "pins": [
+        "J1.2",
+        "U3.GND",
+        "C1.2",
+        "C2.2",
+        "C3.2",
+        "C4.2",
+        "D1.cathode",
+        "D2.cathode",
+        "U1.VSS",
+        "U1.VSSA",
+        "C5.2",
+        "C6.2",
+        "C7.2",
+        "C8.2",
+        "C9.2",
+        "SW1.2",
+        "U2.GND",
+        "C10.2",
+        "R3.2",
+        "J3.3",
+        "J4.GND",
+        "C11.2",
+        "J2.GND",
+        "J5.4"
+      ]
+    },
+    {
+      "net_name": "VCC_3V3",
+      "net_class": "power",
+      "pins": [
+        "U3.VOUT",
+        "C3.1",
+        "C4.1",
+        "U1.VDD",
+        "U1.VDDA",
+        "C7.1",
+        "C8.1",
+        "C9.1",
+        "R1.1",
+        "R2.1",
+        "U2.VCC",
+        "C10.1",
+        "J4.VCC",
+        "C11.1",
+        "R4.1",
+        "R5.1",
+        "J2.VCC",
+        "J5.1"
+      ]
+    },
+    {
+      "net_name": "HSE_IN",
+      "net_class": "signal",
+      "pins": [
+        "U1.PD0_OSC_IN",
+        "Y1.1",
+        "C5.1"
+      ]
+    },
+    {
+      "net_name": "HSE_OUT",
+      "net_class": "signal",
+      "pins": [
+        "U1.PD1_OSC_OUT",
+        "Y1.2",
+        "C6.1"
+      ]
+    },
+    {
+      "net_name": "NRST",
+      "net_class": "signal",
+      "pins": [
+        "U1.NRST",
+        "R2.2",
+        "SW1.1",
+        "J2.RESET"
+      ]
+    },
+    {
+      "net_name": "PWR_LED",
+      "net_class": "signal",
+      "pins": [
+        "R1.2",
+        "D1.anode"
+      ]
+    },
+    {
+      "net_name": "ACT_LED",
+      "net_class": "signal",
+      "pins": [
+        "R6.2",
+        "D2.anode"
+      ]
+    },
+    {
+      "net_name": "ACT_DRV",
+      "net_class": "signal",
+      "pins": [
+        "U1.PC13",
+        "R6.1"
+      ]
+    },
+    {
+      "net_name": "CAN_TX",
+      "net_class": "signal",
+      "pins": [
+        "U1.PA12",
+        "U2.TXD"
+      ]
+    },
+    {
+      "net_name": "CAN_RX",
+      "net_class": "signal",
+      "pins": [
+        "U1.PA11",
+        "U2.RXD"
+      ]
+    },
+    {
+      "net_name": "CANH",
+      "net_class": "signal",
+      "pins": [
+        "U2.CANH",
+        "R3.1",
+        "J3.1"
+      ]
+    },
+    {
+      "net_name": "CANL",
+      "net_class": "signal",
+      "pins": [
+        "U2.CANL",
+        "J3.2"
+      ]
+    },
+    {
+      "net_name": "SD_SCK",
+      "net_class": "signal",
+      "pins": [
+        "U1.PB13",
+        "J4.SCK"
+      ]
+    },
+    {
+      "net_name": "SD_MISO",
+      "net_class": "signal",
+      "pins": [
+        "U1.PB14",
+        "J4.MISO",
+        "R5.2"
+      ]
+    },
+    {
+      "net_name": "SD_MOSI",
+      "net_class": "signal",
+      "pins": [
+        "U1.PB15",
+        "J4.MOSI"
+      ]
+    },
+    {
+      "net_name": "SD_CS",
+      "net_class": "signal",
+      "pins": [
+        "U1.PB12",
+        "J4.CS",
+        "R4.2"
+      ]
+    },
+    {
+      "net_name": "SD_CD",
+      "net_class": "signal",
+      "pins": [
+        "U1.PB11",
+        "J4.CD"
+      ]
+    },
+    {
+      "net_name": "UART_TX",
+      "net_class": "signal",
+      "pins": [
+        "U1.PA9",
+        "J5.2"
+      ]
+    },
+    {
+      "net_name": "UART_RX",
+      "net_class": "signal",
+      "pins": [
+        "U1.PA10",
+        "J5.3"
+      ]
+    },
+    {
+      "net_name": "SWDIO",
+      "net_class": "signal",
+      "pins": [
+        "U1.PA13",
+        "J2.SWDIO"
+      ]
+    },
+    {
+      "net_name": "SWDCLK",
+      "net_class": "signal",
+      "pins": [
+        "U1.PA14",
+        "J2.SWDCLK"
+      ]
+    },
+    {
+      "net_name": "BOOT0_LO",
+      "net_class": "signal",
+      "pins": [
+        "U1.BOOT0",
+        "J2.SWO"
+      ]
+    },
+    {
+      "net_name": "HSE_EN",
+      "net_class": "signal",
+      "pins": [
+        "U2.S",
+        "U1.PA8"
+      ]
+    }
+  ],
+  "placement_hints": [
+    {
+      "ref": "J1",
+      "edge": "left"
+    },
+    {
+      "ref": "U3",
+      "near": "J1"
+    },
+    {
+      "ref": "U1",
+      "x_mm": 36.0,
+      "y_mm": 28.0
+    },
+    {
+      "ref": "Y1",
+      "near": "U1"
+    },
+    {
+      "ref": "U2",
+      "near": "J3"
+    },
+    {
+      "ref": "J3",
+      "edge": "right"
+    },
+    {
+      "ref": "J4",
+      "edge": "bottom"
+    },
+    {
+      "ref": "J2",
+      "edge": "top"
+    },
+    {
+      "ref": "J5",
+      "edge": "right",
+      "near": "J2"
+    },
+    {
+      "ref": "SW1",
+      "edge": "top",
+      "near": "U1"
+    }
+  ],
+  "attachments": []
+}

@@ -1,0 +1,68 @@
+{
+  "description": "PCB test-case suite \u2014 covers 2L and 4L stackups with 0\u20133 inner planes. Feed each requirements JSON into the MCP pipeline; use the plane_layers column when calling optimize_placement.",
+  "test_cases": [
+    {
+      "id": "TC1",
+      "file": "tc01_2l_minimal.json",
+      "layers": 2,
+      "plane_layers": null,
+      "components": 14,
+      "board_mm": "50x35",
+      "purpose": "Regression baseline \u2014 555 timer + 3 LEDs; should always route 100%."
+    },
+    {
+      "id": "TC2",
+      "file": "tc02_2l_moderate.json",
+      "layers": 2,
+      "plane_layers": null,
+      "components": 20,
+      "board_mm": "62x46",
+      "purpose": "ATtiny85 I2C sensor module \u2014 mixed SMD/TH, functional-group affinity."
+    },
+    {
+      "id": "TC3",
+      "file": "tc03_2l_dense.json",
+      "layers": 2,
+      "plane_layers": null,
+      "components": 30,
+      "board_mm": "82x62",
+      "purpose": "ATmega328P-AU (TQFP-32) dev board \u2014 escape-router stress test, auto-reset circuit."
+    },
+    {
+      "id": "TC4",
+      "file": "tc04_4l_planes0.json",
+      "layers": 4,
+      "plane_layers": 0,
+      "components": 26,
+      "board_mm": "65x50",
+      "purpose": "4-layer all-signal (no planes): tests router using inner layers as signal layers."
+    },
+    {
+      "id": "TC5",
+      "file": "tc05_4l_planes1.json",
+      "layers": 4,
+      "plane_layers": 1,
+      "components": 29,
+      "board_mm": "72x56",
+      "purpose": "4-layer one GND plane (In1): data-logger with CAN + SD-card SPI."
+    },
+    {
+      "id": "TC6",
+      "file": "tc06_4l_planes2.json",
+      "layers": 4,
+      "plane_layers": 2,
+      "components": 40,
+      "board_mm": "76x60",
+      "purpose": "4-layer full GND+PWR planes: STM32F407 + Ethernet + USB \u2014 power-integrity gold standard."
+    },
+    {
+      "id": "TC7",
+      "file": "tc07_4l_planes3.json",
+      "layers": 4,
+      "plane_layers": 3,
+      "components": 40,
+      "board_mm": "76x60",
+      "purpose": "plane_layers=3 \u2192 clamped to 2; identical result to TC6. Verifies bounds handling."
+    }
+  ]
+}

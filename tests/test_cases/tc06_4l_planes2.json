@@ -1,0 +1,799 @@
+{
+  "project_name": "tc06_4l_planes2",
+  "description": "STM32F407VGT6 (LQFP-100) Ethernet+USB gateway \u2014 4-layer with full GND+power planes (plane_layers=2): In1.Cu=GND plane, In2.Cu=3.3 V power plane, F.Cu+B.Cu=signal layers. Multiple power rails (3.3 V, 1.2 V core), LAN8720 Ethernet PHY, USB FS, SWD, CAN \u2014 high component density tests routing under ideal power-integrity constraints",
+  "power": {
+    "voltage": "5V",
+    "source": "USB-C power delivery connector"
+  },
+  "board": {
+    "width_mm": 76.0,
+    "height_mm": 60.0,
+    "layers": 4,
+    "corner_radius_mm": 2.0,
+    "outline_type": "rectangle"
+  },
+  "manufacturing": {
+    "manufacturer": "jlcpcb_standard"
+  },
+  "components": [
+    {
+      "ref": "J1",
+      "type": "connector",
+      "value": "USB-C 16-pin",
+      "package": "USB_C_Receptacle_GCT_USB4135",
+      "purpose": "USB-C power + data",
+      "functional_group": "power"
+    },
+    {
+      "ref": "R_CC1",
+      "type": "resistor",
+      "value": "5.1kohm",
+      "package": "0402",
+      "purpose": "USB-C CC1 pull-down",
+      "functional_group": "power"
+    },
+    {
+      "ref": "R_CC2",
+      "type": "resistor",
+      "value": "5.1kohm",
+      "package": "0402",
+      "purpose": "USB-C CC2 pull-down",
+      "functional_group": "power"
+    },
+    {
+      "ref": "U4",
+      "type": "ic",
+      "value": "LM1117-3.3",
+      "package": "SOT-223",
+      "purpose": "3.3 V main LDO",
+      "functional_group": "power"
+    },
+    {
+      "ref": "C1",
+      "type": "capacitor",
+      "value": "10uF",
+      "package": "1206",
+      "purpose": "LDO input bulk",
+      "functional_group": "power"
+    },
+    {
+      "ref": "C2",
+      "type": "capacitor",
+      "value": "100nF",
+      "package": "0805",
+      "purpose": "LDO input bypass",
+      "functional_group": "power"
+    },
+    {
+      "ref": "C3",
+      "type": "capacitor",
+      "value": "10uF",
+      "package": "1206",
+      "purpose": "LDO 3.3 V output bulk",
+      "functional_group": "power"
+    },
+    {
+      "ref": "C4",
+      "type": "capacitor",
+      "value": "100nF",
+      "package": "0805",
+      "purpose": "LDO 3.3 V output bypass",
+      "functional_group": "power"
+    },
+    {
+      "ref": "C_VCAP1",
+      "type": "capacitor",
+      "value": "2.2uF",
+      "package": "1206",
+      "purpose": "STM32F4 VCAP1 internal regulator",
+      "functional_group": "power"
+    },
+    {
+      "ref": "C_VCAP2",
+      "type": "capacitor",
+      "value": "2.2uF",
+      "package": "1206",
+      "purpose": "STM32F4 VCAP2 internal regulator",
+      "functional_group": "power"
+    },
+    {
+      "ref": "U1",
+      "type": "ic",
+      "value": "STM32F407VGT6",
+      "package": "LQFP-100",
+      "purpose": "ARM Cortex-M4 MCU with FPU",
+      "functional_group": "mcu"
+    },
+    {
+      "ref": "Y1",
+      "type": "crystal",
+      "value": "25MHz",
+      "package": "HC-49S",
+      "purpose": "HSE system clock",
+      "functional_group": "mcu"
+    },
+    {
+      "ref": "C5",
+      "type": "capacitor",
+      "value": "22pF",
+      "package": "0402",
+      "purpose": "HSE load cap X1",
+      "functional_group": "mcu"
+    },
+    {
+      "ref": "C6",
+      "type": "capacitor",
+      "value": "22pF",
+      "package": "0402",
+      "purpose": "HSE load cap X2",
+      "functional_group": "mcu"
+    },
+    {
+      "ref": "C7",
+      "type": "capacitor",
+      "value": "100nF",
+      "package": "0402",
+      "purpose": "U1 VDD bypass 1",
+      "functional_group": "mcu"
+    },
+    {
+      "ref": "C8",
+      "type": "capacitor",
+      "value": "100nF",
+      "package": "0402",
+      "purpose": "U1 VDD bypass 2",
+      "functional_group": "mcu"
+    },
+    {
+      "ref": "C9",
+      "type": "capacitor",
+      "value": "100nF",
+      "package": "0402",
+      "purpose": "U1 VDD bypass 3",
+      "functional_group": "mcu"
+    },
+    {
+      "ref": "C10",
+      "type": "capacitor",
+      "value": "100nF",
+      "package": "0402",
+      "purpose": "VDDA bypass",
+      "functional_group": "mcu"
+    },
+    {
+      "ref": "R2",
+      "type": "resistor",
+      "value": "10kohm",
+      "package": "0402",
+      "purpose": "NRST pull-up",
+      "functional_group": "mcu"
+    },
+    {
+      "ref": "SW1",
+      "type": "switch",
+      "value": "push button 6mm",
+      "package": "SW_Push_6mm",
+      "purpose": "MCU RESET button",
+      "functional_group": "mcu"
+    },
+    {
+      "ref": "U2",
+      "type": "ic",
+      "value": "LAN8720A",
+      "package": "QFN-24",
+      "purpose": "10/100 Ethernet PHY (RMII)",
+      "functional_group": "eth"
+    },
+    {
+      "ref": "Y2",
+      "type": "crystal",
+      "value": "25MHz",
+      "package": "HC-49S",
+      "purpose": "LAN8720 reference clock",
+      "functional_group": "eth"
+    },
+    {
+      "ref": "C11",
+      "type": "capacitor",
+      "value": "22pF",
+      "package": "0402",
+      "purpose": "ETH XTAL load X1",
+      "functional_group": "eth"
+    },
+    {
+      "ref": "C12",
+      "type": "capacitor",
+      "value": "22pF",
+      "package": "0402",
+      "purpose": "ETH XTAL load X2",
+      "functional_group": "eth"
+    },
+    {
+      "ref": "C13",
+      "type": "capacitor",
+      "value": "100nF",
+      "package": "0402",
+      "purpose": "LAN8720 VDD bypass",
+      "functional_group": "eth"
+    },
+    {
+      "ref": "C14",
+      "type": "capacitor",
+      "value": "10uF",
+      "package": "1206",
+      "purpose": "LAN8720 VDD bulk",
+      "functional_group": "eth"
+    },
+    {
+      "ref": "R3",
+      "type": "resistor",
+      "value": "49.9ohm",
+      "package": "0402",
+      "purpose": "ETH TX+ series resistor",
+      "functional_group": "eth"
+    },
+    {
+      "ref": "R4",
+      "type": "resistor",
+      "value": "49.9ohm",
+      "package": "0402",
+      "purpose": "ETH TX- series resistor",
+      "functional_group": "eth"
+    },
+    {
+      "ref": "J2",
+      "type": "connector",
+      "value": "RJ45 with magnetics",
+      "package": "RJ45_Vertical",
+      "purpose": "Ethernet RJ45 jack",
+      "functional_group": "eth"
+    },
+    {
+      "ref": "R5",
+      "type": "resistor",
+      "value": "22ohm",
+      "package": "0402",
+      "purpose": "USB FS D+ series resistor",
+      "functional_group": "usb"
+    },
+    {
+      "ref": "R6",
+      "type": "resistor",
+      "value": "22ohm",
+      "package": "0402",
+      "purpose": "USB FS D- series resistor",
+      "functional_group": "usb"
+    },
+    {
+      "ref": "U3",
+      "type": "ic",
+      "value": "SN65HVD230",
+      "package": "SOIC8",
+      "purpose": "3.3 V CAN bus transceiver",
+      "functional_group": "can"
+    },
+    {
+      "ref": "R7",
+      "type": "resistor",
+      "value": "120ohm",
+      "package": "0805",
+      "purpose": "CAN termination",
+      "functional_group": "can"
+    },
+    {
+      "ref": "C15",
+      "type": "capacitor",
+      "value": "100nF",
+      "package": "0402",
+      "purpose": "CAN IC bypass",
+      "functional_group": "can"
+    },
+    {
+      "ref": "J4",
+      "type": "connector",
+      "value": "CAN 1x3",
+      "package": "Connector_PinHeader_2.54mm_1x03",
+      "purpose": "CANH/CANL/GND",
+      "functional_group": "can"
+    },
+    {
+      "ref": "J3",
+      "type": "connector",
+      "value": "SWD 2x5 1.27mm",
+      "package": "Connector_PinHeader_1.27mm_2x05",
+      "purpose": "ARM SWD debug",
+      "functional_group": "debug"
+    },
+    {
+      "ref": "J5",
+      "type": "connector",
+      "value": "UART 1x4",
+      "package": "Connector_PinHeader_2.54mm_1x04",
+      "purpose": "USART3 UART",
+      "functional_group": "uart"
+    },
+    {
+      "ref": "D1",
+      "type": "led",
+      "value": "red",
+      "package": "0805_LED",
+      "purpose": "Power indicator",
+      "functional_group": "power"
+    },
+    {
+      "ref": "R8",
+      "type": "resistor",
+      "value": "470ohm",
+      "package": "0805",
+      "purpose": "Power LED limit",
+      "functional_group": "power"
+    },
+    {
+      "ref": "D2",
+      "type": "led",
+      "value": "green",
+      "package": "0805_LED",
+      "purpose": "Ethernet link/activity",
+      "functional_group": "eth"
+    },
+    {
+      "ref": "R9",
+      "type": "resistor",
+      "value": "100ohm",
+      "package": "0805",
+      "purpose": "ETH LED limit",
+      "functional_group": "eth"
+    }
+  ],
+  "connections": [
+    {
+      "net_name": "VBUS",
+      "net_class": "power",
+      "pins": [
+        "J1.VBUS",
+        "U4.VIN",
+        "C1.1",
+        "C2.1"
+      ]
+    },
+    {
+      "net_name": "GND",
+      "net_class": "ground",
+      "pins": [
+        "J1.GND",
+        "R_CC1.2",
+        "R_CC2.2",
+        "U4.GND",
+        "C1.2",
+        "C2.2",
+        "C3.2",
+        "C4.2",
+        "D1.cathode",
+        "D2.cathode",
+        "U1.VSS",
+        "U1.VSSA",
+        "C5.2",
+        "C6.2",
+        "C7.2",
+        "C8.2",
+        "C9.2",
+        "C10.2",
+        "C_VCAP1.2",
+        "C_VCAP2.2",
+        "SW1.2",
+        "R2.2",
+        "U2.GND",
+        "U2.EP",
+        "C11.2",
+        "C12.2",
+        "C13.2",
+        "C14.2",
+        "J2.GND",
+        "U3.GND",
+        "C15.2",
+        "R7.2",
+        "J4.3",
+        "J3.GND",
+        "J5.4"
+      ]
+    },
+    {
+      "net_name": "VCC_3V3",
+      "net_class": "power",
+      "pins": [
+        "U4.VOUT",
+        "C3.1",
+        "C4.1",
+        "U1.VDD",
+        "U1.VDDA",
+        "C7.1",
+        "C8.1",
+        "C9.1",
+        "C10.1",
+        "R2.1",
+        "R8.1",
+        "U2.VDD",
+        "C13.1",
+        "C14.1",
+        "U3.VCC",
+        "C15.1",
+        "J3.VCC",
+        "J5.1"
+      ]
+    },
+    {
+      "net_name": "CC1_PD",
+      "net_class": "signal",
+      "pins": [
+        "J1.CC1",
+        "R_CC1.1"
+      ]
+    },
+    {
+      "net_name": "CC2_PD",
+      "net_class": "signal",
+      "pins": [
+        "J1.CC2",
+        "R_CC2.1"
+      ]
+    },
+    {
+      "net_name": "HSE_IN",
+      "net_class": "signal",
+      "pins": [
+        "U1.PH0_OSC_IN",
+        "Y1.1",
+        "C5.1"
+      ]
+    },
+    {
+      "net_name": "HSE_OUT",
+      "net_class": "signal",
+      "pins": [
+        "U1.PH1_OSC_OUT",
+        "Y1.2",
+        "C6.1"
+      ]
+    },
+    {
+      "net_name": "VCAP1",
+      "net_class": "signal",
+      "pins": [
+        "U1.VCAP1",
+        "C_VCAP1.1"
+      ]
+    },
+    {
+      "net_name": "VCAP2",
+      "net_class": "signal",
+      "pins": [
+        "U1.VCAP2",
+        "C_VCAP2.1"
+      ]
+    },
+    {
+      "net_name": "NRST",
+      "net_class": "signal",
+      "pins": [
+        "U1.NRST",
+        "SW1.1",
+        "J3.RESET"
+      ]
+    },
+    {
+      "net_name": "PWR_LED",
+      "net_class": "signal",
+      "pins": [
+        "R8.2",
+        "D1.anode"
+      ]
+    },
+    {
+      "net_name": "ETH_LED",
+      "net_class": "signal",
+      "pins": [
+        "R9.2",
+        "D2.anode"
+      ]
+    },
+    {
+      "net_name": "ETH_REFCLK",
+      "net_class": "signal",
+      "pins": [
+        "U1.PA1_ETH_REF_CLK",
+        "U2.REFCLK"
+      ]
+    },
+    {
+      "net_name": "ETH_MDIO",
+      "net_class": "signal",
+      "pins": [
+        "U1.PA2_ETH_MDIO",
+        "U2.MDIO"
+      ]
+    },
+    {
+      "net_name": "ETH_MDC",
+      "net_class": "signal",
+      "pins": [
+        "U1.PC1_ETH_MDC",
+        "U2.MDC"
+      ]
+    },
+    {
+      "net_name": "ETH_CRS",
+      "net_class": "signal",
+      "pins": [
+        "U1.PA7_ETH_CRS_DV",
+        "U2.CRS_DV"
+      ]
+    },
+    {
+      "net_name": "ETH_RXD0",
+      "net_class": "signal",
+      "pins": [
+        "U1.PC4_ETH_RXD0",
+        "U2.RXD0"
+      ]
+    },
+    {
+      "net_name": "ETH_RXD1",
+      "net_class": "signal",
+      "pins": [
+        "U1.PC5_ETH_RXD1",
+        "U2.RXD1"
+      ]
+    },
+    {
+      "net_name": "ETH_TXEN",
+      "net_class": "signal",
+      "pins": [
+        "U1.PB11_ETH_TXEN",
+        "U2.TXEN"
+      ]
+    },
+    {
+      "net_name": "ETH_TXD0",
+      "net_class": "signal",
+      "pins": [
+        "U1.PB12_ETH_TXD0",
+        "U2.TXD0",
+        "R3.1"
+      ]
+    },
+    {
+      "net_name": "ETH_TXD0B",
+      "net_class": "signal",
+      "pins": [
+        "R3.2",
+        "J2.TX_PLUS"
+      ]
+    },
+    {
+      "net_name": "ETH_TXD1",
+      "net_class": "signal",
+      "pins": [
+        "U1.PB13_ETH_TXD1",
+        "U2.TXD1",
+        "R4.1"
+      ]
+    },
+    {
+      "net_name": "ETH_TXD1B",
+      "net_class": "signal",
+      "pins": [
+        "R4.2",
+        "J2.TX_MINUS"
+      ]
+    },
+    {
+      "net_name": "ETH_RX_P",
+      "net_class": "signal",
+      "pins": [
+        "J2.RX_PLUS",
+        "U2.RX_PLUS"
+      ]
+    },
+    {
+      "net_name": "ETH_RX_N",
+      "net_class": "signal",
+      "pins": [
+        "J2.RX_MINUS",
+        "U2.RX_MINUS"
+      ]
+    },
+    {
+      "net_name": "ETH_CLK_IN",
+      "net_class": "signal",
+      "pins": [
+        "U2.XI",
+        "Y2.1",
+        "C11.1"
+      ]
+    },
+    {
+      "net_name": "ETH_CLK_OUT",
+      "net_class": "signal",
+      "pins": [
+        "U2.XO",
+        "Y2.2",
+        "C12.1"
+      ]
+    },
+    {
+      "net_name": "ETH_NRST",
+      "net_class": "signal",
+      "pins": [
+        "U1.PB14_ETH_NRST",
+        "U2.NRST"
+      ]
+    },
+    {
+      "net_name": "USB_DP_MCU",
+      "net_class": "signal",
+      "pins": [
+        "U1.PA12_USB_DP",
+        "R5.1"
+      ]
+    },
+    {
+      "net_name": "USB_DP_CONN",
+      "net_class": "signal",
+      "pins": [
+        "R5.2",
+        "J1.USB_DP"
+      ]
+    },
+    {
+      "net_name": "USB_DM_MCU",
+      "net_class": "signal",
+      "pins": [
+        "U1.PA11_USB_DM",
+        "R6.1"
+      ]
+    },
+    {
+      "net_name": "USB_DM_CONN",
+      "net_class": "signal",
+      "pins": [
+        "R6.2",
+        "J1.USB_DM"
+      ]
+    },
+    {
+      "net_name": "CAN_TX",
+      "net_class": "signal",
+      "pins": [
+        "U1.PD1_CAN_TX",
+        "U3.TXD"
+      ]
+    },
+    {
+      "net_name": "CAN_RX",
+      "net_class": "signal",
+      "pins": [
+        "U1.PD0_CAN_RX",
+        "U3.RXD"
+      ]
+    },
+    {
+      "net_name": "CANH",
+      "net_class": "signal",
+      "pins": [
+        "U3.CANH",
+        "R7.1",
+        "J4.1"
+      ]
+    },
+    {
+      "net_name": "CANL",
+      "net_class": "signal",
+      "pins": [
+        "U3.CANL",
+        "J4.2"
+      ]
+    },
+    {
+      "net_name": "CAN_S",
+      "net_class": "signal",
+      "pins": [
+        "U3.S",
+        "U1.PC0_CAN_S"
+      ]
+    },
+    {
+      "net_name": "UART3_TX",
+      "net_class": "signal",
+      "pins": [
+        "U1.PD8_UART3_TX",
+        "J5.2"
+      ]
+    },
+    {
+      "net_name": "UART3_RX",
+      "net_class": "signal",
+      "pins": [
+        "U1.PD9_UART3_RX",
+        "J5.3"
+      ]
+    },
+    {
+      "net_name": "SWDIO",
+      "net_class": "signal",
+      "pins": [
+        "U1.PA13_SWDIO",
+        "J3.SWDIO"
+      ]
+    },
+    {
+      "net_name": "SWDCLK",
+      "net_class": "signal",
+      "pins": [
+        "U1.PA14_SWDCLK",
+        "J3.SWDCLK"
+      ]
+    },
+    {
+      "net_name": "ETH_LED_DRV",
+      "net_class": "signal",
+      "pins": [
+        "U1.PC2_LED",
+        "R9.1"
+      ]
+    }
+  ],
+  "placement_hints": [
+    {
+      "ref": "J1",
+      "edge": "left"
+    },
+    {
+      "ref": "U4",
+      "near": "J1"
+    },
+    {
+      "ref": "U1",
+      "x_mm": 38.0,
+      "y_mm": 30.0
+    },
+    {
+      "ref": "Y1",
+      "near": "U1"
+    },
+    {
+      "ref": "U2",
+      "near": "J2"
+    },
+    {
+      "ref": "Y2",
+      "near": "U2"
+    },
+    {
+      "ref": "J2",
+      "edge": "right"
+    },
+    {
+      "ref": "U3",
+      "near": "J4"
+    },
+    {
+      "ref": "J4",
+      "edge": "right",
+      "near": "J2"
+    },
+    {
+      "ref": "J3",
+      "edge": "top"
+    },
+    {
+      "ref": "J5",
+      "edge": "top",
+      "near": "J3"
+    },
+    {
+      "ref": "SW1",
+      "edge": "bottom"
+    }
+  ],
+  "attachments": []
+}

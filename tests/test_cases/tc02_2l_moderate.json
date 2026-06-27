@@ -1,0 +1,341 @@
+{
+  "project_name": "tc02_2l_moderate",
+  "description": "ATtiny85 I2C sensor-node module: 3.3 V LDO, I2C header, ISP programming port, status LEDs, reset button \u2014 exercises mixed SMD/TH, functional-group affinity, and a 20-component 2-layer layout",
+  "power": {
+    "voltage": "3.3V",
+    "source": "2-pin JST power connector"
+  },
+  "board": {
+    "width_mm": 62.0,
+    "height_mm": 46.0,
+    "layers": 2,
+    "corner_radius_mm": 1.0,
+    "outline_type": "rectangle"
+  },
+  "manufacturing": {
+    "manufacturer": "jlcpcb_standard"
+  },
+  "components": [
+    {
+      "ref": "J1",
+      "type": "connector",
+      "value": "2-pin JST-PH",
+      "package": "Connector_JST_PH_S2B",
+      "purpose": "3.3\u20135 V power input",
+      "functional_group": "power"
+    },
+    {
+      "ref": "U2",
+      "type": "ic",
+      "value": "MCP1700-3302",
+      "package": "SOT-23-3",
+      "purpose": "3.3 V 250 mA LDO regulator",
+      "functional_group": "power"
+    },
+    {
+      "ref": "C1",
+      "type": "capacitor",
+      "value": "100nF",
+      "package": "0805",
+      "purpose": "LDO input bypass",
+      "functional_group": "power"
+    },
+    {
+      "ref": "C2",
+      "type": "capacitor",
+      "value": "1uF",
+      "package": "1206",
+      "purpose": "LDO output bulk cap",
+      "functional_group": "power"
+    },
+    {
+      "ref": "C3",
+      "type": "capacitor",
+      "value": "100nF",
+      "package": "0805",
+      "purpose": "LDO output HF bypass",
+      "functional_group": "power"
+    },
+    {
+      "ref": "U1",
+      "type": "ic",
+      "value": "ATtiny85-20SU",
+      "package": "SOIC8",
+      "purpose": "8-bit AVR MCU, I2C/SPI capable",
+      "functional_group": "mcu"
+    },
+    {
+      "ref": "C4",
+      "type": "capacitor",
+      "value": "100nF",
+      "package": "0805",
+      "purpose": "U1 VCC bypass",
+      "functional_group": "mcu"
+    },
+    {
+      "ref": "C5",
+      "type": "capacitor",
+      "value": "10nF",
+      "package": "0402",
+      "purpose": "ADC reference bypass",
+      "functional_group": "mcu"
+    },
+    {
+      "ref": "J2",
+      "type": "connector",
+      "value": "4-pin I2C header",
+      "package": "Connector_PinHeader_2.54mm_1x04",
+      "purpose": "I2C + power to sensor",
+      "functional_group": "i2c"
+    },
+    {
+      "ref": "J3",
+      "type": "connector",
+      "value": "6-pin ISP 2x3",
+      "package": "Connector_PinHeader_2.54mm_2x03",
+      "purpose": "In-circuit programming",
+      "functional_group": "isp"
+    },
+    {
+      "ref": "J4",
+      "type": "connector",
+      "value": "3-pin sensor connector",
+      "package": "Connector_PinHeader_2.54mm_1x03",
+      "purpose": "Analog sensor input",
+      "functional_group": "sensor"
+    },
+    {
+      "ref": "R1",
+      "type": "resistor",
+      "value": "4.7kohm",
+      "package": "0805",
+      "purpose": "SDA pull-up",
+      "functional_group": "i2c"
+    },
+    {
+      "ref": "R2",
+      "type": "resistor",
+      "value": "4.7kohm",
+      "package": "0805",
+      "purpose": "SCL pull-up",
+      "functional_group": "i2c"
+    },
+    {
+      "ref": "R3",
+      "type": "resistor",
+      "value": "100ohm",
+      "package": "0805",
+      "purpose": "Status LED current limit",
+      "functional_group": "leds"
+    },
+    {
+      "ref": "R4",
+      "type": "resistor",
+      "value": "100ohm",
+      "package": "0805",
+      "purpose": "Power LED current limit",
+      "functional_group": "leds"
+    },
+    {
+      "ref": "R5",
+      "type": "resistor",
+      "value": "10kohm",
+      "package": "0805",
+      "purpose": "RESET pull-up",
+      "functional_group": "mcu"
+    },
+    {
+      "ref": "R6",
+      "type": "resistor",
+      "value": "10kohm",
+      "package": "0805",
+      "purpose": "ADC input divider",
+      "functional_group": "sensor"
+    },
+    {
+      "ref": "D1",
+      "type": "led",
+      "value": "green",
+      "package": "0805_LED",
+      "purpose": "Activity / status LED",
+      "functional_group": "leds"
+    },
+    {
+      "ref": "D2",
+      "type": "led",
+      "value": "red",
+      "package": "0805_LED",
+      "purpose": "Power-on indicator LED",
+      "functional_group": "leds"
+    },
+    {
+      "ref": "SW1",
+      "type": "switch",
+      "value": "push button 6mm",
+      "package": "SW_Push_6mm",
+      "purpose": "Manual RESET button",
+      "functional_group": "mcu"
+    }
+  ],
+  "connections": [
+    {
+      "net_name": "VIN",
+      "net_class": "power",
+      "pins": [
+        "J1.1",
+        "U2.VIN",
+        "C1.1"
+      ]
+    },
+    {
+      "net_name": "GND",
+      "net_class": "ground",
+      "pins": [
+        "J1.2",
+        "U2.GND",
+        "U1.GND",
+        "C1.2",
+        "C2.2",
+        "C3.2",
+        "C4.2",
+        "C5.2",
+        "D1.cathode",
+        "D2.cathode",
+        "J2.4",
+        "J3.GND",
+        "J4.3",
+        "SW1.2"
+      ]
+    },
+    {
+      "net_name": "VCC_3V3",
+      "net_class": "power",
+      "pins": [
+        "U2.VOUT",
+        "U1.VCC",
+        "C2.1",
+        "C3.1",
+        "C4.1",
+        "R1.1",
+        "R2.1",
+        "R4.1",
+        "R5.1",
+        "J2.1",
+        "J3.VCC",
+        "J4.1"
+      ]
+    },
+    {
+      "net_name": "RESET",
+      "net_class": "signal",
+      "pins": [
+        "U1.RESET",
+        "R5.2",
+        "SW1.1",
+        "J3.RESET"
+      ]
+    },
+    {
+      "net_name": "SDA",
+      "net_class": "signal",
+      "pins": [
+        "U1.PB0",
+        "R1.2",
+        "J2.2",
+        "J3.MOSI"
+      ]
+    },
+    {
+      "net_name": "SCL",
+      "net_class": "signal",
+      "pins": [
+        "U1.PB1",
+        "R2.2",
+        "J2.3",
+        "J3.MISO"
+      ]
+    },
+    {
+      "net_name": "ISP_SCK",
+      "net_class": "signal",
+      "pins": [
+        "U1.PB2",
+        "J3.SCK"
+      ]
+    },
+    {
+      "net_name": "LED_DRV",
+      "net_class": "signal",
+      "pins": [
+        "U1.PB3",
+        "R3.1"
+      ]
+    },
+    {
+      "net_name": "LED_AN",
+      "net_class": "signal",
+      "pins": [
+        "R3.2",
+        "D1.anode"
+      ]
+    },
+    {
+      "net_name": "ADC_IN",
+      "net_class": "signal",
+      "pins": [
+        "U1.PB4",
+        "R6.1",
+        "C5.1"
+      ]
+    },
+    {
+      "net_name": "SENSOR_IN",
+      "net_class": "signal",
+      "pins": [
+        "R6.2",
+        "J4.2"
+      ]
+    },
+    {
+      "net_name": "PWR_LED",
+      "net_class": "signal",
+      "pins": [
+        "R4.2",
+        "D2.anode"
+      ]
+    }
+  ],
+  "placement_hints": [
+    {
+      "ref": "J1",
+      "edge": "left"
+    },
+    {
+      "ref": "U2",
+      "near": "J1"
+    },
+    {
+      "ref": "U1",
+      "x_mm": 31.0,
+      "y_mm": 23.0
+    },
+    {
+      "ref": "J2",
+      "edge": "right"
+    },
+    {
+      "ref": "J3",
+      "edge": "bottom"
+    },
+    {
+      "ref": "J4",
+      "edge": "right",
+      "near": "J2"
+    },
+    {
+      "ref": "SW1",
+      "edge": "top"
+    }
+  ],
+  "attachments": []
+}
