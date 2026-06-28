@@ -23,6 +23,7 @@ Upload to JLCPCB and order your board
 - **Parallel LLM enrichment** — remaining spec/footprint lookups run concurrently instead of sequentially
 - **4-layer PCB support** — GND and power planes on inner layers (In1.Cu/In2.Cu), antipad cutouts, power stitching vias. `board.plane_layers` (or `optimize_placement(plane_layers=...)`) chooses the stackup: 2 = both inner planes (default, route on outer layers); 1 = GND plane + In2 used as a 3rd **signal** layer for dense/many-signal boards; 0 = all-signal inner
 - **Freerouting autorouter (primary engine)** — production-quality push-and-shove routing via headless mode (auto-downloads, requires Java 17+); `effort` levels (fast/normal/best), live pass-by-pass progress, and an automatic re-place-and-reroute retry when a route comes back incomplete
+- **Pad-level completion** — `completion_pct` reflects *actual* pad-to-pad connectivity (reconciled against the connectivity validator), not the autorouter's net-level count: a net left with a pad gap, or a power-plane SMD pad with no stitching-via site (surfaced in `unstitched_plane_pads`), is reported in `unrouted_nets` and keeps completion below 100 — the board is never reported "100% routed" while a pad is open
 - **Built-in A\* router** — 2-layer fallback used only when `PCB_ROUTER_ENGINE=builtin`
 - **Two-sided placement** — small SMD passives can move to the bottom side (`optimize_placement(two_sided=True)`); especially effective on 4-layer boards where the inner planes free both outer layers for signal
 - **Functional-group placement** — components can be tagged with a `functional_group` label (e.g. `power`, `mcu`, `usb`); the SA optimizer pulls same-block parts together, cutting inter-block crossings and easing routing. Set it in the LLM schematic step, in structured `requirements_json`, or per call via `add_component(functional_group=...)`. It only *adds* to the existing shared-net heuristic, so omitting or mis-tagging never makes placement worse than the default
@@ -37,7 +38,7 @@ Upload to JLCPCB and order your board
 - **Manufacturer-ready output** — Gerber RS-274X, Excellon drill, BOM CSV, pick-and-place CSV, assembly PDF, STEP 3D model
 - **Interactive board viewer** — HTML/SVG visualization with traces, copper fills, component hover tooltips, DRC results
 - **Incremental routing** — `route_board(keep_existing=True)` protects the current routing as fixed wiring and routes only the UNROUTED nets, so the tool *finishes* a partly-routed (or KiCad-imported) board instead of redoing it
-- **KiCad export/import** — export to KiCad for manual editing, re-import to continue the pipeline
+- **KiCad export/import** — export to KiCad for manual editing, re-import to continue the pipeline. The exported `.kicad_pcb` ships with **poured zones** (filled via `pcbnew`) so `kicad-cli` DRC sees connected copper, and on 4-layer boards a pour-stitch pass ties any isolated GND pour island back to the inner GND plane — both no-ops when KiCad's `pcbnew` isn't installed
 
 ## Quick Start
 
