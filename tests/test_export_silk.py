@@ -104,13 +104,29 @@ def test_back_side_text_is_mirrored(tmp_path):
     assert "(justify mirror)" in u2, "back-side footprint text not mirrored"
     assert "(justify mirror)" not in u1, "top-side footprint text wrongly mirrored"
 
-    # The back silk gr_text line must be mirrored; the front one must not.
-    for line in text.splitlines():
-        if "(gr_text" not in line:
-            continue
-        lyr = re.search(r'\(layer "([^"]+)"\)', line).group(1)
-        mirrored = "(justify mirror)" in line
+    # The back silk gr_text must be mirrored; the front one must not. Extract each
+    # gr_text by paren-matching so the check works whether export emits one-line
+    # text (pcb-creator's raw format) or KiCad's canonical multi-line format
+    # (when zones get poured via pcbnew on export).
+    def _block(src, start):
+        depth = 0
+        for i in range(start, len(src)):
+            if src[i] == "(":
+                depth += 1
+            elif src[i] == ")":
+                depth -= 1
+                if depth == 0:
+                    return src[start:i + 1]
+        return src[start:]
+
+    seen = 0
+    for m in re.finditer(r'\(gr_text "[^"]+"', text):
+        blk = _block(text, m.start())
+        lyr = re.search(r'\(layer "([^"]+)"\)', blk).group(1)
+        mirrored = "(justify mirror)" in blk
         if lyr.startswith("B."):
-            assert mirrored, f"back silk text not mirrored: {line.strip()}"
+            assert mirrored, f"back silk text not mirrored: {blk[:60]}"
         else:
-            assert not mirrored, f"front silk text wrongly mirrored: {line.strip()}"
+            assert not mirrored, f"front silk text wrongly mirrored: {blk[:60]}"
+        seen += 1
+    assert seen >= 2, "expected both a front and a back silk gr_text"

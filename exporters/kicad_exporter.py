@@ -646,6 +646,45 @@ def build_kicad_pro(routed: dict, project_name: str) -> dict:
     }
 
 
+def _kicad_python_candidates() -> list[str]:
+    """Python executables that might be able to ``import pcbnew``, best first.
+
+    pcbnew ships only with KiCad's own bundled interpreter, not the project
+    venv or the bare system python — so the previous ``["/usr/bin/python3",
+    "python3"]`` list silently found nothing on macOS (where pcbnew lives inside
+    ``KiCad.app/Contents/Frameworks/Python.framework``) and left every exported
+    board with unpoured zones (B4a). Probe the bundled interpreter explicitly.
+    """
+    import sys, glob
+    cands: list[str] = []
+    env_py = os.environ.get("PCB_KICAD_PYTHON")
+    if env_py:
+        cands.append(env_py)
+    # macOS: the .app bundle ships pcbnew in its framework python. Derive the
+    # bundle root from PCB_KICAD_CLI when set, else probe the default install.
+    app_roots: list[str] = []
+    cli = os.environ.get("PCB_KICAD_CLI", "")
+    if "KiCad.app" in cli:
+        app_roots.append(cli.split("KiCad.app")[0] + "KiCad.app")
+    app_roots.append("/Applications/KiCad/KiCad.app")
+    for root in app_roots:
+        cands += sorted(
+            glob.glob(root + "/Contents/Frameworks/Python.framework/Versions/*/bin/python3"),
+            reverse=True,  # newest version first
+        )
+    # The current interpreter (in case the server itself runs under KiCad's
+    # python), then the bare system python (Linux distro packages put pcbnew there).
+    cands += [sys.executable, "/usr/bin/python3", "python3"]
+    # De-dup, preserve order
+    seen: set[str] = set()
+    out: list[str] = []
+    for c in cands:
+        if c and c not in seen:
+            seen.add(c)
+            out.append(c)
+    return out
+
+
 # pcbnew zone-fill script: load board, pour all zones, save in place.
 _FILL_ZONES_SRC = (
     "import sys, pcbnew\n"
@@ -670,12 +709,7 @@ def fill_zones_pcbnew(pcb_path: str | Path) -> bool:
     left with unpoured zones — KiCad's GUI auto-pours on open regardless).
     """
     pcb_path = Path(pcb_path)
-    candidates = []
-    env_py = os.environ.get("PCB_KICAD_PYTHON")
-    if env_py:
-        candidates.append(env_py)
-    candidates += ["/usr/bin/python3", "python3"]
-    for py in candidates:
+    for py in _kicad_python_candidates():
         try:
             r = subprocess.run([py, "-c", _FILL_ZONES_SRC, str(pcb_path)],
                                capture_output=True, text=True, timeout=180)
