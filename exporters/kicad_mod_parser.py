@@ -190,9 +190,11 @@ class KiCadLibraryIndex:
         # Try exact match, then aliases of the query
         candidates = [key] + _generate_aliases(package)
         path: Path | None = None
+        matched: str = ""
         for candidate in candidates:
             if candidate in index:
                 path = index[candidate]
+                matched = candidate
                 break
 
         if path is None:
@@ -206,9 +208,22 @@ class KiCadLibraryIndex:
         if fp is None:
             return None
 
-        # Validate pin count if caller specified one
-        if pin_count > 0 and len(fp.pin_offsets) != pin_count:
-            return None
+        # Validate pin count if caller specified one. pin_count is the number of
+        # CONNECTED pins (ports exist only for pins in a net), so a footprint
+        # legitimately has >= that many pads (NC pins are normal).
+        if pin_count > 0:
+            n = len(fp.pin_offsets)
+            if n < pin_count:
+                return None  # footprint has fewer pads than the design needs
+            if n > pin_count and matched != path.stem.upper():
+                # Extra pads, and the query only hit a DEGENERATE short alias
+                # (e.g. "SOT-23" resolving to "SOT-23-5_HandSoldering") rather
+                # than the footprint's full name — almost certainly an alias
+                # collision, not a part with NC pins. Reject so the tiered
+                # lookup falls back to the correct generated footprint. Extra
+                # pads are trusted only when the caller named the footprint
+                # exactly (real NC-pin parts: TO-220-3 with 2 wired, etc.).
+                return None
 
         return fp
 

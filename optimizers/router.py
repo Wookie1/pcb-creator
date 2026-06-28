@@ -2949,7 +2949,11 @@ def generate_inner_plane(
     clearance = config.fill_clearance_mm
     thermal_gap = config.thermal_gap_mm
     thermal_spoke_w = config.thermal_spoke_width_mm
-    ANTIPAD_SEGMENTS = 24  # circle approximation segments (inscribed radius stays ~99.1% of target)
+    ANTIPAD_SEGMENTS = 24  # circle approximation segments
+    # The N-gon is inscribed in radius r, so its nearest edge (apothem) sits at
+    # r·cos(pi/N) < r. Dividing the target radius by this factor pushes the
+    # polygon edge out to the true target, so clearance holds after approximation.
+    _INSCRIBE = math.cos(math.pi / ANTIPAD_SEGMENTS)
 
     def _circle_polygon(cx: float, cy: float, r: float) -> list[tuple[float, float]]:
         pts = []
@@ -2965,23 +2969,27 @@ def generate_inner_plane(
     for pad_info in pad_map.values():
         if pad_info.layer != "all":  # "all" = through-hole
             continue
-        pad_r = max(pad_info.pad_width_mm, pad_info.pad_height_mm) / 2
+        # Farthest copper of a RECTANGULAR pad is its corner (hypot(w,h)/2), not
+        # max(w,h)/2 — using the latter left the corners inside the plane copper.
+        # For round/oval pads this is conservative (a slightly larger void) but
+        # never under-clears; tightening it needs per-pad shape data we don't carry.
+        pad_r = math.hypot(pad_info.pad_width_mm, pad_info.pad_height_mm) / 2
         if pad_info.net_id == net_id:
             # Same-net pad: thermal relief — small clearance ring (no solid connection
             # on inner plane; stitching vias provide plane contact)
-            r = pad_r + thermal_gap
+            r = (pad_r + thermal_gap) / _INSCRIBE
         else:
             # Foreign-net pad: full antipad clearance
-            r = pad_r + clearance
+            r = (pad_r + clearance) / _INSCRIBE
         cutouts.append(_circle_polygon(pad_info.x_mm, pad_info.y_mm, r))
 
-    # Via antipads
+    # Via antipads (vias are round, so radius = diameter/2 is the true reach)
     for via in vias:
         via_r = via.get("diameter_mm", 0.6) / 2
         if via.get("net_id") == net_id:
-            r = via_r + thermal_gap
+            r = (via_r + thermal_gap) / _INSCRIBE
         else:
-            r = via_r + clearance
+            r = (via_r + clearance) / _INSCRIBE
         cutouts.append(_circle_polygon(via["x_mm"], via["y_mm"], r))
 
     # Represent as a polygon list: first entry is the outer boundary,
