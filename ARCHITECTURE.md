@@ -134,12 +134,12 @@ pcb-creator/
 │   │   ├── calculator.py       # LED resistor / power calculations
 │   │   └── schema.py           # Requirements JSON schema + LLM type coercion
 │   ├── llm/
-│   │   ├── base.py             # LLMClient abstract base
 │   │   └── litellm_client.py   # litellm provider (with continuation, api_base/key)
 │   └── prompts/
 │       ├── builder.py          # Jinja2 template renderer
 │       └── templates/          # Prompt templates (*.md.j2)
 ├── optimizers/                 # Algorithmic optimization & routing
+│   ├── routed_board.py         # routing_stats()/routing_completion() accessors (single source of truth for routed-board stats)
 │   ├── ratsnest.py             # Connectivity, MST, crossings, component associations
 │   ├── fiducials.py            # Fiducial marker placement (2 per populated side)
 │   ├── placement_optimizer.py  # SA optimizer (wire length, crossings, decoupling, crystal, grouping)
@@ -474,7 +474,7 @@ During gather only (not during validation), missing component specs and footprin
 `pad_geometry.py` resolves package names to exact pad positions (pin offsets + pad sizes) for placement, routing, and export. Uses a tiered lookup configured once at startup via `configure_lookup()`, which sets module-level defaults used by all 9+ call sites across the codebase.
 
 **Footprint resolution tiers:**
-0. **Custom footprints (tier 0, searched first)** — project-local `.kicad_mod` files in `<project>/custom-footprints.pretty/` (registered via the `register_custom_footprint` MCP tool) and an optional global dir (`PCB_CUSTOM_FOOTPRINT_DIR` / `config.custom_footprint_dir`). Lets an agent supply an exact datasheet footprint for a part no library covers, taking precedence over every tier below. `check_footprint_coverage` / `check_footprint_tier` report which tier (including `custom`) resolves each BOM line, so the agent can register footprints *before* placement instead of discovering gaps mid-flow.
+0. **Custom footprints (tier 0, searched first)** — project-local `.kicad_mod` files in `<project>/custom-footprints.pretty/` (registered via the `register_custom_footprint` MCP tool). Lets an agent supply an exact datasheet footprint for a part no library covers, taking precedence over every tier below. `check_footprint_coverage` / `check_footprint_tier` report which tier (including `custom`) resolves each BOM line, so the agent can register footprints *before* placement instead of discovering gaps mid-flow.
 1. **KiCad library** — parses `.kicad_mod` files from the official KiCad footprint library (~50K packages). Community-maintained, datasheet-verified. Uses `PCB_KICAD_LIBRARY_PATH` if set, otherwise **auto-detects** the system library (`_autodetect_kicad_library`: `/usr/share/kicad/footprints`, `/usr/local/share/…`, the macOS app bundle). This auto-detect is important: with neither the env var nor a system library, `_KICAD_INDEX` is `None` and the *entire* tier is silently disabled — every standard footprint (R_0805, C_0805, …) becomes "unresolved" and all placement/routing/export blocks. That is exactly what happened when an MCP respawn lost the ambient `PCB_KICAD_LIBRARY_PATH`; `_init_lookup` now also logs a loud warning when no library is found. Lazy index built on first lookup with short alias generation (`SOIC-8_3.9x4.9mm_P1.27mm` → also matches `SOIC-8`).
 2. **IPC-7351B parametric** (`ipc7351.py`) — algorithmic footprint generation per the IPC land pattern standard. Covers QFN, DFN, SOP/SSOP/TSSOP/MSOP, SOT-223, SOT-89, and BGA families. Zero I/O cost.
 3. **Local cache** — cached footprints from prior EasyEDA or LLM lookups.
@@ -1056,6 +1056,18 @@ Tested with `Qwen3.5-27B-MLX-7bit` via oMLX. Local models need longer timeouts (
 API key loaded from `.env` file (`PCB_LLM_API_KEY`). In the GUI, keys can be entered in the Settings accordion (overrides env var for that session).
 
 Environment variables: `PCB_LLM_API_KEY`, `PCB_LLM_API_BASE`, `PCB_GENERATE_MODEL`, `PCB_REVIEW_MODEL`, `PCB_GATHER_MODEL`, `PCB_LLM_MAX_TOKENS`, `PCB_LLM_TIMEOUT`, `PCB_VISION_MODEL`, `PCB_KICAD_LIBRARY_PATH` (root of KiCad footprint library for tiered lookup; auto-detected from common system paths when unset), `PCB_COMPONENT_CACHE_PATH` (default `~/.pcb-creator/component_cache.json`), `PCB_LLM_ENRICHMENT_WORKERS` (parallel LLM calls for enrichment, default 4).
+
+## Testing
+
+`pytest` suite under `tests/` (run `pytest -q` from the repo root). Coverage is configured in `.coveragerc` and targets **100% of the deterministic logic core** — `optimizers/`, `exporters/`, `validators/`, `visualizers/`, `mcp_server`, and the deterministic parts of `orchestrator/`. The IO/glue boundary is deliberately **omitted** from the target (GUI `gradio_app`, `cli`, `litellm_client`, the LLM-driven `conversation`/`vision_review`, the threaded `runner`/`approval_server`, and network lookups `easyeda_lookup`/`model_fetcher`) — covering those to 100% would assert mock wiring rather than real behavior. Code that genuinely requires an external (a live LLM, the Freerouting JVM, a routing thread, a CLI-only diagnostic) is marked `# pragma: no cover` with a justification rather than faked.
+
+Run coverage:
+
+```bash
+coverage run -m pytest tests/ -q && coverage report -m   # logic core should read 100%
+```
+
+**PCB test-case suite (`tests/test_cases/`).** Eight requirements fixtures spanning the stackup matrix — 2-layer (tc01–tc03) and 4-layer with 0–3 inner planes (tc04–tc08) — each validatable against `REQUIREMENTS_SCHEMA` and runnable end-to-end through `pcb-creator run`. `manifest.json` maps each case to its layer/plane configuration. `tc08_4l_compact` (12 components) is sized so a local model reliably emits a valid netlist, so it exercises the full 4-layer plane-generation path end-to-end (the larger 4-layer cases tend to block at LLM schematic generation).
 
 ## Key Learnings
 

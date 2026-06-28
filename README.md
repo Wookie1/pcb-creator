@@ -120,7 +120,6 @@ All settings via environment variables or `.env` file:
 | `PCB_ESCAPE_FANOUT` | *(auto)* | Tri-state: unset = auto-enable when the board has a fine-pitch part; `true`/`false` force on/off. Pre-generates dog-bone escape breakouts for single-row fine-pitch parts as protected wiring before routing |
 | `PCB_SHORT_CLEANUP` | `true` | After routing, rip+re-route the nets kicad-cli DRC reports as shorting/incomplete (escapes preserved). No-op without kicad-cli |
 | `PCB_OPTIMIZER_ITERATIONS` | *(auto: 200×movable, ≤8000)* | Override the SA placement iteration cap |
-| `PCB_CUSTOM_FOOTPRINT_DIR` | *(none)* | Global writable dir for agent-registered custom footprints (tier 0) |
 | `PCB_MAX_REWORK` | `5` | Max LLM rework attempts per step |
 | `PCB_SKIP_QA` | `false` | Skip per-step LLM QA reviews (validators still run) |
 | `PCB_LLM_TIMEOUT` | `1800` | LLM request timeout in seconds |
