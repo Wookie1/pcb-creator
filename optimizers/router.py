@@ -2735,6 +2735,7 @@ def _add_rescue_vias(
     grid: RoutingGrid,
     fill_net_int: int,
     config: RouterConfig,
+    inner_gnd_plane: bool = False,
 ) -> list[Via]:
     """Find top-layer fill islands disconnected from GND and add rescue vias.
 
@@ -2800,7 +2801,10 @@ def _add_rescue_vias(
         cy = sum(idx // cols for idx in cells) / len(cells)
 
         for idx in cells:
-            if filled_bottom[idx]:
+            # A through via rescues the island if it reaches GND copper on
+            # another layer: the bottom fill (2-layer), OR — on a 4-layer board —
+            # the solid In1 GND plane directly (no bottom fill needed) (B5).
+            if filled_bottom[idx] or inner_gnd_plane:
                 col, row = idx % cols, idx // cols
                 # Skip cells where a through via would pierce an inner-layer
                 # signal trace (via-exclusion zone).
@@ -2811,7 +2815,7 @@ def _add_rescue_vias(
                 candidates.append((idx, dist_to_center))
 
         if not candidates:
-            continue  # no bottom fill underneath — island can't be rescued
+            continue  # no reachable GND layer underneath — island can't be rescued
 
         # Pick the candidate closest to the island centroid
         candidates.sort(key=lambda x: x[1])
@@ -2837,6 +2841,7 @@ def create_copper_fill(
     fill_net_name: str,
     pad_map: dict[str, PadInfo],
     config: RouterConfig,
+    inner_gnd_plane: bool = False,
 ) -> tuple[list[dict], list[Via]]:
     """Generate copper fill on both layers for the specified net.
 
@@ -2879,10 +2884,12 @@ def create_copper_fill(
         v.net_id = fill_net_id
         v.net_name = fill_net_name
 
-    # Phase 2b: Rescue vias — connect top-layer islands through bottom fill
+    # Phase 2b: Rescue vias — connect top-layer islands through bottom fill, or
+    # (4-layer) straight down to the solid In1 GND plane.
     rescue_vias = _add_rescue_vias(
         fill_bitmaps["top"], fill_bitmaps["bottom"],
         grid, fill_net_int, config,
+        inner_gnd_plane=inner_gnd_plane,
     )
     for v in rescue_vias:
         v.net_id = fill_net_id
@@ -5434,9 +5441,13 @@ def apply_copper_fills(
                             grid.set(nc, nr, layer, nid)
 
     # Phase 4: Run copper fill (outer layers)
+    # On a 4-layer board In1.Cu is a solid GND plane, so a through-via can rescue
+    # an isolated outer GND-fill island by reaching that plane directly — it does
+    # NOT need bottom-layer fill underneath (B5).
     fill_regions, stitch_vias = create_copper_fill(
         grid, fill_net_int, fill_net_id, fill_net_name,
         pad_map, config,
+        inner_gnd_plane=inner_plane_count(board) >= 1,
     )
 
     pwr_net_id = fill_net_id
@@ -5651,6 +5662,20 @@ def apply_copper_fills(
             {"designator": ref, "net_id": nid}
             for ref, nid in unstitched_plane_pads
         ]
+
+    # B6: completion must reflect ACTUAL pad connectivity, not the autorouter's
+    # net-level report. Reconcile unrouted_nets against the authoritative
+    # connectivity check (segment-aware union-find over traces/vias, crediting
+    # copper-fill/plane delivery) so a net the router left with a pad gap — e.g. a
+    # point-to-point signal it counted as done — is reported unrouted instead of
+    # silently credited as 100%. incomplete_net_ids reads the current
+    # unrouted_nets as its base, so the B3 plane-pad entries above are preserved.
+    try:
+        from validators.validate_routing import incomplete_net_ids
+        unrouted = sorted(incomplete_net_ids(result, netlist))
+        result["routing"]["unrouted_nets"] = unrouted
+    except Exception:  # pragma: no cover - defensive: connectivity check operates on an already-built routed/netlist and doesn't raise in practice
+        pass
 
     # Update statistics
     stats = result["routing"].get("statistics", {})

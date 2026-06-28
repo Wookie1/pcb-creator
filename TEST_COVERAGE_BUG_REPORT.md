@@ -230,25 +230,44 @@ hard-asserts an un-stitched power-plane pad is never silently credited); these t
 filed for separate fixes and the integration test surfaces them as warnings rather than
 over-claiming a global guarantee it can't yet make.
 
-## ⏳ B5 — GND outer-pour island with no stitching via to the inner plane
-**Observed.** `kicad-cli` reports `Zone [GND] on In1.Cu / Zone [GND] on F.Cu` unconnected
-at 100% completion. `apply_copper_fills` pours outer-layer GND fills + stitching vias
-(`create_copper_fill`), but a fill fragment that routing chops off can end up with no
-stitching via, leaving it electrically isolated from the In1 GND plane. (Same class hit
-manually during the carrier compaction — fixed there by dropping a GND via into each
-isolated region.) **Fix sketch.** After fills, detect GND fill regions with no through-via
-tying them to the plane and add an all-layer-clear stitching via per region (the manual
-repair logic), or surface them so completion reflects the gap.
+## 🟡 B5 — MITIGATED + tested (not a full guarantee) — GND island to inner plane
+**Was.** `kicad-cli` reports `Zone [GND] … / Zone [GND] …` unconnected: an outer GND-fill
+fragment chopped off by routing with no via tying it to the GND plane. **Root cause of the
+miss.** `_add_rescue_vias` (`optimizers/router.py`) rescued such an island only when
+bottom-layer fill sat underneath it (`filled_bottom`) — a 2-layer assumption. On a 4-layer
+board In1.Cu is a solid GND plane, so a through-via in the island reaches GND directly with
+no bottom fill needed; the rescue skipped it. **Fix (mitigation).** `apply_copper_fills`
+passes `inner_gnd_plane=inner_plane_count(board) >= 1` into `create_copper_fill` →
+`_add_rescue_vias`, which now accepts any `can_place_via` cell in an isolated island and
+drops a through-via to the In1 plane (later inner-plane generation cuts the In2 antipad
+around it, so no power short). Test: `tests/test_b5_gnd_island_rescue.py`.
+**Why not a full guarantee.** The rescue runs on pcb-creator's *grid* fill model, which is
+not byte-for-byte KiCad's poured geometry — so `kicad-cli` can still report a residual GND
+island the grid didn't model (observed on one route). It reliably *reduces* islands but
+can't promise zero. The authoritative guarantee needs an **export-layer** pass: after the
+B4a pcbnew pour, detect GND zones whose `GetFilledPolysList` has a region with no via to
+the plane and add a stitching via there, then re-pour (the same fix applied by hand during
+the carrier compaction). Filed as the remaining B5 work; the integration test surfaces
+residual islands as a warning rather than failing on them.
 
-## ⏳ B6 — Freerouting credits a point-to-point net while a pad gap remains
-**Observed.** A signal net (`SWDIO`, CN1.19 ↔ SWD1.2) reported routed at 100% yet
-`kicad-cli` finds the pads unconnected. Signal-net completion is taken from Freerouting's
-`incomplete_connections` report, which can disagree with KiCad's authoritative
-connectivity; the kicad-cli-driven short-cleanup pass that should catch it didn't here.
-**Fix sketch.** Reconcile final `completion_pct` / `unrouted_nets` against authoritative
-connectivity (`validators.validate_routing.incomplete_net_ids` or kicad-cli DRC) instead
-of trusting Freerouting's net-level count, and feed any residual to the
-short-cleanup / `keep_existing` retry. This is the general form of B3 (net-level →
-pad-level completion) for routed nets, not just plane-delivered ones.
+## ✅ B6 — FIXED + tested — completion is now pad-level for ALL nets
+**Was.** A point-to-point signal (`SWDIO`, CN1.19 ↔ SWD1.2) reported routed at 100% while
+`kicad-cli` found its pads open — completion was taken from the autorouter's net-level
+count. **Fix.** `apply_copper_fills` now reconciles `unrouted_nets` against the
+authoritative connectivity check (`validators.validate_routing.incomplete_net_ids` —
+segment-aware union-find over traces/vias, crediting fill/plane delivery) and recomputes
+`completion_pct` from it, so a net left with a pad gap is reported unrouted instead of
+silently credited. This is the general form of B3 (net-level → pad-level) for routed nets.
+Test: `tests/test_b6_completion_authoritative.py` (a signal pad-gap drops completion below
+100; a fully-routed signal completes).
 
-Full suite: 1553 passed, 1 skipped (+ the opt-in `test_integration_b3_carrier.py`).
+**End-to-end (carrier_board.net, plane_layers=2, Freerouting + pcbnew + kicad-cli):** after
+B5+B6 real routes came back at honest sub-100% completions with their remaining opens being
+pad-level signal nets correctly reflected in completion (B6 — no false 100%); GND islands
+are reduced by B5 but a residual one still appeared on one route (the grid-vs-pour gap
+above). The opt-in `tests/test_integration_b3_carrier.py` hard-asserts B6 (a pad open
+implies completion < 100) and B3/B4a, and warns on residual GND islands.
+
+**Net:** B1, B2, B3, B4a, B4b, B6 fixed + tested; B5 mitigated + tested (full guarantee is
+the export-layer pour-stitch noted above). Full suite: 1558 passed, 2 skipped (+ the opt-in
+carrier integration test).
