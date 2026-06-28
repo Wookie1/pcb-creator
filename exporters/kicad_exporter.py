@@ -131,6 +131,12 @@ def _uid() -> str:
     return str(uuid.uuid4())
 
 
+def _mirror_suffix(layer: str) -> str:
+    """KiCad flags text on a back layer (B.*) that isn't mirrored
+    (`nonmirrored_text_on_back_layer`). Back-side text needs (justify mirror)."""
+    return " (justify mirror)" if layer.startswith("B.") else ""
+
+
 # ---------------------------------------------------------------------------
 # S-expression building helpers
 # ---------------------------------------------------------------------------
@@ -307,19 +313,23 @@ def _footprint(
     if _allow_mask_bridges(fp_def):
         mount = "through_hole" if is_th else "smd"
         lines.append(f'    (attr {mount} allow_soldermask_bridges)')
+    # Reference + Value go on the Fab layer, NOT silk. The visible silk
+    # designator is the curated gr_text from _generate_silkscreen (overlap-aware,
+    # and the same text the Gerbers render) — emitting the footprint Reference on
+    # silk too produced two stacked copies of every designator (silk_overlap).
+    # Back-side text must be mirrored or KiCad flags nonmirrored_text_on_back_layer.
+    ref_layer = layer.replace("Cu", "Fab")
+    mirror = _mirror_suffix(ref_layer)
     lines += [
         f'    (property "Reference" "{des}"',
         f'      (at 0 {-fh/2 - 1.0})',
-        f'      (layer "{layer.replace("Cu", "SilkS")}")',
-        # 1mm / 0.15mm is the manufacturable floor: smaller text trips KiCad's
-        # min text-height DRC (0.6mm added 69 text_height violations). Residual
-        # silk overlap on dense boards is a cosmetic warning, left as-is.
-        f'      (effects (font (size 1 1) (thickness 0.15)))',
+        f'      (layer "{ref_layer}")',
+        f'      (effects (font (size 1 1) (thickness 0.15)){mirror})',
         f'    )',
         f'    (property "Value" "{package}"',
         f'      (at 0 {fh/2 + 1.0})',
-        f'      (layer "{layer.replace("Cu", "Fab")}")',
-        f'      (effects (font (size 1 1) (thickness 0.15)))',
+        f'      (layer "{ref_layer}")',
+        f'      (effects (font (size 1 1) (thickness 0.15)){mirror})',
         f'    )',
     ]
 
@@ -526,7 +536,7 @@ def _silkscreen(silk_items: list[dict]) -> str:
             lines.append(
                 f'  (gr_text "{text}" (at {x} {y})'
                 f' (layer "{layer}")'
-                f' (effects (font (size {font_h} {font_h}) (thickness {font_h * 0.15})))'
+                f' (effects (font (size {font_h} {font_h}) (thickness {font_h * 0.15})){_mirror_suffix(layer)})'
                 f' (tstamp {_uid()}))'
             )
         elif item.get("type") == "dot":
