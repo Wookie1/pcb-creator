@@ -16,6 +16,21 @@ except ImportError:
 from .config import OrchestratorConfig
 
 
+def routing_stats_summary(routed: dict) -> dict:
+    """Pull the routing-stats summary from a routed-board dict.
+
+    Stats are nested under routed["routing"]["statistics"]; reading the top
+    level instead silently yields zeros (a 100%-routed board reported as 0%).
+    """
+    stats = routed.get("routing", {}).get("statistics", {})
+    return {
+        "completion_pct": stats.get("completion_pct", 0),
+        "total_nets": stats.get("total_nets", 0),
+        "routed_nets": stats.get("routed_nets", 0),
+        "via_count": stats.get("via_count", 0),
+    }
+
+
 def main(argv: list[str] | None = None) -> int:
     # Pipeline modules log progress via logging (stderr) — surface it for CLI users.
     logging.basicConfig(level=logging.INFO, format="%(message)s", stream=sys.stderr)
@@ -304,13 +319,7 @@ def _run_pipeline(args) -> int:
         routed_path = project_dir / f"{project_name}_routed.json"
         if routed_path.exists():
             routed = json.loads(routed_path.read_text())
-            stats = routed.get("statistics", {})
-            result["routing_stats"] = {
-                "completion_pct": stats.get("completion_pct", 0),
-                "total_nets": stats.get("total_nets", 0),
-                "routed_nets": stats.get("routed_nets", 0),
-                "via_count": stats.get("via_count", 0),
-            }
+            result["routing_stats"] = routing_stats_summary(routed)
 
         # Add DRC summary
         drc_path = project_dir / f"{project_name}_drc_report.json"

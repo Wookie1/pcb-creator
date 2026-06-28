@@ -55,7 +55,7 @@ def format_review_context(drc_report: dict | None, routed: dict) -> tuple[str, s
         (routing_stats_text, drc_summary_text)
     """
     # Routing stats
-    stats = routed.get("statistics", {})
+    stats = routed.get("routing", {}).get("statistics", {})
     total = stats.get("total_nets", 0)
     routed_count = stats.get("routed_nets", 0)
     completion = stats.get("completion_pct", 0)
@@ -147,7 +147,7 @@ def run_vision_review(
         "escalated" if max attempts exhausted without approval.
     """
     # Quick pre-checks that don't need vision
-    stats = routed.get("statistics", {})
+    stats = routed.get("routing", {}).get("statistics", {})
     completion = stats.get("completion_pct", 0)
     drc_passed = drc_report.get("passed", False) if drc_report else False
     drc_errors = (drc_report or {}).get("statistics", {}).get("errors", 0)
