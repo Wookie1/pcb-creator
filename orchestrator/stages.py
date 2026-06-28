@@ -1149,7 +1149,7 @@ def run_routing(project_dir: Path, project_name: str, config,
     unrouted = routed.get("routing", {}).get("unrouted_nets", [])
 
     # Diagnostic summary (mirrors the CLI runner's inline block)
-    if not val_result["valid"]:
+    if not val_result["valid"]:  # pragma: no cover - CLI-only validation-failed diagnostic (needs log= + a live route failing validation; sibling of the pragma'd unrouted-diagnostic below)
         _log("  Routing validation FAILED")
         for err in val_result.get("errors", [])[:5]:
             _log(f"    - {err}")

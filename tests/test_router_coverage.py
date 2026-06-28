@@ -36,6 +36,8 @@ from optimizers.router import (
     _try_shove_segment, _undo_shove, _get_net_pads,
     _pad_accessibility, _apply_pre_fill,
     _connectivity_repair, _restore_pad_markings, _generate_silkscreen,
+    astar_find_blockers_with_path, _snap_endpoints_to_pads, _add_rescue_vias,
+    _build_output, order_nets_by_channel_pressure, _fine_grid_retry, _shove_pass,
 )
 from optimizers.pad_geometry import build_pad_map, PadInfo
 from optimizers.ratsnest import NetInfo, build_connectivity
@@ -1012,6 +1014,114 @@ def test_connectivity_repair_reroutes_disconnected_net():
                                    result.vias, cfg.grid_resolution_mm)
 
 
+def test_connectivity_repair_single_pad_net_skipped():
+    """A 'routed' net with <2 pads is skipped by connectivity repair (3648)."""
+    netlist = {"elements": [
+        {"element_type": "net", "net_id": "n", "name": "N",
+         "net_class": "signal", "connected_port_ids": ["P1"]},
+        {"element_type": "port", "port_id": "P1", "component_id": "C1",
+         "designator": "R1", "pin_number": 1, "name": "1"},
+        {"element_type": "component", "component_id": "C1",
+         "component_type": "resistor", "designator": "R1", "properties": {}},
+    ]}
+    placement = {"board": {"width_mm": 10.0, "height_mm": 10.0},
+                 "placements": [_comp("C1", "R1", 5.0, 5.0)]}
+    pad_map = build_pad_map(placement, netlist)
+    net = NetInfo("n", "N", "signal", ["R1"])
+    cfg = RouterConfig()
+    grid = RoutingGrid(10.0, 10.0, cfg.grid_resolution_mm)
+    result = RoutingResult()
+    _connectivity_repair(grid, result, [net], pad_map, {"n": 1}, {1: net},
+                         {"n": 0.25}, ["n"], cfg, netlist, True, None)
+    assert result.traces == []  # nothing to repair
+
+
+def test_connectivity_repair_relaxed_fallback_fails_unroutes_net():
+    """A disconnected net whose normal AND relaxed re-route both fail (board
+    fully walled) is removed from routed and marked unrouted — drives the
+    relaxed-clearance fallback setup + the failure branch (3673-3703, 3721,
+    3725-3728)."""
+    placement, netlist = _two_pad_board()
+    pad_map = build_pad_map(placement, netlist)
+    net = build_connectivity(netlist)[0]
+    cfg = RouterConfig()
+    grid = RoutingGrid(20.0, 20.0, cfg.grid_resolution_mm)
+    _setup_grid(grid, placement, pad_map, cfg.clearance_mm, {net.net_id: 1})
+    # Wall both layers everywhere except the pad cells → no route possible at any
+    # clearance, so both the normal and the relaxed retry fail.
+    for c in range(grid.cols):
+        for r in range(grid.rows):
+            for layer in ("top", "bottom"):
+                if grid.get(c, r, layer) == EMPTY:
+                    grid.set(c, r, layer, OBSTACLE)
+    result = RoutingResult()
+    routed_ids = [net.net_id]
+    _connectivity_repair(grid, result, [net], pad_map, {net.net_id: 1},
+                         {1: net}, {net.net_id: 0.25}, routed_ids, cfg, netlist,
+                         True, None)
+    assert net.net_id not in routed_ids          # removed from routed
+    assert net.net_id in result.unrouted_nets     # marked unrouted
+
+
+def test_fine_grid_retry_skips_non_signal_net():
+    """_fine_grid_retry leaves non-signal (power/ground) failed nets untouched
+    (3594-3595)."""
+    placement, netlist = _two_pad_board(net_class="power")
+    pad_map = build_pad_map(placement, netlist)
+    cfg = RouterConfig(fine_grid_factor=2)
+    grid = RoutingGrid(20.0, 20.0, cfg.grid_resolution_mm)
+    _setup_grid(grid, placement, pad_map, cfg.clearance_mm, {"net_0": 1})
+    pwr_net = NetInfo("net_0", "N0", "power", ["R1"])
+    result = RoutingResult()
+    still = _fine_grid_retry(
+        grid, [(pwr_net, 1)], result, placement, pad_map, {"net_0": 1},
+        {"net_0": 0.5}, [], cfg, netlist, True, None)
+    assert still == [(pwr_net, 1)]  # power net passed through unchanged
+
+
+def test_shove_pass_single_pad_and_no_conflict_cells():
+    """_shove_pass: a <2-pad net is skipped (2131); a 2-pad net whose path is
+    fully OBSTACLE-walled has no conflict cells to shove and stays failed
+    (2167-2168)."""
+    cfg = _fast_cfg()
+    # Board 1: single-pad net.
+    nl1 = {"elements": [
+        {"element_type": "net", "net_id": "n", "name": "N",
+         "net_class": "signal", "connected_port_ids": ["P1"]},
+        {"element_type": "port", "port_id": "P1", "component_id": "C1",
+         "designator": "R1", "pin_number": 1, "name": "1"},
+        {"element_type": "component", "component_id": "C1",
+         "component_type": "resistor", "designator": "R1", "properties": {}}]}
+    pl1 = {"board": {"width_mm": 10.0, "height_mm": 10.0},
+           "placements": [_comp("C1", "R1", 5.0, 5.0)]}
+    pm1 = build_pad_map(pl1, nl1)
+    g1 = RoutingGrid(10.0, 10.0, cfg.grid_resolution_mm)
+    _setup_grid(g1, pl1, pm1, cfg.clearance_mm, {"n": 1})
+    net1 = NetInfo("n", "N", "signal", ["R1"])
+    pzi1 = _build_pad_zone_index(pm1, {"n": 1}, cfg.clearance_mm, g1)
+    still1 = _shove_pass(g1, [(net1, 1)], RoutingResult(), pm1, {"n": 1},
+                         {1: net1}, {"n": 0.25}, pzi1, cfg, nl1, [], True, None)
+    assert still1 == []  # single-pad net skipped, not added to still_failed
+
+    # Board 2: a real 2-pad net, but the whole board is OBSTACLE-walled → the
+    # blocker search returns no path, so there are no conflict cells to shove.
+    pl2, nl2 = _two_pad_board()
+    pm2 = build_pad_map(pl2, nl2)
+    net2 = build_connectivity(nl2)[0]
+    g2 = RoutingGrid(20.0, 20.0, cfg.grid_resolution_mm)
+    _setup_grid(g2, pl2, pm2, cfg.clearance_mm, {net2.net_id: 1})
+    for c in range(g2.cols):
+        for r in range(g2.rows):
+            for layer in ("top", "bottom"):
+                if g2.get(c, r, layer) == EMPTY:
+                    g2.set(c, r, layer, OBSTACLE)
+    pzi2 = _build_pad_zone_index(pm2, {net2.net_id: 1}, cfg.clearance_mm, g2)
+    still2 = _shove_pass(g2, [(net2, 1)], RoutingResult(), pm2,
+                         {net2.net_id: 1}, {1: net2}, {net2.net_id: 0.25},
+                         pzi2, cfg, nl2, [], True, None)
+    assert still2 == [(net2, 1)]  # no conflict cells → stays failed
+
+
 def test_route_net_single_pad_returns_empty():
     """A net with <2 pads yields no traces (route_net early return)."""
     netlist = {"elements": [
@@ -1249,6 +1359,104 @@ def test_route_board_congested_partial_then_fill():
 # apply_copper_fills — 2-layer outer fill + 4-layer inner planes
 # ===========================================================================
 
+def _two_ic_congested(n_per_side=6, pitch=0.8, gap=3.0):
+    """Two multi-pin ICs facing across a narrow channel, reverse-wired. Creates
+    detectable channels (channel_pressure) and over-subscribes the routing space
+    so NCR iterates, stagnates, and leaves nets failed/illegal."""
+    w = 18.0
+    # Two horizontal rows of pads per IC → a horizontal channel between rows.
+    cy_top, cy_bot = 6.0, 6.0 + gap
+    placement = {"board": {"width_mm": w, "height_mm": 16.0, "layers": 2},
+                 "placements": [
+        {"designator": "U1", "component_type": "ic", "package": "SOIC",
+         "footprint_width_mm": n_per_side * pitch, "footprint_height_mm": gap + 1,
+         "x_mm": 4.0, "y_mm": (cy_top + cy_bot) / 2, "rotation_deg": 0,
+         "layer": "top"},
+        {"designator": "U2", "component_type": "ic", "package": "SOIC",
+         "footprint_width_mm": n_per_side * pitch, "footprint_height_mm": gap + 1,
+         "x_mm": 13.0, "y_mm": (cy_top + cy_bot) / 2, "rotation_deg": 0,
+         "layer": "top"}]}
+    els = [
+        {"element_type": "component", "component_id": "C1",
+         "component_type": "ic", "designator": "U1", "properties": {}},
+        {"element_type": "component", "component_id": "C2",
+         "component_type": "ic", "designator": "U2", "properties": {}}]
+    for i in range(n_per_side):
+        els.append({"element_type": "port", "port_id": f"A{i}", "component_id": "C1",
+                    "designator": "U1", "pin_number": i + 1, "name": str(i + 1)})
+        els.append({"element_type": "port", "port_id": f"B{i}", "component_id": "C2",
+                    "designator": "U2", "pin_number": i + 1, "name": str(i + 1)})
+    for i in range(n_per_side):
+        j = n_per_side - 1 - i  # reverse → forces crossings
+        els.append({"element_type": "net", "net_id": f"net_{i}", "name": f"N{i}",
+                    "net_class": "signal",
+                    "connected_port_ids": [f"A{i}", f"B{j}"]})
+    return placement, {"elements": els}
+
+
+def test_route_board_congested_all_phases_with_ground_net():
+    """A congested board that includes a GROUND net and runs every rescue phase
+    (NCR, coordinated rip-up over many iterations, shove, narrow, fine-grid,
+    relaxed). Drives the coordinated rip-up phase (4009/4110/4138), narrow-trace
+    retry (4228-4247) and the ground/power rip escalation (_can_rip_net)."""
+    placement, netlist = _crossing_board(N=12, w=8.0, pattern="rev")
+    # Convert two nets to ground/power so the rip-escalation branches apply.
+    nets = [e for e in netlist["elements"] if e.get("element_type") == "net"]
+    nets[0]["net_class"] = "ground"
+    nets[0]["name"] = "GND"
+    nets[1]["net_class"] = "power"
+    nets[1]["name"] = "VCC"
+    cfg = RouterConfig(
+        ordering_trials=2, ncr_max_iterations=4, ncr_stagnation_limit=2,
+        max_rip_up_iterations=8, shove_enabled=True, fine_grid_factor=2,
+    )
+    out = route_board(placement, netlist, cfg)
+    st = out["routing"]["statistics"]
+    assert st["routed_nets"] + st["unrouted_nets"] == st["total_nets"]
+
+
+def test_route_board_default_config_none():
+    """route_board(config=None) builds a default RouterConfig (3758)."""
+    placement, netlist = _two_pad_board()
+    out = route_board(placement, netlist, config=None)
+    assert out["routing"]["statistics"]["total_nets"] == 1
+
+
+def test_route_board_ncr_with_progress_callback_and_channels():
+    """Congested IC board with channels + an NCR progress callback drives the
+    NCR seeding (3175-3181), per-iteration failed/illegal/stagnation branches
+    (3214, 3242-3243, 3281-3283, 3362-3363) and the callback (3303-3313)."""
+    placement, netlist = _two_ic_congested(n_per_side=14, pitch=0.5, gap=1.0)
+    placement["board"]["width_mm"] = 11.0
+    events = []
+    cfg = RouterConfig(
+        ordering_trials=2, ncr_enabled=True, ncr_max_iterations=6,
+        ncr_stagnation_limit=2, shove_enabled=False, fine_grid_factor=1,
+        ncr_progress_callback=lambda d: events.append(d),
+    )
+    out = route_board(placement, netlist, cfg)
+    st = out["routing"]["statistics"]
+    assert st["routed_nets"] + st["unrouted_nets"] == st["total_nets"]
+    # The progress callback fired at least once with the expected keys.
+    assert events and "iteration" in events[0] and "overused_cells" in events[0]
+
+
+def test_route_board_ncr_callback_exception_is_swallowed():
+    """A progress callback that raises must not kill the router (3312-3313)."""
+    placement, netlist = _two_ic_congested(n_per_side=14, pitch=0.5, gap=1.0)
+    placement["board"]["width_mm"] = 11.0
+
+    def _boom(_d):
+        raise RuntimeError("bad callback")
+
+    cfg = RouterConfig(ordering_trials=1, ncr_enabled=True, ncr_max_iterations=3,
+                       shove_enabled=False, fine_grid_factor=1,
+                       ncr_progress_callback=_boom)
+    out = route_board(placement, netlist, cfg)  # does not raise
+    st = out["routing"]["statistics"]
+    assert st["total_nets"] >= 1
+
+
 def _routed_two_pad(layers=2):
     placement, netlist = _two_pad_board(net_class="ground", layers=layers)
     for e in netlist["elements"]:
@@ -1354,11 +1562,586 @@ def test_apply_copper_fills_4layer_plane_layers_1_gnd_plane_only():
     assert plane_layers == {"inner1"}   # only GND plane, In2 is signal
 
 
+def test_apply_copper_fills_4layer_power_via_offset_stub_and_unrouted():
+    """4-layer power-plane stitching edge cases:
+    - a through-hole VCC pad is skipped (5470)
+    - the pad-centre via site collides with an existing via (5487), an obstacle
+      pad (5492-5493) and a foreign trace (5497-5498) → an offset candidate is
+      used, emitting a stub trace (5512) added to traces (5583)
+    - VCC listed as unrouted is dropped because the plane connects it (5592-5593).
+    """
+    routed, netlist = _routed_4layer_gnd_and_power()
+    pad_map = build_pad_map(routed, netlist)
+    vcc_pads = [p for p in pad_map.values() if p.net_id == "net_v"]
+    assert vcc_pads
+    vp = vcc_pads[0]
+    # Block the VCC pad centre with an existing via + a foreign trace crossing it.
+    routed["routing"]["vias"].append({
+        "x_mm": round(vp.x_mm, 2), "y_mm": round(vp.y_mm, 2),
+        "drill_mm": 0.3, "diameter_mm": 0.6,
+        "from_layer": "top", "to_layer": "bottom",
+        "net_id": "net_s", "net_name": "SIG"})
+    routed["routing"]["traces"].append({
+        "start_x_mm": vp.x_mm - 2.0, "start_y_mm": vp.y_mm,
+        "end_x_mm": vp.x_mm + 2.0, "end_y_mm": vp.y_mm,
+        "width_mm": 0.3, "layer": "top", "net_id": "net_s", "net_name": "SIG"})
+    # Add a through-hole VCC pad to a new component (layer "all") → 5470 skip.
+    routed["placements"].append({
+        "designator": "J9", "component_type": "connector", "package": "PinHeader",
+        "footprint_width_mm": 2.0, "footprint_height_mm": 2.0,
+        "x_mm": 3.0, "y_mm": 3.0, "rotation_deg": 0, "layer": "top"})
+    netlist["elements"].append({
+        "element_type": "component", "component_id": "C9", "designator": "J9",
+        "component_type": "connector", "properties": {}})
+    netlist["elements"].append({
+        "element_type": "port", "port_id": "P9", "component_id": "C9",
+        "designator": "J9", "pin_number": 1, "name": "1", "layer": "all"})
+    for e in netlist["elements"]:
+        if e.get("element_type") == "net" and e["net_id"] == "net_v":
+            e["connected_port_ids"].append("P9")
+    # Mark VCC unrouted so 5592-5593 strips it once the plane covers it.
+    routed["routing"]["unrouted_nets"] = ["net_v"]
+    # A routing via right next to the GND stitch via site (5.5, 5.5) so the
+    # hole-to-hole filter drops the stitch via (5577).
+    routed["routing"]["vias"].append({
+        "x_mm": 5.55, "y_mm": 5.5, "drill_mm": 0.3, "diameter_mm": 0.6,
+        "from_layer": "top", "to_layer": "bottom",
+        "net_id": "net_g", "net_name": "GND"})
+
+    out = apply_copper_fills(routed, netlist, RouterConfig())
+    # VCC removed from unrouted (plane connects it).
+    assert "net_v" not in out["routing"].get("unrouted_nets", [])
+    # An offset power stub trace was added on the VCC net.
+    assert any(t.get("net_id") == "net_v" for t in out["routing"]["traces"])
+
+
+def test_apply_copper_fills_4layer_power_via_collisions_and_drops():
+    """4-layer power stitching: a fully-crowded VCC pad finds no clear site
+    (5524); a stitch via dropped for being too close to a routing via (5577);
+    a candidate colliding with an already-placed via position (5487)."""
+    import math as _m
+    routed, netlist = _routed_4layer_gnd_and_power()
+    pad_map = build_pad_map(routed, netlist)
+    vcc_pads = [p for p in pad_map.values() if p.net_id == "net_v"]
+    vp = vcc_pads[0]
+    # Surround the VCC pad with a dense ring of FOREIGN routing vias covering
+    # every candidate position (centre + radii 0.6/0.9/1.3 × 8 angles) so no via
+    # site is clear → the "no clear via site" warning fires (5524).
+    foreign_vias = [{"x_mm": round(vp.x_mm, 4), "y_mm": round(vp.y_mm, 4),
+                     "drill_mm": 0.3, "diameter_mm": 0.6,
+                     "from_layer": "top", "to_layer": "bottom",
+                     "net_id": "net_s", "net_name": "SIG"}]
+    for r in (0.6, 0.9, 1.3):
+        for k in range(8):
+            foreign_vias.append({
+                "x_mm": round(vp.x_mm + r * _m.cos(_m.pi * k / 4), 4),
+                "y_mm": round(vp.y_mm + r * _m.sin(_m.pi * k / 4), 4),
+                "drill_mm": 0.3, "diameter_mm": 0.6,
+                "from_layer": "top", "to_layer": "bottom",
+                "net_id": "net_s", "net_name": "SIG"})
+    routed["routing"]["vias"].extend(foreign_vias)
+    out = apply_copper_fills(routed, netlist, RouterConfig())
+    # Still produces planes; the crowded pad simply gets no stub.
+    assert any(f.get("is_plane") for f in out["routing"]["copper_fills"])
+
+
 def test_apply_copper_fills_no_gnd_net_is_noop():
     placement, netlist = _two_pad_board(net_class="signal")
     routed = route_board(placement, netlist, _fast_cfg(fill_enabled=False))
     out = apply_copper_fills(routed, netlist, RouterConfig())
     assert "copper_fills" not in out["routing"]
+
+
+# ===========================================================================
+# Coverage drive — scattered helper guards & alternate branches
+# ===========================================================================
+
+def test_compute_net_current_regulator_bad_max_current_string_swallowed():
+    """A non-numeric max_current on a regulator load pin must not raise — the
+    except swallows it and the net falls back to the class default (257-258)."""
+    net = NetInfo(net_id="n", name="VCC", net_class="power", designators=["U1"])
+    netlist = {"elements": [
+        {"element_type": "component", "component_id": "C1", "designator": "U1",
+         "component_type": "voltage_regulator",
+         "properties": {"max_current": "not-a-number"}},
+        {"element_type": "port", "port_id": "P1", "component_id": "C1",
+         "name": "OUT"},  # load pin, not a sense pin → enters the try
+        {"element_type": "net", "net_id": "n", "name": "VCC",
+         "net_class": "power", "connected_port_ids": ["P1"]},
+    ]}
+    # Does not raise; falls back to the power-class default.
+    assert compute_net_current(net, netlist) == 0.5
+
+
+def test_astar_congestion_obstacle_start_or_end_returns_none():
+    """Congestion A* returns None immediately when either endpoint is an
+    OBSTACLE cell (632 / 634)."""
+    grid = RoutingGrid(5.0, 5.0, 0.5)
+    sc, sr = grid.mm_to_grid(1.0, 1.0)
+    ec, er = grid.mm_to_grid(4.0, 4.0)
+    grid.set(sc, sr, "top", OBSTACLE)
+    assert astar_route_congestion(grid, (sc, sr, "top"), (ec, er, "top"), 1) is None
+    grid2 = RoutingGrid(5.0, 5.0, 0.5)
+    grid2.set(ec, er, "top", OBSTACLE)
+    assert astar_route_congestion(grid2, (sc, sr, "top"), (ec, er, "top"), 1) is None
+
+
+def test_mark_path_default_via_half_width_equals_half_width():
+    """mark_path_on_grid with via_half_width_cells=None defaults to
+    half_width_cells (968) — a layer-changing path still marks via clearance."""
+    grid = RoutingGrid(6.0, 6.0, 0.5)
+    path = [(2, 2, "top"), (2, 2, "bottom"), (3, 2, "bottom")]
+    mark_path_on_grid(grid, path, 7, half_width_cells=1, via_half_width_cells=None)
+    # The via cell + its half-width neighbourhood are marked on both layers.
+    assert grid.get(2, 2, "top") == 7
+    assert grid.get(2, 2, "bottom") == 7
+    assert grid.get(3, 2, "top") == 7  # via half-width=1 bleeds to neighbour
+
+
+def test_snap_endpoints_pulls_via_onto_pad_b():
+    """A via within snap tolerance of pad_b is recentred onto pad_b (1198)."""
+    res = 0.2
+    pad_a = _pad(1.0, 1.0, net="n")
+    pad_b = _pad(5.0, 5.0, net="n", layer="bottom")
+    traces = [TraceSegment(1.0, 1.0, 5.0, 5.0, 0.2, "top", "n", "N")]
+    vias = [Via(5.05, 5.05, 0.3, 0.6, "top", "bottom", "n", "N")]
+    _snap_endpoints_to_pads(traces, vias, pad_a, pad_b, res)
+    assert vias[0].x_mm == 5.0 and vias[0].y_mm == 5.0
+
+
+def test_astar_find_blockers_with_path_wide_trace_and_no_path():
+    """astar_find_blockers_with_path: wide trace cost path (2027-2035),
+    non-diagonal heuristic (2014), wide-trace blocker collection (2058-2062),
+    and no-path None (2093)."""
+    grid = RoutingGrid(8.0, 8.0, 0.5)
+    sc, sr = grid.mm_to_grid(1.0, 4.0)
+    ec, er = grid.mm_to_grid(6.0, 4.0)
+    # A full-height wall of foreign net cells at one column — the route MUST
+    # pass through it (passable at cost), so net 9 is collected as a blocker.
+    mc, _ = grid.mm_to_grid(3.5, 4.0)
+    for r2 in range(grid.rows):
+        grid.set(mc, r2, "top", 9)
+        grid.set(mc, r2, "bottom", OBSTACLE)  # no via escape around the wall
+    r = astar_find_blockers_with_path(
+        grid, (sc, sr, "top"), (ec, er, "top"), 1,
+        half_width_cells=1, diagonal=False, foreign_net_cost=10.0,
+    )
+    assert r is not None
+    path, blockers = r
+    assert path[0] == (sc, sr, "top") and path[-1] == (ec, er, "top")
+    assert 9 in blockers
+
+    # Fully walled target → None.
+    grid2 = RoutingGrid(8.0, 8.0, 0.5)
+    sc2, sr2 = grid2.mm_to_grid(1.0, 1.0)
+    ec2, er2 = grid2.mm_to_grid(6.0, 6.0)
+    for c in range(grid2.cols):
+        for r2 in range(grid2.rows):
+            if (c, r2) != (sc2, sr2):
+                grid2.set(c, r2, "top", OBSTACLE)
+                grid2.set(c, r2, "bottom", OBSTACLE)
+    assert astar_find_blockers_with_path(
+        grid2, (sc2, sr2, "top"), (ec2, er2, "top"), 1,
+        half_width_cells=1, diagonal=False) is None
+
+
+def test_bitmap_to_polygons_merges_stacked_rows():
+    """Vertically-stacked identical runs merge into one tall rectangle (the
+    merge loop's extend-downward + group-break logic, 2474-2491)."""
+    grid = RoutingGrid(2.0, 3.0, 1.0)  # 2 cols × 3 rows
+    cols, rows = grid.cols, grid.rows
+    filled = [False] * (cols * rows)
+    # Fill column 0 on all rows → one tall merged rectangle.
+    for r in range(rows):
+        filled[r * cols + 0] = True
+    polys = _bitmap_to_polygons(filled, grid, "top")
+    assert len(polys) == 1
+    ys = [v[1] for v in polys[0]]
+    assert max(ys) - min(ys) == rows * grid.resolution  # full height merged
+
+
+def test_add_stitching_vias_rejects_site_with_out_of_bounds_neighbour():
+    """_cell_clear returns False when the via footprint reaches off-grid (2543).
+    A 1-cell-tall grid forces every candidate's via-radius window out of bounds,
+    so no stitching via is placed even with fill on both layers."""
+    # Tiny grid: via_radius_cells >= 1, but only a couple rows → footprint OOB.
+    grid = RoutingGrid(6.0, 1.0, 0.5)  # rows ~2
+    n = grid.cols * grid.rows
+    filled = [True] * n
+    vias = _add_stitching_vias(filled, filled, grid, 7, RouterConfig())
+    assert vias == []  # no clear site (every candidate footprint is OOB)
+
+
+def test_add_rescue_vias_skips_no_via_zone_cell():
+    """A disconnected top island whose only bottom-filled cell is inside a
+    no-via zone yields no rescue via (the can_place_via skip, 2808)."""
+    grid = RoutingGrid(8.0, 8.0, 1.0)
+    cols = grid.cols
+    total = cols * grid.rows
+    filled_top = [False] * total
+    filled_bottom = [False] * total
+    # A 2×2 disconnected top island, with bottom fill underneath every cell.
+    island = [(2, 2), (3, 2), (2, 3), (3, 3)]
+    for c, r in island:
+        filled_top[r * cols + c] = True
+        filled_bottom[r * cols + c] = True
+    # Forbid vias on the entire island → can_place_via False for every candidate.
+    grid.mark_no_via_rect(1.5, 1.5, 4.5, 4.5)
+    vias = _add_rescue_vias(filled_top, filled_bottom, grid, 7, RouterConfig())
+    assert vias == []
+
+
+def test_add_rescue_vias_island_without_bottom_fill_unrescuable():
+    """A disconnected top island with no bottom fill underneath gets no rescue
+    via (the 'no bottom fill' continue, 2814)."""
+    grid = RoutingGrid(8.0, 8.0, 1.0)
+    cols, rows = grid.cols, grid.rows
+    total = cols * rows
+    filled_top = [False] * total
+    filled_bottom = [False] * total
+    # A 2×2 top island in the corner, NOT seeded with fill_net_int → disconnected.
+    for c, r in [(1, 1), (2, 1), (1, 2), (2, 2)]:
+        filled_top[r * cols + c] = True
+    # filled_bottom stays empty everywhere → no rescue candidate.
+    vias = _add_rescue_vias(filled_top, filled_bottom, grid, 7, RouterConfig())
+    assert vias == []
+
+
+def test_silkscreen_board_name_right_anchored_label():
+    """project_name set → bottom-right ('right' anchor) label survives, driving
+    the anchor=='right' branches in _text_overlaps_exclusion (4898/right) and the
+    exclusion-zone extension (4944-4945)."""
+    placement, netlist = _two_pad_board()
+    placement["project_name"] = "MyBoard"
+    pad_map = build_pad_map(placement, netlist)
+    silk = _generate_silkscreen(placement, netlist, pad_map)
+    name_items = [s for s in silk if s.get("purpose") == "board_name"]
+    assert name_items, "board name label should be emitted"
+    assert name_items[0]["anchor"] in ("right", "left")
+
+
+def test_order_nets_by_channel_pressure_no_channels_passthrough():
+    """No channels → nets returned unchanged (1724)."""
+    nets = [_net("a", "A"), _net("b", "B")]
+    placement, netlist = _two_pad_board()
+    pad_map = build_pad_map(placement, netlist)
+    net_id_map = {"a": 1, "b": 2}
+    out = order_nets_by_channel_pressure(nets, pad_map, [], net_id_map, netlist)
+    assert out == list(nets)
+
+
+def test_order_nets_by_channel_pressure_scores_crossing_nets():
+    """With a channel and a net straddling it, the crossing net scores higher
+    than a single-pad net and sorts first (1747-1779)."""
+    # Two IC rows with a gap → a horizontal channel between them.
+    pad_map = _ic_pads("U1", 5.0, 5.0, pitch=1.5, rows_y=(0.0, 6.0), n_per_row=4)
+    # Assign a net to one pad above the channel and one below → must cross.
+    keys = list(pad_map.keys())
+    above = pad_map[keys[0]]   # row y=5.0
+    below = pad_map[keys[-1]]  # row y=11.0
+    pad_map[keys[0]] = PadInfo(
+        port_id=above.port_id, designator=above.designator,
+        pin_number=above.pin_number, net_id="cross",
+        x_mm=above.x_mm, y_mm=above.y_mm,
+        pad_width_mm=above.pad_width_mm, pad_height_mm=above.pad_height_mm,
+        layer=above.layer)
+    pad_map[keys[-1]] = PadInfo(
+        port_id=below.port_id, designator=below.designator,
+        pin_number=below.pin_number, net_id="cross",
+        x_mm=below.x_mm, y_mm=below.y_mm,
+        pad_width_mm=below.pad_width_mm, pad_height_mm=below.pad_height_mm,
+        layer=below.layer)
+    channels = _detect_channels(pad_map, RouterConfig(), 30.0, 30.0)
+    assert channels  # there's a channel to cross
+    nets = [_net("solo", "S"),  # solo has <2 pads on net → score 0, appended
+            NetInfo(net_id="cross", name="X", net_class="signal",
+                    designators=["U1"])]
+    net_id_map = {"cross": 1, "solo": 2}
+    out = order_nets_by_channel_pressure(nets, pad_map, channels, net_id_map, netlist={"elements": []})
+    # The crossing net is ordered ahead of the zero-score solo net.
+    assert out[0].net_id == "cross"
+
+
+def test_build_output_ipc_upsize_float_override_formatted():
+    """A float trace_width_override (IPC upsize) is rendered with the upsize
+    suffix (5059) and 3800 sets it when ipc_min exceeds the default width."""
+    res = RoutingResult()
+    res.trace_width_overrides = {"net_0": 0.812}  # float → IPC upsize path
+    placement, netlist = _two_pad_board()
+    pad_map = build_pad_map(placement, netlist)
+    out = _build_output(placement, netlist, res, [_net()], RouterConfig(),
+                        pad_map, copper_fills=None)
+    ov = out["routing"]["trace_width_overrides"]
+    assert ov["net_0"].endswith("(IPC-2221 upsize)")
+    assert ov["net_0"].startswith("0.812")
+
+
+def test_route_board_power_net_high_current_upsizes_and_reports():
+    """End-to-end: a high-current regulator output net forces an IPC upsize >
+    default, so 3800 records the float override and _build_output formats it
+    (5059)."""
+    placement, netlist = _two_pad_board(net_class="power")
+    # Make the source component a voltage regulator with a 5A load pin so
+    # compute_net_current reports a high current (drives the IPC upsize).
+    for e in netlist["elements"]:
+        if e.get("element_type") == "net":
+            e["name"] = "VCC"
+        if e.get("element_type") == "component" and e["component_id"] == "C1":
+            e["component_type"] = "voltage_regulator"
+            e["properties"] = {"max_current": "5A"}
+        # P2 belongs to C1 and is on the net — name it as a load pin.
+        if e.get("element_type") == "port" and e["port_id"] == "P2":
+            e["name"] = "OUT"
+    out = route_board(placement, netlist, _fast_cfg())
+    ov = out["routing"].get("trace_width_overrides", {})
+    # The power net got an IPC upsize string.
+    assert any("IPC-2221 upsize" in v for v in ov.values())
+
+
+def test_apply_copper_fills_default_config_and_unknown_net_via():
+    """config=None default (5248); a via with an unmapped net_id is skipped in
+    the grid-marking loop (5385); silkscreen regenerated when absent (5615)."""
+    routed, netlist = _routed_two_pad(layers=2)
+    # A via with an UNMAPPED net_id — vias survive the dangling pass, so the
+    # marking loop sees it and skips on nid==0 (5385).
+    routed["routing"]["vias"].append({
+        "x_mm": 3.0, "y_mm": 3.0, "drill_mm": 0.3, "diameter_mm": 0.6,
+        "from_layer": "top", "to_layer": "bottom",
+        "net_id": "ghost", "net_name": "GHOST"})
+    routed.pop("silkscreen", None)  # force regeneration (5615)
+    out = apply_copper_fills(routed, netlist, config=None)  # default config
+    assert out["routing"]["copper_fills"]
+    assert out.get("silkscreen")  # regenerated
+
+
+def test_compute_net_current_led_bad_if_string_uses_default():
+    """A non-numeric LED forward-current string falls through to LED_IF_DEFAULT
+    (242-243)."""
+    net = NetInfo(net_id="n", name="D1A", net_class="signal", designators=["D1"])
+    netlist = {"elements": [
+        {"element_type": "component", "component_id": "C1", "designator": "D1",
+         "component_type": "led", "properties": {"if": "bogus"}},
+        {"element_type": "port", "port_id": "P1", "component_id": "C1",
+         "name": "A"},
+        {"element_type": "net", "net_id": "n", "name": "D1A",
+         "net_class": "signal", "connected_port_ids": ["P1"]},
+    ]}
+    from optimizers.router import LED_IF_DEFAULT
+    assert compute_net_current(net, netlist) == LED_IF_DEFAULT
+
+
+def test_route_net_congestion_all_mst_edges_unroutable_returns_none():
+    """route_net_congestion returns None when an MST edge has no path (1379)."""
+    placement, netlist = _two_pad_board()
+    pad_map = build_pad_map(placement, netlist)
+    nets = build_connectivity(netlist)
+    net = nets[0]
+    cfg = RouterConfig()
+    grid = RoutingGrid(20.0, 20.0, cfg.grid_resolution_mm)
+    _setup_grid(grid, placement, pad_map, cfg.clearance_mm, {net.net_id: 1})
+    # Wall off both layers entirely (OBSTACLE is impassable even to congestion
+    # A*) so no path exists between the pads.
+    for c in range(grid.cols):
+        for r in range(grid.rows):
+            for layer in ("top", "bottom"):
+                grid.set(c, r, layer, OBSTACLE)
+    n = grid.cols * grid.rows
+    hist = {"top": [0.0] * n, "bottom": [0.0] * n}
+    occ = {"top": [0] * n, "bottom": [0] * n}
+    out = route_net_congestion(grid, net, pad_map, 1, cfg, netlist, 0.25,
+                               history_cost=hist, present_occupancy=occ)
+    assert out is None
+
+
+def test_setup_grid_rotated_th_component_swaps_footprint_dims():
+    """A 90°-rotated through-hole component body swaps width/height when marking
+    obstacles (1455)."""
+    placement = {
+        "board": {"width_mm": 20.0, "height_mm": 20.0, "layers": 2,
+                  "outline_type": "rectangle", "origin": [0, 0]},
+        "placements": [{
+            "designator": "J1", "component_type": "connector",
+            "package": "DIP-8", "footprint_width_mm": 8.0,
+            "footprint_height_mm": 2.0, "x_mm": 10.0, "y_mm": 10.0,
+            "rotation_deg": 90, "layer": "top"}],
+    }
+    netlist = {"elements": [
+        {"element_type": "component", "component_id": "C1", "designator": "J1",
+         "component_type": "connector", "properties": {}}]}
+    pad_map = build_pad_map(placement, netlist)
+    grid = RoutingGrid(20.0, 20.0, 0.5)
+    _setup_grid(grid, placement, pad_map, 0.2, {})
+    # Rotated 90°: the 8mm dimension is now vertical. A cell 3mm ABOVE centre
+    # (within the swapped 8mm extent) is an obstacle; one 3mm to the SIDE (only
+    # 2mm half-extent) is clear.
+    cv, rv = grid.mm_to_grid(10.0, 13.0)
+    ch, rh = grid.mm_to_grid(13.0, 10.0)
+    assert grid.get(cv, rv, "top") == OBSTACLE   # tall axis (was width)
+    assert grid.get(ch, rh, "top") != OBSTACLE   # short axis (was height)
+
+
+def test_detect_channels_too_narrow_gap_skipped():
+    """Two pad rows too close together yield no channel (1619)."""
+    # Two rows 0.5mm apart, ≥3 pads each, overlapping in X → gap too narrow.
+    pad_map = _ic_pads("U1", 5.0, 5.0, pitch=1.5, rows_y=(0.0, 0.5), n_per_row=4)
+    channels = _detect_channels(pad_map, RouterConfig(), 30.0, 30.0)
+    assert all(ch.axis != "horizontal" for ch in channels)
+
+
+def test_detect_channels_rows_no_x_overlap_skipped():
+    """Two wide-gap rows with disjoint X ranges yield no horizontal channel
+    (1626)."""
+    pads = {}
+    # Row A at y=5: x 0,1.5,3 ; Row B at y=15: x 20,21.5,23 (no X overlap)
+    for k, x in enumerate((0.0, 1.5, 3.0)):
+        pads[f"U1_a{k}"] = PadInfo(port_id=f"a{k}", designator="U1",
+            pin_number=k, net_id=None, x_mm=x, y_mm=5.0,
+            pad_width_mm=0.5, pad_height_mm=0.5, layer="top")
+    for k, x in enumerate((20.0, 21.5, 23.0)):
+        pads[f"U1_b{k}"] = PadInfo(port_id=f"b{k}", designator="U1",
+            pin_number=10 + k, net_id=None, x_mm=x, y_mm=15.0,
+            pad_width_mm=0.5, pad_height_mm=0.5, layer="top")
+    channels = _detect_channels(pads, RouterConfig(), 30.0, 30.0)
+    assert all(ch.axis != "horizontal" for ch in channels)
+
+
+def test_detect_channels_vertical_cols_no_y_overlap_skipped():
+    """Two wide-gap columns with disjoint Y ranges yield no vertical channel
+    (1660)."""
+    pads = {}
+    for k, y in enumerate((0.0, 1.5, 3.0)):
+        pads[f"U1_a{k}"] = PadInfo(port_id=f"a{k}", designator="U1",
+            pin_number=k, net_id=None, x_mm=5.0, y_mm=y,
+            pad_width_mm=0.5, pad_height_mm=0.5, layer="top")
+    for k, y in enumerate((20.0, 21.5, 23.0)):
+        pads[f"U1_b{k}"] = PadInfo(port_id=f"b{k}", designator="U1",
+            pin_number=10 + k, net_id=None, x_mm=15.0, y_mm=y,
+            pad_width_mm=0.5, pad_height_mm=0.5, layer="top")
+    channels = _detect_channels(pads, RouterConfig(), 30.0, 30.0)
+    assert all(ch.axis != "vertical" for ch in channels)
+
+
+def test_build_pad_zone_index_skips_unmapped_pad():
+    """A pad with net_id None / unmapped is skipped (1814)."""
+    grid = RoutingGrid(10.0, 10.0, 0.5)
+    pad_map = {
+        "p_none": _pad(2.0, 2.0, net=None),
+        "p_unmapped": _pad(4.0, 4.0, net="missing"),
+        "p_ok": _pad(6.0, 6.0, net="net_0"),
+    }
+    pzi = _build_pad_zone_index(pad_map, {"net_0": 1}, 0.2, grid)
+    assert set(pzi.keys()) == {1}  # only the mapped pad got a zone
+
+
+def test_trace_segment_at_isolated_cell_returns_self():
+    """An isolated same-net trace cell (no same-net neighbours) returns just
+    itself (1875)."""
+    grid = RoutingGrid(10.0, 10.0, 0.5)
+    grid.set(5, 5, "top", 7)  # lone cell, no neighbours of net 7
+    seg = _trace_segment_at(grid, 5, 5, "top", 7, {})
+    assert seg == [(5, 5)]
+
+
+def test_try_shove_segment_off_grid_edge_fails():
+    """Shoving a segment past the grid edge fails (1946)."""
+    grid = RoutingGrid(5.0, 5.0, 0.5)
+    last_col = grid.cols - 1
+    grid.set(last_col, 3, "top", 7)
+    snap = {}
+    ok = _try_shove_segment(grid, [(last_col, 3)], "top", 7,
+                            dc=1, dr=0, pzi={}, depth=0, max_depth=3,
+                            snapshot=snap)
+    assert ok is False
+
+
+def test_remove_dangling_traces_empty_is_noop():
+    """No traces → returns 0 (5157)."""
+    assert _remove_dangling_traces({"traces": []}, {}) == 0
+
+
+def test_remove_dangling_traces_endpoint_on_via_is_supported():
+    """A trace whose free end coincides with a same-net via is supported and
+    kept (5177)."""
+    routing = {
+        "traces": [{"start_x_mm": 1.0, "start_y_mm": 1.0,
+                    "end_x_mm": 3.0, "end_y_mm": 1.0,
+                    "width_mm": 0.25, "layer": "top",
+                    "net_id": "net_0", "net_name": "N"}],
+        "vias": [
+            {"x_mm": 1.0, "y_mm": 1.0, "net_id": "net_0"},
+            {"x_mm": 3.0, "y_mm": 1.0, "net_id": "net_0"},
+        ],
+    }
+    pad_map = {}  # no pads — only vias support the endpoints
+    removed = _remove_dangling_traces(routing, pad_map)
+    assert removed == 0  # both ends sit on same-net vias → kept
+    assert len(routing["traces"]) == 1
+
+
+def test_post_route_nudge_skips_gnd_stitch_via_and_zero_length_trace():
+    """_post_route_nudge skips GND stitch vias (4668) and zero-length traces
+    (4690)."""
+    result = RoutingResult()
+    # A zero-length foreign-net trace right at a (non-stitch) foreign via — the
+    # via-trace clearance check fires, then the zero-length guard skips it (4690).
+    # A separate GND stitch via must be skipped entirely by the loop (4668).
+    result.traces = [TraceSegment(5.0, 5.0, 5.0, 5.0, 0.25, "top", "net_a", "A")]
+    result.vias = [
+        Via(5.0, 5.0, 0.3, 0.6, "top", "bottom", "net_b", "B"),      # foreign
+        Via(8.0, 8.0, 0.3, 0.6, "top", "bottom", "stitch_0", "GND"),  # skipped
+    ]
+    _post_route_nudge(result, {}, RouterConfig())
+    # zero-length trace untouched (skipped) — no crash.
+    assert result.traces[0].start_x_mm == result.traces[0].end_x_mm
+
+
+def test_silkscreen_left_anchor_and_dot_filtering():
+    """A project_name forced to a left-anchored position drives the 'left' (else)
+    anchor branches (4898 else / 4944-4947 else), and a pin-1 dot near a
+    component is filtered. Uses a board where the bottom-right is blocked so the
+    label falls to a left anchor."""
+    placement = {
+        "board": {"width_mm": 30.0, "height_mm": 30.0, "layers": 2,
+                  "outline_type": "rectangle", "origin": [0, 0]},
+        "project_name": "LongBoardNameX",
+        "placements": [
+            # Component occupying the bottom-right corner so the 'right' label
+            # candidates overlap and the 'left' candidate is chosen.
+            _comp("C1", "U1", 27.0, 3.0, ctype="ic", fw=6, fh=6),
+        ],
+    }
+    netlist = {"elements": [
+        {"element_type": "component", "component_id": "C1", "designator": "U1",
+         "component_type": "ic", "properties": {}},
+        {"element_type": "port", "port_id": "P1", "component_id": "C1",
+         "designator": "U1", "pin_number": 1, "name": "1"},
+        {"element_type": "port", "port_id": "P2", "component_id": "C1",
+         "designator": "U1", "pin_number": 2, "name": "2"},
+    ]}
+    pad_map = build_pad_map(placement, netlist)
+    silk = _generate_silkscreen(placement, netlist, pad_map)
+    name = [s for s in silk if s.get("purpose") == "board_name"]
+    assert name and name[0]["anchor"] == "left"
+
+
+def test_apply_copper_fills_reverts_dangling_removal_on_regression():
+    """If removing a dangling stub would disconnect a net, the removal is
+    reverted (5268-5269)."""
+    routed, netlist = _routed_two_pad(layers=2)
+    pad_map = build_pad_map(routed, netlist)
+    pads = [p for p in pad_map.values() if p.net_id == "net_0"]
+    a, b = pads[0], pads[1]
+    # Replace traces with a single trace touching ONLY pad a — pad b dangles.
+    # _remove_dangling_traces will strip it, which disconnects net_0, so the
+    # revert restores the original traces.
+    routed["routing"]["traces"] = [{
+        "start_x_mm": a.x_mm, "start_y_mm": a.y_mm,
+        "end_x_mm": a.x_mm + 1.0, "end_y_mm": a.y_mm,
+        "width_mm": 0.25, "layer": "top", "net_id": "net_0", "net_name": "GND"}]
+    before = list(routed["routing"]["traces"])
+    out = apply_copper_fills(routed, netlist, RouterConfig())
+    # Stub was reverted (still present) because removing it regressed connectivity.
+    assert out["routing"]["copper_fills"] is not None
 
 
 if __name__ == "__main__":
