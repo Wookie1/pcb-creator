@@ -74,3 +74,56 @@ def test_precheck_still_escalates_genuinely_unrouted_board():
     decision = run_vision_review(_routed(50.0, 9, 4, 1), None, None, drc,
                                  OrchestratorConfig())
     assert decision == "escalated"            # real <100% must still escalate
+
+
+# --- anchored: assert against REAL router output, not a hand-built dict -----
+# The tests above use a constructed board; if the pipeline's output shape ever
+# drifts, that fixture wouldn't notice. This one routes a real board with the
+# built-in router (no LLM, no Java — 2-layer) and asserts the consumer reads the
+# same numbers the board actually contains. That's what makes the suite robust
+# to producer/consumer drift: the producer here is the real router.
+
+def test_summary_matches_real_router_output():
+    from optimizers.router import route_board, RouterConfig
+
+    placement = {
+        "board": {"width_mm": 20.0, "height_mm": 20.0,
+                  "outline_type": "rectangle", "origin": [0, 0], "layers": 2},
+        "placements": [
+            {"designator": "R1", "component_type": "resistor", "package": "R_0805",
+             "footprint_width_mm": 2.0, "footprint_height_mm": 1.25,
+             "x_mm": 5.0, "y_mm": 10.0, "rotation_deg": 0, "layer": "top"},
+            {"designator": "R2", "component_type": "resistor", "package": "R_0805",
+             "footprint_width_mm": 2.0, "footprint_height_mm": 1.25,
+             "x_mm": 15.0, "y_mm": 10.0, "rotation_deg": 0, "layer": "top"},
+        ],
+    }
+    netlist = {"elements": [
+        {"element_type": "component", "component_id": "C1", "designator": "R1",
+         "component_type": "resistor", "properties": {}},
+        {"element_type": "component", "component_id": "C2", "designator": "R2",
+         "component_type": "resistor", "properties": {}},
+        {"element_type": "port", "port_id": "P1", "component_id": "C1",
+         "designator": "R1", "pin_number": 1, "name": "1"},
+        {"element_type": "port", "port_id": "P2", "component_id": "C1",
+         "designator": "R1", "pin_number": 2, "name": "2"},
+        {"element_type": "port", "port_id": "P3", "component_id": "C2",
+         "designator": "R2", "pin_number": 1, "name": "1"},
+        {"element_type": "port", "port_id": "P4", "component_id": "C2",
+         "designator": "R2", "pin_number": 2, "name": "2"},
+        {"element_type": "net", "net_id": "net_0", "name": "N0",
+         "net_class": "signal", "connected_port_ids": ["P2", "P3"]},
+    ]}
+
+    routed = route_board(placement, netlist, RouterConfig())
+    truth = routed["routing"]["statistics"]
+    assert truth["total_nets"] >= 1 and truth["completion_pct"] == 100.0  # sanity
+
+    summary = routing_stats_summary(routed)
+    # The consumer must report exactly what the real router produced.
+    assert summary["total_nets"] == truth["total_nets"]
+    assert summary["routed_nets"] == truth["routed_nets"]
+    assert summary["completion_pct"] == truth["completion_pct"]
+
+    routing_text, _ = format_review_context(None, routed)
+    assert f"{truth['routed_nets']}/{truth['total_nets']} nets routed" in routing_text
