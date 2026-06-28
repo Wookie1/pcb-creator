@@ -722,6 +722,36 @@ def fill_zones_pcbnew(pcb_path: str | Path) -> bool:
     return False
 
 
+_GND_STITCH_SCRIPT = str(Path(__file__).parent / "_gnd_stitch.py")
+
+
+def stitch_gnd_islands_pcbnew(pcb_path: str | Path) -> int:
+    """Tie isolated GND pour islands to the inner GND plane on the EXPORTED board.
+
+    The in-core rescue (router._add_rescue_vias) works on the grid fill model,
+    which isn't KiCad's poured geometry — so kicad-cli can still report a GND
+    outer-pour fragment unconnected to the plane (B5). This runs the authoritative
+    pour-and-stitch pass (exporters/_gnd_stitch.py) under KiCad's pcbnew: it pours,
+    finds GND regions with no through-via to the plane, drops a clear GND
+    through-via into each, and re-pours in place. Best-effort: returns the number
+    of vias added, or 0 if no pcbnew is reachable (board left as-is).
+    """
+    pcb_path = Path(pcb_path)
+    for py in _kicad_python_candidates():
+        try:
+            r = subprocess.run([py, _GND_STITCH_SCRIPT, str(pcb_path)],
+                               capture_output=True, text=True, timeout=240)
+        except (FileNotFoundError, OSError, subprocess.SubprocessError):
+            continue
+        if r.returncode == 0:
+            try:
+                return int((r.stdout.strip().splitlines() or ["0"])[-1])
+            except ValueError:  # pragma: no cover - script always prints a count on success
+                return 0
+        # pcbnew missing in this interpreter → try the next candidate.
+    return 0
+
+
 def export_kicad_pro(routed: dict, output_path: str | Path) -> Path:
     """Write a .kicad_pro next to the .kicad_pcb so DRC honors the routed rules."""
     output_path = Path(output_path)
@@ -827,7 +857,13 @@ def export_kicad_pcb(
     # Pour zones (GND/power planes) so KiCad work + headless DRC see connected
     # copper. Best-effort: silently skipped where pcbnew isn't installed.
     try:
-        fill_zones_pcbnew(output_path)
+        if fill_zones_pcbnew(output_path):
+            # Tie any isolated GND pour island to the inner plane on the poured,
+            # authoritative geometry (B5). Only 4-layer boards have an inner GND
+            # plane to rescue to — on 2-layer the outer pours already cover it, so
+            # skip the extra pour-and-analyze pass there.
+            if num_layers >= 4:
+                stitch_gnd_islands_pcbnew(output_path)
     except Exception:
         pass
 

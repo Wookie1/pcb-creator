@@ -101,14 +101,15 @@ def test_carrier_completion_is_pad_level_and_export_is_drc_clean(tmp_path):
         assert completion < 100.0, \
             f"B6 regression: pad open at 100% complete: {[_descs(u) for u in pad_opens]}"
 
-    # B5 is a MITIGATION, not a guarantee: the rescue pass reduces GND pour
-    # islands (it now reaches the In1 plane), but pcb-creator's grid fill model is
-    # not KiCad's poured geometry, so kicad-cli can still find a residual island.
-    # A full guarantee needs export-layer (pcbnew) pour-stitching — see report.
+    # B5: the export-layer pour-stitch (stitch_gnd_islands_pcbnew, run by
+    # export_kicad on 4-layer boards) ties GND pour islands to the inner plane on
+    # the authoritative poured geometry, so these should be gone. An island so
+    # congested that no clearance-legal via site exists can rarely remain — surface
+    # any residual as a warning rather than failing.
     gnd_islands = [u for u in unconn
                    if all("Zone" in d and "GND" in d for d in _descs(u))]
     if gnd_islands or unconn:
         import warnings
-        warnings.warn(f"{completion}% route: {len(gnd_islands)} GND pour island(s) "
-                      f"(B5 residual), {len(unconn)} total unconnected (B6 reflects "
-                      f"pad opens in completion): {[_descs(u) for u in unconn]}")
+        warnings.warn(f"{completion}% route: {len(gnd_islands)} residual GND island(s), "
+                      f"{len(unconn)} total unconnected (B6 reflects pad opens in "
+                      f"completion): {[_descs(u) for u in unconn]}")

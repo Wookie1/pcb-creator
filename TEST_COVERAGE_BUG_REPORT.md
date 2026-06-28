@@ -230,7 +230,7 @@ hard-asserts an un-stitched power-plane pad is never silently credited); these t
 filed for separate fixes and the integration test surfaces them as warnings rather than
 over-claiming a global guarantee it can't yet make.
 
-## 🟡 B5 — MITIGATED + tested (not a full guarantee) — GND island to inner plane
+## ✅ B5 — FIXED + tested (in-core mitigation + authoritative export-layer stitch)
 **Was.** `kicad-cli` reports `Zone [GND] … / Zone [GND] …` unconnected: an outer GND-fill
 fragment chopped off by routing with no via tying it to the GND plane. **Root cause of the
 miss.** `_add_rescue_vias` (`optimizers/router.py`) rescued such an island only when
@@ -241,14 +241,19 @@ passes `inner_gnd_plane=inner_plane_count(board) >= 1` into `create_copper_fill`
 `_add_rescue_vias`, which now accepts any `can_place_via` cell in an isolated island and
 drops a through-via to the In1 plane (later inner-plane generation cuts the In2 antipad
 around it, so no power short). Test: `tests/test_b5_gnd_island_rescue.py`.
-**Why not a full guarantee.** The rescue runs on pcb-creator's *grid* fill model, which is
-not byte-for-byte KiCad's poured geometry — so `kicad-cli` can still report a residual GND
-island the grid didn't model (observed on one route). It reliably *reduces* islands but
-can't promise zero. The authoritative guarantee needs an **export-layer** pass: after the
-B4a pcbnew pour, detect GND zones whose `GetFilledPolysList` has a region with no via to
-the plane and add a stitching via there, then re-pour (the same fix applied by hand during
-the carrier compaction). Filed as the remaining B5 work; the integration test surfaces
-residual islands as a warning rather than failing on them.
+**Two-layer fix.** (1) *In-core (grid):* the rescue above reduces islands but runs on
+pcb-creator's grid fill model, which isn't byte-for-byte KiCad's poured geometry, so a
+residual island can survive into the export. (2) *Export-layer (authoritative):* after the
+B4a pour, `export_kicad_pcb` (4-layer boards) runs `stitch_gnd_islands_pcbnew` →
+`exporters/_gnd_stitch.py` under pcbnew on the real poured geometry: it finds GND
+`GetFilledPolysList` regions with no through-via to the plane, drops a clearance-checked GND
+through-via into each (KiCad re-pours the In2 antipad around it — no power short), and
+re-pours. This is the fix applied by hand during the carrier compaction, now automatic.
+Tests: `tests/test_b5_export_stitch.py` (4-layer export stays poured + 0 GND islands;
+no-op-safe on a clean board). **Verified end-to-end:** a 100%-complete carrier route now
+exports to **0 unconnected / 0 GND islands** under `kicad-cli`. Residual risk: an island so
+congested that no clearance-legal via site exists can't be stitched — rare, and the
+integration test surfaces any residual as a warning.
 
 ## ✅ B6 — FIXED + tested — completion is now pad-level for ALL nets
 **Was.** A point-to-point signal (`SWDIO`, CN1.19 ↔ SWD1.2) reported routed at 100% while
@@ -268,6 +273,7 @@ are reduced by B5 but a residual one still appeared on one route (the grid-vs-po
 above). The opt-in `tests/test_integration_b3_carrier.py` hard-asserts B6 (a pad open
 implies completion < 100) and B3/B4a, and warns on residual GND islands.
 
-**Net:** B1, B2, B3, B4a, B4b, B6 fixed + tested; B5 mitigated + tested (full guarantee is
-the export-layer pour-stitch noted above). Full suite: 1558 passed, 2 skipped (+ the opt-in
-carrier integration test).
+**Net:** B1, B2, B3, B4a, B4b, B5, B6 all fixed + tested (B5 = in-core grid rescue +
+authoritative export-layer pcbnew pour-stitch). End-to-end on the real carrier board, a
+100%-complete route exports to 0 unconnected / 0 GND islands under kicad-cli. Full suite:
+1560 passed, 2 skipped (+ the opt-in carrier integration test).
