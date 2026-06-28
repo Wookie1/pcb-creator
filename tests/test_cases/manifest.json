@@ -63,6 +63,15 @@
       "components": 40,
       "board_mm": "76x60",
       "purpose": "plane_layers=3 \u2192 clamped to 2; identical result to TC6. Verifies bounds handling."
+    },
+    {
+      "id": "TC8",
+      "file": "tc08_4l_compact.json",
+      "layers": 4,
+      "plane_layers": 2,
+      "components": 12,
+      "board_mm": "40x30",
+      "purpose": "Compact 4-layer (GND + power planes): ATtiny85 + LDO blinker, small enough for the LLM to emit a valid netlist, so the full pipeline actually reaches 4-layer plane generation + routing (the larger TC4-TC7 boards block at schematic gen with local models)."
     }
   ]
 }

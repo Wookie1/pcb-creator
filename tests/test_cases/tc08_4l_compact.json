@@ -1,0 +1,40 @@
+{
+  "project_name": "tc08_4l_compact",
+  "description": "USB-powered ATtiny85 blinker with 3.3 V LDO on a 4-layer stack (In1 GND plane, In2 3.3 V power plane). Compact 12-component board sized so the LLM reliably produces a valid netlist, while still exercising the 4-layer plane-generation and routing path (plane_layers defaults to 2 for a 4-layer board).",
+  "power": {"voltage": "3.3V", "source": "USB Micro-B 5V input via LDO"},
+  "board": {"width_mm": 40.0, "height_mm": 30.0, "layers": 4, "corner_radius_mm": 1.0, "outline_type": "rectangle"},
+  "manufacturing": {"manufacturer": "jlcpcb_standard"},
+  "components": [
+    {"ref": "J1", "type": "connector", "value": "USB Micro-B", "package": "USB_Micro-B", "purpose": "5 V power input", "functional_group": "power"},
+    {"ref": "U1", "type": "ic", "value": "AMS1117-3.3", "package": "SOT-223", "purpose": "5 V -> 3.3 V LDO regulator", "functional_group": "power"},
+    {"ref": "C1", "type": "capacitor", "value": "10uF", "package": "1206", "purpose": "LDO input bulk cap", "functional_group": "power"},
+    {"ref": "C2", "type": "capacitor", "value": "10uF", "package": "1206", "purpose": "LDO output bulk cap", "functional_group": "power"},
+    {"ref": "C4", "type": "capacitor", "value": "100nF", "package": "0805", "purpose": "LDO output HF bypass", "functional_group": "power"},
+    {"ref": "U2", "type": "ic", "value": "ATtiny85-20SU", "package": "SOIC8", "purpose": "8-bit AVR MCU driving the LED", "functional_group": "mcu"},
+    {"ref": "C3", "type": "capacitor", "value": "100nF", "package": "0805", "purpose": "U2 VCC bypass", "functional_group": "mcu"},
+    {"ref": "R1", "type": "resistor", "value": "10kohm", "package": "0805", "purpose": "RESET pull-up", "functional_group": "mcu"},
+    {"ref": "SW1", "type": "switch", "value": "tactile 6mm", "package": "SW_Push_6mm", "purpose": "Manual RESET button", "functional_group": "mcu"},
+    {"ref": "R2", "type": "resistor", "value": "330ohm", "package": "0805", "purpose": "LED current-limit resistor", "functional_group": "leds"},
+    {"ref": "D1", "type": "led", "value": "green", "package": "0805_LED", "purpose": "Blinking status LED", "functional_group": "leds"},
+    {"ref": "J2", "type": "connector", "value": "4-pin GPIO header", "package": "Connector_PinHeader_2.54mm_1x04", "purpose": "Breakout: 3.3 V, PB1, PB2, GND", "functional_group": "io"}
+  ],
+  "connections": [
+    {"net_name": "VBUS", "net_class": "power", "pins": ["J1.VBUS", "U1.VIN", "C1.1"]},
+    {"net_name": "GND", "net_class": "ground", "pins": ["J1.GND", "U1.GND", "U2.GND", "C1.2", "C2.2", "C3.2", "C4.2", "D1.cathode", "SW1.2", "J2.4"]},
+    {"net_name": "VCC_3V3", "net_class": "power", "pins": ["U1.VOUT", "U2.VCC", "C2.1", "C3.1", "C4.1", "R1.1", "J2.1"]},
+    {"net_name": "RESET", "net_class": "signal", "pins": ["U2.RESET", "R1.2", "SW1.1"]},
+    {"net_name": "LED_DRV", "net_class": "signal", "pins": ["U2.PB0", "R2.1"]},
+    {"net_name": "LED_A", "net_class": "signal", "pins": ["R2.2", "D1.anode"]},
+    {"net_name": "GPIO1", "net_class": "signal", "pins": ["U2.PB1", "J2.2"]},
+    {"net_name": "GPIO2", "net_class": "signal", "pins": ["U2.PB2", "J2.3"]}
+  ],
+  "placement_hints": [
+    {"ref": "J1", "edge": "left"},
+    {"ref": "U1", "near": "J1"},
+    {"ref": "U2", "x_mm": 22.0, "y_mm": 15.0},
+    {"ref": "D1", "edge": "right"},
+    {"ref": "J2", "edge": "right", "near": "D1"},
+    {"ref": "SW1", "edge": "top"}
+  ],
+  "attachments": []
+}
