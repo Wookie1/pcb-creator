@@ -14,15 +14,12 @@ except ImportError:
     pass
 
 from .config import OrchestratorConfig
+from optimizers.routed_board import routing_stats
 
 
 def routing_stats_summary(routed: dict) -> dict:
-    """Pull the routing-stats summary from a routed-board dict.
-
-    Stats are nested under routed["routing"]["statistics"]; reading the top
-    level instead silently yields zeros (a 100%-routed board reported as 0%).
-    """
-    stats = routed.get("routing", {}).get("statistics", {})
+    """Pull the routing-stats summary (4 fields) from a routed-board dict."""
+    stats = routing_stats(routed)
     return {
         "completion_pct": stats.get("completion_pct", 0),
         "total_nets": stats.get("total_nets", 0),
@@ -454,7 +451,7 @@ def _import_kicad(args) -> int:
     print(f"  Imported routed JSON: {imported_path}")
 
     # Print statistics
-    stats = imported["routing"]["statistics"]
+    stats = routing_stats(imported)
     print(f"  Nets: {stats['routed_nets']}/{stats['total_nets']} ({stats['completion_pct']}%)")
     print(f"  Traces: {len(imported['routing']['traces'])}")
     print(f"  Vias: {stats['via_count']}")

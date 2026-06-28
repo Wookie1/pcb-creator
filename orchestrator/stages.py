@@ -22,6 +22,8 @@ import json
 import sys
 from pathlib import Path
 
+from optimizers.routed_board import routing_stats, routing_completion
+
 
 def _p(project_dir: Path, project_name: str, suffix: str) -> Path:
     return project_dir / f"{project_name}_{suffix}.json"
@@ -979,7 +981,7 @@ def run_routing(project_dir: Path, project_name: str, config,
                     )
                 else:
                     raise
-            completion = routed.get("routing", {}).get("statistics", {}).get("completion_pct", 0)
+            completion = routing_completion(routed)
             if completion < 100:
                 unrouted = routed.get("routing", {}).get("unrouted_nets", [])
                 _log(f"  Freerouting incomplete ({completion:.0f}%): {len(unrouted)} nets unrouted")
@@ -1145,7 +1147,7 @@ def run_routing(project_dir: Path, project_name: str, config,
     routed_path.write_text(json.dumps(routed, indent=2))
 
     val_result = run_routing_validation(str(routed_path), str(netlist_path))
-    stats = routed.get("routing", {}).get("statistics", {})
+    stats = routing_stats(routed)
     unrouted = routed.get("routing", {}).get("unrouted_nets", [])
 
     # Diagnostic summary (mirrors the CLI runner's inline block)

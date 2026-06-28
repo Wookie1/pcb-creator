@@ -22,6 +22,7 @@ from validators.engineering_constants import (
     VIA_DRILL_MM,
     VIA_DIAMETER_MM,
 )
+from .routed_board import routing_stats
 
 import logging
 
@@ -574,7 +575,7 @@ def route_with_freerouting(
                 exclude_net_ids=exclude_net_ids,
             )
 
-            stats = routed.get("routing", {}).get("statistics", {})
+            stats = routing_stats(routed)
             logger.info(f"  Freerouting complete: {stats.get('routed_nets', 0)}/{stats.get('total_nets', 0)} nets "
                   f"({stats.get('completion_pct', 0)}%)")
 

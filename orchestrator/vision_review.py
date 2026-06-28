@@ -15,6 +15,7 @@ import cairosvg
 from .config import OrchestratorConfig
 from .llm.litellm_client import LiteLLMClient
 from .prompts.builder import PromptBuilder
+from optimizers.routed_board import routing_stats
 
 import logging
 
@@ -55,7 +56,7 @@ def format_review_context(drc_report: dict | None, routed: dict) -> tuple[str, s
         (routing_stats_text, drc_summary_text)
     """
     # Routing stats
-    stats = routed.get("routing", {}).get("statistics", {})
+    stats = routing_stats(routed)
     total = stats.get("total_nets", 0)
     routed_count = stats.get("routed_nets", 0)
     completion = stats.get("completion_pct", 0)
@@ -70,7 +71,7 @@ def format_review_context(drc_report: dict | None, routed: dict) -> tuple[str, s
     ]
     if unrouted:
         routing_lines.append(f"- UNROUTED NETS: {', '.join(str(n) for n in unrouted)}")
-    routing_stats = "\n".join(routing_lines)
+    routing_stats_text = "\n".join(routing_lines)
 
     # DRC summary
     if drc_report:
@@ -99,7 +100,7 @@ def format_review_context(drc_report: dict | None, routed: dict) -> tuple[str, s
     else:
         drc_summary = "- No DRC report available."
 
-    return routing_stats, drc_summary
+    return routing_stats_text, drc_summary
 
 
 def _parse_decision(response: str) -> tuple[str, str]:
@@ -147,7 +148,7 @@ def run_vision_review(
         "escalated" if max attempts exhausted without approval.
     """
     # Quick pre-checks that don't need vision
-    stats = routed.get("routing", {}).get("statistics", {})
+    stats = routing_stats(routed)
     completion = stats.get("completion_pct", 0)
     drc_passed = drc_report.get("passed", False) if drc_report else False
     drc_errors = (drc_report or {}).get("statistics", {}).get("errors", 0)
@@ -170,10 +171,10 @@ def run_vision_review(
         return "escalated"
 
     # Build review prompt
-    routing_stats, drc_summary = format_review_context(drc_report, routed)
+    routing_stats_text, drc_summary = format_review_context(drc_report, routed)
     prompt_builder = PromptBuilder(config.base_dir)
     review_prompt = prompt_builder.render("vision_review", {
-        "routing_stats": routing_stats,
+        "routing_stats": routing_stats_text,
         "drc_summary": drc_summary,
     })
 

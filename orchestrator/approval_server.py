@@ -113,7 +113,8 @@ class _ApprovalHandler(BaseHTTPRequestHandler):
                 # Clean up temp file
                 Path(tmp_path).unlink(missing_ok=True)
 
-                stats = updated.get("routing", {}).get("statistics", {})
+                from optimizers.routed_board import routing_stats
+                stats = routing_stats(updated)
                 self._send_json({
                     "status": "ok",
                     "message": f"Imported {filename}",

@@ -13,6 +13,8 @@ from pathlib import Path
 
 import jsonschema
 
+from optimizers.routed_board import routing_stats
+
 import logging
 
 logger = logging.getLogger(__name__)
@@ -746,7 +748,7 @@ def validate_routing(
     all_warnings.extend(warns)
 
     # Summary
-    stats = routed.get("routing", {}).get("statistics", {})
+    stats = routing_stats(routed)
     completion = stats.get("completion_pct", 0)
 
     if all_errors:

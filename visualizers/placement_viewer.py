@@ -24,6 +24,7 @@ from pathlib import Path
 # Add project root for imports
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from optimizers.routed_board import routing_stats
 from optimizers.ratsnest import build_connectivity, compute_mst_edges
 from optimizers.pad_geometry import (
     build_pad_map, get_footprint_def, _generate_fallback_footprint, _rotate_offset,
@@ -385,7 +386,7 @@ def _header_routing_stat(routed: dict | None) -> str:
     """Inline routing stat for the header bar."""
     if not routed:
         return ""
-    stats = routed.get("routing", {}).get("statistics", {})
+    stats = routing_stats(routed)
     pct = stats.get("completion_pct", 0)
     color = "#22c55e" if pct == 100 else "#f59e0b" if pct >= 50 else "#ef4444"
     return f' &bull; <span style="color:{color}">routed {pct:.0f}%</span>'
@@ -395,7 +396,7 @@ def _progress_bar_html(routed: dict | None) -> str:
     """Thin progress bar below the header showing routing completion."""
     if not routed:
         return ""
-    stats = routed.get("routing", {}).get("statistics", {})
+    stats = routing_stats(routed)
     pct = stats.get("completion_pct", 0)
     color = "#22c55e" if pct == 100 else "#f59e0b" if pct >= 50 else "#ef4444"
     return (

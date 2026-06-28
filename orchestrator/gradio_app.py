@@ -25,6 +25,7 @@ except ImportError:
 
 from .config import OrchestratorConfig
 from .runner import STEP_NAMES, run_workflow_streaming
+from optimizers.routed_board import routing_stats
 
 logger = logging.getLogger("pcb-creator.gui")
 
@@ -894,7 +895,7 @@ def _import_kicad(kicad_file, base_dir: Path):
         imported = import_kicad_pcb(kicad_path, original_routed, netlist)
         routed_path.write_text(json.dumps(imported, indent=2))
         html = generate_html(imported, netlist, bom, routed=imported, embed_mode=True)
-        stats = imported.get("routing", {}).get("statistics", {})
+        stats = routing_stats(imported)
         return _wrap_viewer_iframe(html), f"\u2705 Imported: {stats.get('routed_nets',0)}/{stats.get('total_nets',0)} nets"
     except Exception as exc:
         logger.error("KiCad import error: %s\n%s", exc, traceback.format_exc())

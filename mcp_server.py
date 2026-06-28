@@ -36,6 +36,7 @@ if str(_repo_root) not in sys.path:  # pragma: no cover - import-time sys.path g
     sys.path.insert(0, str(_repo_root))
 
 from orchestrator.config import OrchestratorConfig
+from optimizers.routed_board import routing_stats
 from mcp_envelope import ok, fail, working, next_step, option
 
 logger = logging.getLogger(__name__)
@@ -756,7 +757,7 @@ def _design_pcb_sync(  # pragma: no cover - full LLM pipeline worker (requiremen
     routed = _read_project_json(project_name, "_routed.json")
     if routed:
         routing = routed.get("routing", {})
-        stats = routing.get("statistics") or routed.get("statistics", {})
+        stats = routing_stats(routed)
         unrouted = routing.get("unrouted_nets")
         if not isinstance(unrouted, (list, tuple)):
             unrouted = []
@@ -1078,7 +1079,7 @@ def get_project_status(project_name: str) -> dict:
     routed = _read_project_json(project_name, "_routed.json")
     if routed:
         routing = routed.get("routing", routed)
-        stats = routing.get("statistics", {})
+        stats = routing_stats(routed)
         result["routing_stats"] = {
             "completion_pct": stats.get("completion_pct", 0),
             "total_nets": stats.get("total_nets", 0),
