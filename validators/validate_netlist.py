@@ -18,12 +18,12 @@ from collections import Counter
 
 # Ensure validators/ is on the path for sibling imports
 _validators_dir = os.path.dirname(os.path.abspath(__file__))
-if _validators_dir not in sys.path:
+if _validators_dir not in sys.path:  # pragma: no cover - import-time path guard; validators/ is already on sys.path under test
     sys.path.insert(0, _validators_dir)
 
 try:
     import jsonschema
-except ImportError:
+except ImportError:  # pragma: no cover - jsonschema is a hard dependency; startup guard for misconfigured envs
     print(json.dumps({
         "valid": False,
         "errors": ["Python 'jsonschema' package not installed. Run: pip install jsonschema"],

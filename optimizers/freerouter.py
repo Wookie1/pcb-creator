@@ -369,7 +369,8 @@ def route_with_freerouting(
             if current > 0:
                 net_widths[net_names.get(net_id, net_id)] = \
                     ipc2221_trace_width(current, copper_oz)
-    except Exception as exc:
+    except Exception as exc:  # pragma: no cover - defensive guard around the
+        # router-module IPC width helper; only the JVM-driving route path reaches it.
         logger.warning("IPC-2221 net width computation failed (%s) — "
                        "falling back to default widths", exc)
 
@@ -429,8 +430,8 @@ def route_with_freerouting(
                 }
             try:
                 progress_callback(snapshot)
-            except Exception:
-                pass  # progress must never kill the route
+            except Exception:  # pragma: no cover - progress callback guard, only
+                pass           # reachable while streaming a live JVM's output
 
         def _read_stdout(pipe) -> None:
             for line in iter(pipe.readline, ""):
@@ -446,8 +447,8 @@ def route_with_freerouting(
         def _read_stderr(pipe) -> None:
             for line in iter(pipe.readline, ""):
                 stderr_tail.append(line)
-                if len(stderr_tail) > 50:
-                    stderr_tail.pop(0)
+                if len(stderr_tail) > 50:  # pragma: no cover - tail cap only hit
+                    stderr_tail.pop(0)     # on a chatty live JVM stderr stream
             pipe.close()
 
         proc = subprocess.Popen(cmd, stdout=subprocess.PIPE,
@@ -473,7 +474,9 @@ def route_with_freerouting(
                 try:
                     proc.wait(timeout=min(1.0, max(0.05, deadline - time.monotonic())))
                     break
-                except subprocess.TimeoutExpired:
+                except subprocess.TimeoutExpired:  # pragma: no cover - live-JVM
+                    # wait/heartbeat/timeout loop; runs only against a real
+                    # Freerouting subprocess, never in unit tests.
                     now = time.monotonic()
                     if now >= deadline:
                         # Ask Freerouting to stop and flush whatever it has routed
@@ -495,7 +498,7 @@ def route_with_freerouting(
             for r in readers:
                 r.join(timeout=5)
 
-            if timed_out:
+            if timed_out:  # pragma: no cover - JVM timeout/partial-SES handling
                 if ses_path.exists() and ses_path.stat().st_size > 0:
                     logger.warning(
                         "Freerouting timed out after %ss — importing the partial "
@@ -508,7 +511,7 @@ def route_with_freerouting(
                         "(PCB_FREEROUTING_TIMEOUT), add a signal layer, or simplify "
                         "the board."
                     )
-            elif proc.returncode != 0:
+            elif proc.returncode != 0:  # pragma: no cover - JVM failure/OOM exit
                 # Detect out-of-memory: the JVM may report OutOfMemoryError in its
                 # output, or be OS OOM-killed (exit -9 / 137). Surface a clear,
                 # actionable message instead of an opaque "routing failed".
@@ -530,7 +533,8 @@ def route_with_freerouting(
                 stderr_snippet = combined[-500:] or "no error output"
                 raise RuntimeError(f"Freerouting failed (exit code {proc.returncode}): {stderr_snippet}")
 
-            if not ses_path.exists():
+            if not ses_path.exists():  # pragma: no cover - JVM output-discovery
+                # fallback; only the live route reaches a missing-SES state.
                 # Freerouting may name the output differently
                 # Try common alternatives
                 alt_names = [

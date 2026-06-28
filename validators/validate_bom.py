@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 
 try:
     import jsonschema
-except ImportError:
+except ImportError:  # pragma: no cover - jsonschema is a hard dependency; this is a startup guard for misconfigured envs
     logger.info(json.dumps({
         "valid": False,
         "errors": ["Python 'jsonschema' package not installed. Run: pip install jsonschema"],

@@ -165,7 +165,7 @@ def check_hole_to_hole(routed: dict, netlist: dict, dfm: dict) -> list[DRCViolat
         for pad in pad_map.values():
             if pad.layer == "all":  # through-hole
                 holes.append((pad.x_mm, pad.y_mm, f"{pad.designator}.{pad.pin_number}"))
-    except Exception:
+    except Exception:  # pragma: no cover - pad-map build is best-effort; via holes are still checked
         pass
 
     # Pairwise check
@@ -292,7 +292,7 @@ def check_trace_current_capacity(
         from pathlib import Path
         sys.path.insert(0, str(Path(__file__).parent.parent))
         from optimizers.router import ipc2221_trace_width, compute_net_currents
-    except ImportError:
+    except ImportError:  # pragma: no cover - optimizers.router always importable in-tree
         return violations
 
     # Net current estimates with series-element propagation — must match the

@@ -404,12 +404,12 @@ def _concatenate_pdfs(input_paths: list[Path], output_path: Path) -> None:
     """
     try:
         # Try pypdf if available
-        from pypdf import PdfMerger
-        merger = PdfMerger()
-        for p in input_paths:
-            merger.append(str(p))
-        merger.write(str(output_path))
-        merger.close()
+        from pypdf import PdfMerger  # pragma: no cover - pypdf is an optional dep not installed in this env; merge path is dep-gated, fallback below is what runs/is tested
+        merger = PdfMerger()  # pragma: no cover
+        for p in input_paths:  # pragma: no cover
+            merger.append(str(p))  # pragma: no cover
+        merger.write(str(output_path))  # pragma: no cover
+        merger.close()  # pragma: no cover
     except ImportError:
         # No pypdf — just use the first page
         import shutil

@@ -70,7 +70,7 @@ def _run_electrical_checks(routed: dict, netlist: dict) -> list[dict]:
             _check_no_shorts,
             _check_pad_clearance,
         )
-    except ImportError:
+    except ImportError:  # pragma: no cover - sibling module always importable in-package
         return results
 
     routing = routed.get("routing", {})

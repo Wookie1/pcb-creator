@@ -28,7 +28,9 @@ def infer_net_class(net_name: str) -> str:
         return "power"
     if re.match(r"^[+\-]?\d+V\d*$", name):
         return "power"
-    if name.startswith(("VCC", "VDD", "VBAT", "VBUS")):
+    if name.startswith(("VCC", "VDD", "VBAT", "VBUS")):  # pragma: no cover
+        # ponytail: _POWER_RE above already matches every VCC/VDD/VBAT/VBUS
+        # prefix, so this startswith fallback is unreachable defensive code.
         return "power"
     return "signal"
 

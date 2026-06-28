@@ -273,7 +273,7 @@ def export_step_populated(
     """
     try:
         from .parametric_models import generate_component_model
-    except ImportError:
+    except ImportError:  # pragma: no cover - parametric_models is a sibling stdlib-only module, always importable; defensive fallback only fires on a broken install
         return export_step(routed, netlist, output_path, board_thickness_mm)
 
     output_path = Path(output_path)

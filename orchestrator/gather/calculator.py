@@ -8,7 +8,7 @@ from pathlib import Path
 
 # Add project root to path so we can import from validators/
 _project_root = str(Path(__file__).parent.parent.parent)
-if _project_root not in sys.path:
+if _project_root not in sys.path:  # pragma: no cover - import-time path guard, may already be present
     sys.path.insert(0, _project_root)
 
 from validators.engineering_constants import (

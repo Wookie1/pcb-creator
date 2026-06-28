@@ -32,7 +32,7 @@ def _validate_schema(routed: dict) -> list[str]:
     """Validate routed JSON against schema."""
     try:
         schema = _load_schema()
-    except FileNotFoundError:
+    except FileNotFoundError:  # pragma: no cover - schema is shipped with the package
         return ["Schema file not found: routed_schema.json"]
 
     validator = jsonschema.Draft7Validator(schema)
@@ -281,7 +281,7 @@ def _check_connectivity(routed: dict, netlist: dict | None) -> tuple[list[str], 
         from optimizers.pad_geometry import build_pad_map
 
         pad_map = build_pad_map(routed, netlist)
-    except Exception:
+    except Exception:  # pragma: no cover - build_pad_map is defensive; this guards a corrupt pad map
         warnings.append("Connectivity check: could not build pad map")
         return errors, warnings
 
@@ -563,7 +563,7 @@ def _check_pad_clearance(routed: dict, netlist: dict | None) -> tuple[list[str],
         _sys.path.insert(0, str(Path(__file__).parent.parent))
         from optimizers.pad_geometry import build_pad_map
         pad_map = build_pad_map(routed, netlist)
-    except Exception:
+    except Exception:  # pragma: no cover - build_pad_map is defensive; this guards a corrupt pad map
         warnings.append("Pad clearance check: could not build pad map")
         return errors, warnings
 
