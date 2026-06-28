@@ -4743,6 +4743,39 @@ def _post_route_nudge(
     result.traces = traces
 
 
+def _silk_text_bbox(x: float, y: float, text: str, fh: float,
+                    anchor: str = "center", angle: float = 0
+                    ) -> tuple[float, float, float, float]:
+    """Axis-aligned bounding box of a silk text label, accounting for anchor
+    and a 0/90° rotation about its (x, y) anchor point."""
+    char_w = fh * 0.6
+    spacing = fh * 0.15
+    total_w = len(text) * char_w + max(0, len(text) - 1) * spacing
+    if anchor == "center":
+        x0 = x - total_w / 2
+    elif anchor == "right":
+        x0 = x - total_w
+    else:
+        x0 = x
+    # Text is centered vertically on the anchor y (matches KiCad gr_text and the
+    # Gerber renderer), so a 90° rotation about (x, y) stays centered.
+    y0, y1 = y - fh / 2, y + fh / 2
+    corners = [(x0, y0), (x0 + total_w, y0), (x0 + total_w, y1), (x0, y1)]
+    if angle:
+        a = math.radians(angle)
+        ca, sa = math.cos(a), math.sin(a)
+        corners = [(x + (px - x) * ca - (py - y) * sa,
+                    y + (px - x) * sa + (py - y) * ca) for px, py in corners]
+    xs = [c[0] for c in corners]
+    ys = [c[1] for c in corners]
+    return (min(xs), min(ys), max(xs), max(ys))
+
+
+def _boxes_overlap(a: tuple, b: tuple) -> bool:
+    """True if two (x_min, y_min, x_max, y_max) boxes overlap."""
+    return a[0] < b[2] and a[2] > b[0] and a[1] < b[3] and a[3] > b[1]
+
+
 def _generate_silkscreen(
     placement: dict,
     netlist: dict,
@@ -4791,7 +4824,8 @@ def _generate_silkscreen(
         # Silkscreen layer matches component layer
         silk_layer = f"{layer}_silk"
 
-        # 1. Designator text — positioned above the component
+        # 1. Designator text — default above the component; the cleanup pass
+        # below relocates it off pads/other silk (rotating 90° if needed).
         text_offset_y = h / 2 + 0.8  # 0.8mm above component top
         silk.append({
             "type": "text",
@@ -4801,6 +4835,8 @@ def _generate_silkscreen(
             "font_height_mm": 1.0,
             "layer": silk_layer,
             "anchor": "center",
+            "purpose": "designator",
+            "_box": (cx, cy, w, h),  # component extent, used by the relocator
         })
 
         # Find the component in netlist
@@ -4895,73 +4931,64 @@ def _generate_silkscreen(
                 plc["y_mm"] + r + pad_margin,
             ))
 
-    def _text_overlaps_exclusion(x: float, y: float, text: str, fh: float, anchor: str) -> bool:
-        """Check if a text label overlaps any exclusion zone."""
-        char_w = fh * 0.6
-        spacing = fh * 0.15
-        total_w = len(text) * char_w + max(0, len(text) - 1) * spacing
-        if anchor == "center":
-            tx_min = x - total_w / 2
-        elif anchor == "right":
-            tx_min = x - total_w
-        else:
-            tx_min = x
-        tx_max = tx_min + total_w
-        ty_min = y
-        ty_max = y + fh
+    # --- Silkscreen cleanup: relocate designators ---------------------------
+    # Each designator moves to the first position clear of pads/fiducials
+    # (exclusion_zones) AND of any already-placed silk, trying upright (0°) spots
+    # all around the part first, then rotated 90°. Copper traces are NOT avoided
+    # (silk over copper is allowed). Pin-1 dots and anode "A" marks keep their
+    # meaningful positions and only act as obstacles. If nothing is clear the
+    # designator stays at its default spot (best effort) rather than vanishing.
+    out_silk: list[dict] = []
 
-        for ex_min, ey_min, ex_max, ey_max in exclusion_zones:
-            if tx_min < ex_max and tx_max > ex_min and ty_min < ey_max and ty_max > ey_min:
-                return True
-        return False
-
-    # Remove silkscreen items that overlap exclusion zones
-    filtered_silk = []
+    # Non-designator items: keep, and register each as an obstacle.
     for item in silk:
+        if item.get("purpose") == "designator":
+            continue
+        out_silk.append(item)
         if item["type"] == "text":
-            if _text_overlaps_exclusion(
-                item["x_mm"], item["y_mm"],
-                item["text"], item.get("font_height_mm", 1.0),
-                item.get("anchor", "center"),
-            ):
-                continue  # skip overlapping text
-        elif item["type"] == "dot":
-            dx, dy = item["x_mm"], item["y_mm"]
+            exclusion_zones.append(_silk_text_bbox(
+                item["x_mm"], item["y_mm"], item["text"],
+                item.get("font_height_mm", 1.0), item.get("anchor", "center")))
+        else:  # dot
             r = item.get("diameter_mm", 0.5) / 2
-            overlaps = False
-            for ex_min, ey_min, ex_max, ey_max in exclusion_zones:
-                if dx + r > ex_min and dx - r < ex_max and dy + r > ey_min and dy - r < ey_max:
-                    overlaps = True
-                    break
-            if overlaps:
-                continue
-        filtered_silk.append(item)
-    silk = filtered_silk
+            exclusion_zones.append((item["x_mm"] - r, item["y_mm"] - r,
+                                    item["x_mm"] + r, item["y_mm"] + r))
 
-    # Add surviving designator/anode text bounding boxes to exclusion zones
-    # so that the board name/revision label won't overlap them
+    _GAPS = (0.8, 1.6, 2.4)
     for item in silk:
-        if item["type"] == "text":
-            fh = item.get("font_height_mm", 1.0)
-            char_w = fh * 0.6
-            spacing = fh * 0.15
-            txt = item["text"]
-            total_w = len(txt) * char_w + max(0, len(txt) - 1) * spacing
-            anchor = item.get("anchor", "center")
-            ix, iy = item["x_mm"], item["y_mm"]
-            if anchor == "center":
-                tx_min = ix - total_w / 2
-            elif anchor == "right":  # pragma: no cover - this loop runs over designator/anode silk items, which are always anchor=="center"; the board-name label (the only non-center anchor) is added AFTER this loop
-                tx_min = ix - total_w
-            else:  # pragma: no cover - see above: no left-anchored item exists at this point
-                tx_min = ix
-            margin = 0.3
-            exclusion_zones.append((
-                tx_min - margin,
-                iy - margin,
-                tx_min + total_w + margin,
-                iy + fh + margin,
-            ))
+        if item.get("purpose") != "designator":
+            continue
+        cx0, cy0, cw, ch = item.pop("_box")
+        fh = item.get("font_height_mm", 1.0)
+        txt = item["text"]
+        hw, hh = cw / 2, ch / 2
+        chosen = None
+        for angle in (0, 90):                  # upright everywhere first, then rotate
+            for gap in _GAPS:
+                for tx, ty in ((cx0, cy0 + hh + gap),    # above
+                               (cx0, cy0 - hh - gap),    # below
+                               (cx0 + hw + gap, cy0),    # right
+                               (cx0 - hw - gap, cy0)):   # left
+                    bb = _silk_text_bbox(tx, ty, txt, fh, "center", angle)
+                    if not any(_boxes_overlap(bb, z) for z in exclusion_zones):
+                        chosen = (tx, ty, angle, bb)
+                        break
+                if chosen:
+                    break
+            if chosen:
+                break
+        if chosen is None:                     # nothing clear — keep default spot
+            tx, ty = cx0, cy0 + hh + 0.8
+            chosen = (tx, ty, 0, _silk_text_bbox(tx, ty, txt, fh, "center", 0))
+        tx, ty, angle, bb = chosen
+        item["x_mm"] = round(tx, 3)
+        item["y_mm"] = round(ty, 3)
+        if angle:
+            item["angle"] = angle
+        exclusion_zones.append(bb)
+        out_silk.append(item)
+
+    silk = out_silk
 
     # Board name and revision label
     board = placement.get("board", {})
@@ -4984,8 +5011,10 @@ def _generate_silkscreen(
         ]
 
         for lx, ly, anchor in candidates:
-            if not _text_overlaps_exclusion(lx, ly, project_name, 1.0, anchor) and \
-               not _text_overlaps_exclusion(lx, ly + 1.5, "Rev 1.0", 0.8, anchor):
+            name_bb = _silk_text_bbox(lx, ly, project_name, 1.0, anchor)
+            rev_bb = _silk_text_bbox(lx, ly + 1.5, "Rev 1.0", 0.8, anchor)
+            if not any(_boxes_overlap(name_bb, z) for z in exclusion_zones) and \
+               not any(_boxes_overlap(rev_bb, z) for z in exclusion_zones):
                 silk.append({
                     "type": "text",
                     "text": project_name,

@@ -533,8 +533,10 @@ def _silkscreen(silk_items: list[dict]) -> str:
             text = item.get("text", "")
             x, y = item.get("x_mm", 0), item.get("y_mm", 0)
             font_h = item.get("font_height_mm", 1.0)
+            angle = item.get("angle", 0)
+            at = f'(at {x} {y} {angle})' if angle else f'(at {x} {y})'
             lines.append(
-                f'  (gr_text "{text}" (at {x} {y})'
+                f'  (gr_text "{text}" {at}'
                 f' (layer "{layer}")'
                 f' (effects (font (size {font_h} {font_h}) (thickness {font_h * 0.15})){_mirror_suffix(layer)})'
                 f' (tstamp {_uid()}))'

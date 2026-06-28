@@ -201,8 +201,13 @@ def _render_text_strokes(
     height: float,
     stroke_w: float,
     anchor: str = "center",
+    angle: float = 0,
 ) -> None:
-    """Render text as stroke font line segments in a Gerber DataLayer."""
+    """Render text as stroke font line segments in a Gerber DataLayer.
+
+    `angle` (0 or 90) rotates the rendered text about its (x, y) anchor, matching
+    the bbox the silk relocator reserved and the KiCad export's gr_text angle.
+    """
     from .stroke_font import STROKE_FONT
 
     char_width = height * 0.6
@@ -217,13 +222,25 @@ def _render_text_strokes(
     else:
         start_x = x
 
+    ca, sa = math.cos(math.radians(angle)), math.sin(math.radians(angle))
+    # Stroke-font glyphs run baseline(0)→cap(1); center the glyph band on y so
+    # the text is vertically centered on its anchor (matches KiCad + the bbox the
+    # silk relocator reserved) and a 90° rotation about (x, y) stays centered.
+    base_y = y - height / 2
+
+    def _pt(px: float, py: float) -> tuple[float, float]:
+        if not angle:
+            return (px, py)
+        return (x + (px - x) * ca - (py - y) * sa,
+                y + (px - x) * sa + (py - y) * ca)
+
     cursor_x = start_x
     for ch in text.upper():
         strokes = STROKE_FONT.get(ch, STROKE_FONT.get(".", []))
         for (x1, y1), (x2, y2) in strokes:
             dl.add_trace_line(
-                (cursor_x + x1 * height, y + y1 * height),
-                (cursor_x + x2 * height, y + y2 * height),
+                _pt(cursor_x + x1 * height, base_y + y1 * height),
+                _pt(cursor_x + x2 * height, base_y + y2 * height),
                 stroke_w,
                 "Other",
             )
@@ -250,7 +267,8 @@ def _generate_silkscreen(
             text = silk.get("text", "")
             stroke_w = max(fh * 0.15, 0.1)
             anchor = silk.get("anchor", "center")
-            _render_text_strokes(dl, text, x, y, fh, stroke_w, anchor)
+            _render_text_strokes(dl, text, x, y, fh, stroke_w, anchor,
+                                 silk.get("angle", 0))
 
         elif silk["type"] == "dot":
             dia = silk.get("diameter_mm", 0.5)

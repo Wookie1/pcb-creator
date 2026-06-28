@@ -11,6 +11,29 @@
 import re
 
 from exporters.kicad_exporter import export_kicad_pcb
+from exporters.gerber_exporter import _render_text_strokes
+
+
+class _CaptureDL:
+    """Minimal stand-in for gw.DataLayer that records the segments drawn."""
+    def __init__(self):
+        self.segs = []
+
+    def add_trace_line(self, p1, p2, width, function):
+        self.segs.append((p1, p2))
+
+
+def test_gerber_text_rotation_applied():
+    up = _CaptureDL()
+    _render_text_strokes(up, "R1", 10.0, 10.0, 1.0, 0.15, "center", 0)
+    rot = _CaptureDL()
+    _render_text_strokes(rot, "R1", 10.0, 10.0, 1.0, 0.15, "center", 90)
+    assert up.segs and rot.segs
+    assert up.segs != rot.segs   # rotation changed the rendered coordinates
+    # 90° about (10,10): (px,py) -> (10 - (py-10), 10 + (px-10))
+    (p1u, _), (p1r, _) = (up.segs[0], rot.segs[0])
+    exp = (10 - (p1u[1] - 10), 10 + (p1u[0] - 10))
+    assert abs(p1r[0] - exp[0]) < 1e-9 and abs(p1r[1] - exp[1]) < 1e-9
 
 
 def _board():
