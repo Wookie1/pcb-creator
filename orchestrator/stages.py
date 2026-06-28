@@ -71,6 +71,21 @@ def _resolve_layers(project_dir: Path, project_name: str) -> int:
     return 2
 
 
+def _routing_layer_count(project_dir: Path, project_name: str,
+                         placement_data: dict) -> int:
+    """Layer count for routing: the placement's own board block wins, else fall
+    back to circuit draft / requirements (_resolve_layers, default 2).
+
+    The LLM-generated placement frequently omits board.layers; without this
+    fallback a requested 4-layer board silently routed as 2-layer (no inner
+    planes) because the layer count defaulted to 2 here.
+    """
+    n = placement_data.get("board", {}).get("layers")
+    if n in (2, 4):
+        return int(n)
+    return _resolve_layers(project_dir, project_name)
+
+
 def _resolve_board_dims(project_dir: Path, project_name: str) -> tuple[float | None, float | None]:
     """Board dims from existing placement, circuit draft, or requirements."""
     placement_path = _p(project_dir, project_name, "placement")
@@ -875,7 +890,13 @@ def run_routing(project_dir: Path, project_name: str, config,
 
     routed = None
     engine = "builtin"
-    num_layers = placement_data.get("board", {}).get("layers", 2)
+    num_layers = _routing_layer_count(project_dir, project_name, placement_data)
+    # Persist the resolved count onto the board block so everything downstream
+    # agrees on the stackup: inner_plane_count() (plane generation), the DSN
+    # export, and the routed output all read board["layers"]. Without this, an
+    # LLM placement that omitted board.layers routed 4 signal layers but
+    # generated 0 inner planes (count read 2 here, 4 there).
+    placement_data.setdefault("board", {})["layers"] = num_layers
 
     # 4-layer boards require Freerouting — the built-in A* is 2-layer only
     if num_layers > 2 and config.router_engine != "freerouting":
