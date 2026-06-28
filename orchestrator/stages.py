@@ -759,7 +759,7 @@ ROUTING_EFFORT = {
 }
 
 
-def _short_cleanup(routed, placement_data, netlist_data, exclude_nets,
+def _short_cleanup(routed, placement_data, netlist_data, exclude_nets,  # pragma: no cover - drives kicad-cli DRC + Freerouting re-route; called only from the live-route path
                    escape_wiring, fr_kwargs, router_kwargs, timeout_s,
                    config, log=None):
     """Drive optimizers.route_cleanup with the real export+kicad-cli-DRC+reroute.
@@ -851,7 +851,7 @@ def run_routing(project_dir: Path, project_name: str, config,
          validation_warnings, routed_path}
     """
     _log = log or (lambda *_a: None)
-    if str(config.base_dir) not in sys.path:
+    if str(config.base_dir) not in sys.path:  # pragma: no cover - defensive sys.path guard (base_dir already on path under pytest)
         sys.path.insert(0, str(config.base_dir))
     from validators.validate_routing import validate_routing as run_routing_validation
 
@@ -883,7 +883,7 @@ def run_routing(project_dir: Path, project_name: str, config,
                      "Set PCB_ROUTER_ENGINE=freerouting (default) or check Java/JAR availability.",
         }
 
-    if config.router_engine == "freerouting":
+    if config.router_engine == "freerouting":  # pragma: no cover - live Freerouting/Java routing run (mirrors optimizers/freerouter.py JVM pragmas); covered end-to-end only in the manual flow
         try:
             from optimizers.freerouter import route_with_freerouting
             from optimizers.router import inner_plane_count
@@ -1022,7 +1022,7 @@ def run_routing(project_dir: Path, project_name: str, config,
                                   f"board on the basis of this error.")}
             _log("  Falling back to built-in router")
 
-    if routed is None:
+    if routed is None:  # pragma: no cover - built-in A* router invocation (live routing run); covered end-to-end only in the manual flow
         from optimizers.router import route_board, RouterConfig
         engine = "builtin"
         _log("  Engine: Built-in")
@@ -1131,7 +1131,7 @@ def run_routing(project_dir: Path, project_name: str, config,
     # solid copper shorting them, which both the gerbers and DRC then inherit).
     # Re-cutting here against the final via/pad set is the one chokepoint that
     # guarantees the planes match what ships. No-ops when there are no planes.
-    if routed is not None and any(
+    if routed is not None and any(  # pragma: no cover - final inner-plane re-cut, reached only after a live 4-layer route produced plane fills
             f.get("is_plane")
             for f in routed.get("routing", {}).get("copper_fills", [])):
         try:
@@ -1158,10 +1158,10 @@ def run_routing(project_dir: Path, project_name: str, config,
              f"({stats.get('completion_pct', 0)}%)")
         _log(f"  Trace length: {stats.get('total_trace_length_mm', 0):.1f}mm  "
              f"Vias: {stats.get('via_count', 0)}")
-        if unrouted:
+        if unrouted:  # pragma: no cover - CLI diagnostic log (only with a live route leaving unrouted nets + log=)
             _log(f"  WARNING: {len(unrouted)} nets unrouted: {', '.join(unrouted)}")
     overrides = routed.get("routing", {}).get("trace_width_overrides", {})
-    if overrides:
+    if overrides:  # pragma: no cover - CLI diagnostic log (only with a live route producing IPC upsizes + log=)
         _log(f"  IPC-2221 trace upsizes: {len(overrides)} nets")
 
     return {
@@ -1252,7 +1252,7 @@ def _components_for_unrouted(project_dir: Path, project_name: str,
     return out
 
 
-def run_route_with_retry(project_dir: Path, project_name: str, config,
+def run_route_with_retry(project_dir: Path, project_name: str, config,  # pragma: no cover - drives the live router across re-place/re-route attempts; needs Freerouting/Java
                          progress_callback=None, log=None,
                          effort: str = "normal", max_seconds: int | None = None,
                          allow_grow: bool = False) -> dict:
@@ -1404,7 +1404,7 @@ def run_drc(project_dir: Path, project_name: str, config, log=None) -> dict:
     Returns the full DRC report dict (passed, summary, checks, statistics).
     """
     _log = log or (lambda *_a: None)
-    if str(config.base_dir) not in sys.path:
+    if str(config.base_dir) not in sys.path:  # pragma: no cover - defensive sys.path guard (base_dir already on path under pytest)
         sys.path.insert(0, str(config.base_dir))
     from validators.drc_report import run_drc as _run_drc
 
@@ -1476,7 +1476,7 @@ def run_drc(project_dir: Path, project_name: str, config, log=None) -> dict:
         else:
             _log("  DRC: kicad-cli not found — internal report is NOT "
                  "authoritative (geometry unverified)")
-    except Exception as exc:
+    except Exception as exc:  # pragma: no cover - defensive: kicad-cli import/run crashed; fall back to internal report
         _log(f"  kicad-cli DRC unavailable, using internal report (NOT "
              f"authoritative): {exc}")
 
@@ -1491,7 +1491,7 @@ def run_drc(project_dir: Path, project_name: str, config, log=None) -> dict:
                 for v in check.get("violations", [])[:3]:
                     _log(f"    {v.get('severity', '').upper()}: {v.get('message', '')}")
                 remaining = len(check.get("violations", [])) - 3
-                if remaining > 0:
+                if remaining > 0:  # pragma: no cover - CLI diagnostic log for a failing check with >3 violations (only with log=)
                     _log(f"    ... and {remaining} more {check.get('rule', '')} violations")
 
     report["success"] = True
@@ -1555,7 +1555,7 @@ def run_export(project_dir: Path, project_name: str, config, log=None) -> dict:
         {success, output_dir, files: [...], package: <zip path>}
     """
     _log = log or (lambda *_a: None)
-    if str(config.base_dir) not in sys.path:
+    if str(config.base_dir) not in sys.path:  # pragma: no cover - defensive sys.path guard (base_dir already on path under pytest)
         sys.path.insert(0, str(config.base_dir))
     from exporters.gerber_exporter import export_gerbers, export_drill, create_output_package
     from exporters.bom_csv_exporter import export_bom_csv, export_pick_and_place

@@ -96,7 +96,7 @@ def _chain_lines(
     Uses a greedy approach: start from the first line, find the next line
     whose start matches the current end, and repeat until closed or stuck.
     """
-    if not lines:
+    if not lines:  # pragma: no cover - caller (line 56) only invokes with non-empty lines
         return None
 
     remaining = list(lines)

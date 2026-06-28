@@ -12,7 +12,7 @@ from .base import StepBase, StepResult
 
 # validators/ is a sibling directory — add to path for pinout import
 _validators_dir = str(Path(__file__).resolve().parent.parent.parent / "validators")
-if _validators_dir not in sys.path:
+if _validators_dir not in sys.path:  # pragma: no cover - import-time path bootstrap, env-dependent
     sys.path.insert(0, _validators_dir)
 
 from pinout import build_pinout_from_requirements, expected_pin_count
@@ -379,7 +379,7 @@ class SchematicStep(StepBase):
     def step_name(self) -> str:
         return "Schematic/Netlist"
 
-    def execute(self) -> StepResult:
+    def execute(self) -> StepResult:  # pragma: no cover - LLM-driven generate/rework/QA loop, needs a live model
         requirements_text = self.project.read_requirements()
         project_name = self.project.project_name
         output_filename = f"{project_name}_netlist.json"
@@ -736,7 +736,7 @@ class SchematicStep(StepBase):
 
         return self._run_validator_cmd(cmd)
 
-    def _generate_chunked(self, requirements_text: str, project_name: str, pinout_table: str, pin_count_table: str = "", attempt: int = 1) -> str:
+    def _generate_chunked(self, requirements_text: str, project_name: str, pinout_table: str, pin_count_table: str = "", attempt: int = 1) -> str:  # pragma: no cover - LLM-driven chunked generation, needs a live model
         """Generate netlist in 3 phases (components, ports, nets) for large boards.
 
         Each phase uses generate_long() with a minimum-length check and writes

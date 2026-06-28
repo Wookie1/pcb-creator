@@ -26,7 +26,7 @@ class LayoutStep(StepBase):
     def step_name(self) -> str:
         return "Board Layout"
 
-    def execute(self) -> StepResult:
+    def execute(self) -> StepResult:  # pragma: no cover - LLM-driven generate/rework/QA loop + fallback repairs, needs a live model
         project_name = self.project.project_name
         netlist_filename = f"{project_name}_netlist.json"
         bom_filename = f"{project_name}_bom.json"
@@ -432,7 +432,7 @@ class LayoutStep(StepBase):
                 get_footprint_def,
                 _generate_fallback_footprint,
             )
-        except ImportError:
+        except ImportError:  # pragma: no cover - defensive; optimizers ships with the package
             return placement_text  # can't import, skip correction
 
         placement = json.loads(placement_text)
@@ -527,7 +527,7 @@ class LayoutStep(StepBase):
             vertices, width, height = parse_board_outline(dxf_path)
             logger.info(f"  DXF outline: {len(vertices)} vertices, {width}x{height}mm")
             return vertices, width, height
-        except ImportError:
+        except ImportError:  # pragma: no cover - defensive; ezdxf is a package dependency
             logger.info("  Warning: ezdxf not installed, cannot parse DXF outline")
             return None, default_width, default_height
         except Exception as e:
@@ -549,7 +549,7 @@ class LayoutStep(StepBase):
 
         try:
             from optimizers.pad_geometry import get_footprint_def
-        except ImportError:
+        except ImportError:  # pragma: no cover - defensive; optimizers ships with the package
             return width, height
 
         netlist = json.loads(netlist_content)

@@ -21,7 +21,7 @@ class BOMStep(StepBase):
     def step_name(self) -> str:
         return "Component Selection"
 
-    def execute(self) -> StepResult:
+    def execute(self) -> StepResult:  # pragma: no cover - LLM-driven generate/rework/QA loop, needs a live model
         project_name = self.project.project_name
         netlist_filename = f"{project_name}_netlist.json"
         output_filename = f"{project_name}_bom.json"

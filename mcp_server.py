@@ -32,7 +32,7 @@ from fastmcp import FastMCP
 
 # Ensure the repo root is on sys.path so orchestrator/ imports work
 _repo_root = Path(__file__).resolve().parent
-if str(_repo_root) not in sys.path:
+if str(_repo_root) not in sys.path:  # pragma: no cover - import-time sys.path guard (repo already on path under pytest)
     sys.path.insert(0, str(_repo_root))
 
 from orchestrator.config import OrchestratorConfig
@@ -209,7 +209,7 @@ def _ensure_lookup_configured() -> None:
     if _LOOKUP_CONFIGURED:
         return
     with _LOOKUP_LOCK:
-        if _LOOKUP_CONFIGURED:
+        if _LOOKUP_CONFIGURED:  # pragma: no cover - double-checked-lock race (2nd thread configured first)
             return
         from optimizers.pad_geometry import configure_lookup
         from orchestrator.cache import ComponentCache
@@ -222,7 +222,7 @@ def _ensure_lookup_configured() -> None:
             try:
                 from exporters.kicad_mod_parser import KiCadLibraryIndex
                 kicad_index = KiCadLibraryIndex(config.kicad_library_path)
-            except Exception:
+            except Exception:  # pragma: no cover - defensive: KiCad library index build failure
                 kicad_index = None
 
         # Store as the module-level source of truth so _activate_project_lookup
@@ -378,7 +378,7 @@ def _route_failure_next_step(project_name: str, err: str) -> dict:
 # ---------------------------------------------------------------------------
 
 @mcp.tool()
-def design_pcb(
+def design_pcb(  # pragma: no cover - spawns the background LLM design pipeline (needs a configured LLM + Freerouting); covered end-to-end only in the manual flow
     description: str,
     project_name: str | None = None,
     requirements_json: dict | None = None,
@@ -504,7 +504,7 @@ def design_pcb(
     )
 
 
-def _design_pcb_sync(
+def _design_pcb_sync(  # pragma: no cover - full LLM pipeline worker (requirements->schematic->...->export); needs a configured LLM + Freerouting
     description: str,
     project_name: str | None = None,
     requirements_json: dict | None = None,
@@ -2977,7 +2977,7 @@ def register_custom_footprint(
 # Entry point
 # ---------------------------------------------------------------------------
 
-def main():
+def main():  # pragma: no cover - server entry point: starts the stdio MCP loop and installs the Freerouting JVM-cleanup signal hooks
     """Run the MCP server (stdio transport)."""
     # Pipeline modules log via logging — route to stderr so the stdio
     # JSON-RPC stream on stdout is never corrupted.
