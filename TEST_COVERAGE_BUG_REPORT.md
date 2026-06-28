@@ -216,4 +216,39 @@ unconnected on the previously-unpoured export).
 
 **Net:** all four bugs (B1, B2, B3, B4a, B4b) are now fixed, unit-tested, and — for
 B3/B4a — verified end-to-end against `carrier_board.net` with Freerouting +
-pcbnew + kicad-cli. Full suite: 1546 passed, 1 skipped.
+pcbnew + kicad-cli.
+
+---
+
+# Newly discovered while writing the B3 integration test (2026-06-28)
+
+The authoritative integration test (`tests/test_integration_b3_carrier.py`: route the
+real board → export → pour → `kicad-cli pcb drc`) revealed that `completion_pct == 100`
+is **still not fully connectivity-true** even after B3 — there are two more sources,
+*distinct* from the power-plane SMD-pad path B3 fixed. B3 closes its case (the test
+hard-asserts an un-stitched power-plane pad is never silently credited); these two are
+filed for separate fixes and the integration test surfaces them as warnings rather than
+over-claiming a global guarantee it can't yet make.
+
+## ⏳ B5 — GND outer-pour island with no stitching via to the inner plane
+**Observed.** `kicad-cli` reports `Zone [GND] on In1.Cu / Zone [GND] on F.Cu` unconnected
+at 100% completion. `apply_copper_fills` pours outer-layer GND fills + stitching vias
+(`create_copper_fill`), but a fill fragment that routing chops off can end up with no
+stitching via, leaving it electrically isolated from the In1 GND plane. (Same class hit
+manually during the carrier compaction — fixed there by dropping a GND via into each
+isolated region.) **Fix sketch.** After fills, detect GND fill regions with no through-via
+tying them to the plane and add an all-layer-clear stitching via per region (the manual
+repair logic), or surface them so completion reflects the gap.
+
+## ⏳ B6 — Freerouting credits a point-to-point net while a pad gap remains
+**Observed.** A signal net (`SWDIO`, CN1.19 ↔ SWD1.2) reported routed at 100% yet
+`kicad-cli` finds the pads unconnected. Signal-net completion is taken from Freerouting's
+`incomplete_connections` report, which can disagree with KiCad's authoritative
+connectivity; the kicad-cli-driven short-cleanup pass that should catch it didn't here.
+**Fix sketch.** Reconcile final `completion_pct` / `unrouted_nets` against authoritative
+connectivity (`validators.validate_routing.incomplete_net_ids` or kicad-cli DRC) instead
+of trusting Freerouting's net-level count, and feed any residual to the
+short-cleanup / `keep_existing` retry. This is the general form of B3 (net-level →
+pad-level completion) for routed nets, not just plane-delivered ones.
+
+Full suite: 1553 passed, 1 skipped (+ the opt-in `test_integration_b3_carrier.py`).

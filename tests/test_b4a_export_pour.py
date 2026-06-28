@@ -80,3 +80,46 @@ def test_export_ships_poured_zones(tmp_path):
     assert "(zone" in text, "a GND zone must be emitted"
     assert "(filled_polygon" in text, \
         "B4a: exported zones must be poured (filled_polygon present)"
+
+
+# --- Authoritative integration check (the one the bug report asks for): reload
+# the exported board with pcbnew and confirm every copper zone actually has fill
+# geometry, then run kicad-cli DRC and confirm it sees the GND pads connected
+# (0 unconnected) — the false-"unconnected" flood was the whole B4a symptom.
+_PCBNEW_INSPECT = (
+    "import sys, pcbnew\n"
+    "b = pcbnew.LoadBoard(sys.argv[1])\n"
+    "zones = list(b.Zones())\n"
+    "filled = all(z.GetFilledPolysList(z.GetLayer()).OutlineCount() > 0 for z in zones)\n"
+    "print('ZONES', len(zones), 'FILLED', filled)\n"
+)
+
+
+def test_exported_zones_have_fill_geometry_and_drc_connects(tmp_path):
+    py = _pcbnew_python()
+    if py is None:
+        pytest.skip("no pcbnew-capable python available")
+    routed, netlist = _min_board()
+    out = export_kicad_pcb(routed, netlist, tmp_path / "b.kicad_pcb")
+
+    # (1) pcbnew round-trip: every zone has a non-empty filled-polys list.
+    r = subprocess.run([py, "-c", _PCBNEW_INSPECT, str(out)],
+                       capture_output=True, text=True, timeout=120)
+    assert r.returncode == 0, r.stderr
+    line = next(l for l in r.stdout.splitlines() if l.startswith("ZONES"))
+    _, nz, _, filled = line.split()
+    assert int(nz) >= 1 and filled == "True", \
+        f"B4a: every exported zone must be poured ({line})"
+
+    # (2) kicad-cli DRC: with poured GND, both R1 pads are connected → 0 unconnected.
+    from optimizers.route_cleanup import find_kicad_cli
+    kcli = find_kicad_cli()
+    if not kcli:
+        pytest.skip("kicad-cli not available")
+    import json
+    rpt = tmp_path / "drc.json"
+    subprocess.run([kcli, "pcb", "drc", "--severity-error", "--format", "json",
+                    "-o", str(rpt), str(out)], capture_output=True, timeout=120)
+    d = json.loads(rpt.read_text())
+    assert len(d.get("unconnected_items", [])) == 0, \
+        "B4a: poured GND zone must connect the pads (no false unconnected)"
