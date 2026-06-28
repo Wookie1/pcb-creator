@@ -5442,6 +5442,10 @@ def apply_copper_fills(
     pwr_net_id = fill_net_id
     pwr_stitch_vias: list[dict] = []
     pwr_plane_stubs: list[dict] = []
+    # Plane-delivered SMD pads that found NO clear stitching-via site. These are
+    # physically open (a plane net only reaches an SMD pad through its own via),
+    # so the net must NOT be reported complete (B3). list of (designator, net_id).
+    unstitched_plane_pads: list[tuple[str, str]] = []
     router_trace_w = config.trace_width_signal_mm
 
     # Phase 4b: Generate solid inner-layer planes for 4-layer boards.
@@ -5513,9 +5517,11 @@ def apply_copper_fills(
             # widening ring of nearby positions (with a short stub trace) so a
             # crowded fine-pitch pad still finds a clear site.
             candidates = [(0.0, 0.0)]
-            for radius in (0.6, 0.9, 1.3):
-                for k in range(8):
-                    ang = math.pi * k / 4.0
+            # Denser ring (more radii × 30° steps) so a crowded fine-pitch pad
+            # tries harder to find a clear site before giving up (B3 retry).
+            for radius in (0.5, 0.7, 0.9, 1.1, 1.3, 1.6, 2.0):
+                for k in range(12):
+                    ang = math.pi * k / 6.0
                     candidates.append((round(radius * math.cos(ang), 3),
                                        round(radius * math.sin(ang), 3)))
             for dx, dy in candidates:
@@ -5561,8 +5567,9 @@ def apply_copper_fills(
                     break
             if not placed:
                 logger.warning("  Power plane: no clear via site for %s pad "
-                               "%s — may be unconnected to %s plane",
-                               pwr_net_name, ref, pwr_net_name)
+                               "%s.%s — unconnected to %s plane (net kept unrouted)",
+                               pwr_net_name, pi.designator, pi.pin_number, pwr_net_name)
+                unstitched_plane_pads.append((pi.designator, pi.net_id))
 
         if pwr_stitch_vias:
             logger.info(f"  Power via stitching: {len(pwr_stitch_vias)} vias for {pwr_net_name}")
@@ -5622,14 +5629,28 @@ def apply_copper_fills(
         result["routing"]["traces"] = (
             result["routing"].get("traces", []) + pwr_plane_stubs)
 
-    # Remove plane nets from unrouted list (copper fills connect them)
+    # Remove plane nets from unrouted list (copper fills connect them) — but a
+    # plane net is only delivered when EVERY same-net SMD pad actually reaches the
+    # plane through a stitching via. Pads with no clear via site (above) leave the
+    # net physically open, so keep those nets unrouted instead of reporting the
+    # board complete (B3: net-level completion masked an open power pad).
     unrouted = result["routing"].get("unrouted_nets", [])
     plane_net_ids = {fill_net_id} if pl >= 1 else set()
     if pl >= 2:
         plane_net_ids.add(pwr_net_id)
-    if any(n in plane_net_ids for n in unrouted) and fill_regions:
-        unrouted = [n for n in unrouted if n not in plane_net_ids]
+    unstitched_net_ids = {nid for _, nid in unstitched_plane_pads}
+    if fill_regions:
+        strip = plane_net_ids - unstitched_net_ids        # fully-connected planes
+        unrouted = [n for n in unrouted if n not in strip]
+        for nid in plane_net_ids & unstitched_net_ids:    # open plane → stays unrouted
+            if nid not in unrouted:
+                unrouted.append(nid)
         result["routing"]["unrouted_nets"] = unrouted
+    if unstitched_plane_pads:
+        result["routing"]["unstitched_plane_pads"] = [
+            {"designator": ref, "net_id": nid}
+            for ref, nid in unstitched_plane_pads
+        ]
 
     # Update statistics
     stats = result["routing"].get("statistics", {})
