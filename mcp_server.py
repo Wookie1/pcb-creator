@@ -1278,6 +1278,12 @@ def get_drc_report(project_name: str, verbose: bool = False) -> dict:
 def export_kicad(project_name: str) -> dict:
     """Export a completed PCB project to KiCad format (.kicad_pcb).
 
+    Zones are poured on export via KiCad's pcbnew (so the file opens filled and
+    headless DRC sees connected copper); on 4-layer boards a follow-up pcbnew
+    pass ties any isolated GND pour island to the inner GND plane with a
+    clearance-checked through-via. Both are best-effort: without a
+    pcbnew-capable python the board is still written, just unpoured.
+
     Args:
         project_name: The project slug/name.
 
@@ -2201,7 +2207,11 @@ def route_board(project_name: str, effort: str = "normal",
     and read 'routing_state' (running → complete | failed); while running,
     'routing_progress' and 'status_hint' report live pass-by-pass progress.
     When complete, 'routing_result' holds the stats (completion_pct,
-    routed_nets, via_count, unrouted_nets, valid).
+    routed_nets, via_count, unrouted_nets, valid). completion_pct is
+    PAD-level: 100% means every pad is actually connected (reconciled against
+    the connectivity validator), not just that the autorouter counted its net
+    as done. A power-plane SMD pad with no clear stitching-via site keeps its
+    net in unrouted_nets and is named in routing.unstitched_plane_pads.
 
     effort controls routing quality vs wait time:
       "fast"   — quick first result (~2 min cap), fewer optimization passes.
