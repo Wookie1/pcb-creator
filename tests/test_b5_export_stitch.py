@@ -55,15 +55,37 @@ def _four_layer_board():
     return routed, netlist
 
 
+def test_candidates_derive_app_root_from_kicad_cli_env(monkeypatch):
+    monkeypatch.setenv("PCB_KICAD_CLI",
+                       "/opt/KiCad.app/Contents/MacOS/kicad-cli")
+    cands = _kicad_python_candidates()
+    assert isinstance(cands, list) and cands  # bundle root probed w/o error
+    monkeypatch.setenv("PCB_KICAD_PYTHON", "/nonexistent/py")
+    assert _kicad_python_candidates()[0] == "/nonexistent/py"
+
+
+def test_stitch_returns_zero_when_no_interpreter_works(monkeypatch, tmp_path):
+    import exporters.kicad_exporter as ke
+    monkeypatch.setattr(ke, "_kicad_python_candidates",
+                        lambda: ["/nonexistent/python-xyz"])
+    assert ke.stitch_gnd_islands_pcbnew(tmp_path / "x.kicad_pcb") == 0
+
+
 def test_stitch_is_noop_safe_on_clean_board(tmp_path):
-    if _pcbnew_python() is None:
+    py = _pcbnew_python()
+    if py is None:
         pytest.skip("no pcbnew-capable python available")
     routed, netlist = _four_layer_board()
     out = export_kicad_pcb(routed, netlist, tmp_path / "b.kicad_pcb")
-    # export already ran the stitch for this 4-layer board; calling again must be a
-    # safe no-op (nothing isolated) and return an int count.
-    n = stitch_gnd_islands_pcbnew(out)
-    assert isinstance(n, int) and n >= 0
+    # Run the stitch script DIRECTLY so a crash fails the test (the wrapper's
+    # best-effort 0 would mask it), then check the wrapper agrees.
+    from exporters.kicad_exporter import _GND_STITCH_SCRIPT
+    r = subprocess.run([py, _GND_STITCH_SCRIPT, str(out)],
+                       capture_output=True, text=True, timeout=240)
+    assert r.returncode == 0, f"stitch script crashed: {r.stderr[-2000:]}"
+    assert int(r.stdout.strip().splitlines()[-1]) == 0, \
+        "clean board must need no stitch vias"
+    assert stitch_gnd_islands_pcbnew(out) == 0
 
 
 def test_four_layer_export_is_poured_and_connected(tmp_path):

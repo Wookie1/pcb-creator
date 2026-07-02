@@ -57,6 +57,27 @@ def test_unstitched_power_pad_keeps_net_unrouted():
         "the specific open pad must be surfaced"
 
 
+def test_unstitched_net_added_even_if_router_called_it_routed():
+    # The router may not list the plane net as unrouted at all (it "trusts" the
+    # plane); the open pad must still push the net INTO unrouted_nets.
+    routed, netlist = _board(blocked=True)
+    routed["routing"]["unrouted_nets"] = []
+    out = apply_copper_fills(routed, netlist, RouterConfig())
+    assert "net_12v" in out["routing"]["unrouted_nets"]
+
+
+def test_completion_never_negative_when_plane_net_outside_total():
+    # Freerouting's ses_importer excludes plane nets from total_nets; when B3
+    # pushes such a net into unrouted_nets the stats math must not go negative
+    # (was: routed_nets=-1, completion_pct=-100.0).
+    routed, netlist = _board(blocked=True)
+    routed["routing"]["statistics"]["total_nets"] = 1   # planes not counted
+    out = apply_copper_fills(routed, netlist, RouterConfig())
+    st = out["routing"]["statistics"]
+    assert st["routed_nets"] >= 0
+    assert 0.0 <= st["completion_pct"] < 100.0
+
+
 def test_stitched_power_pad_completes_net():
     routed, netlist = _board(blocked=False)
     out = apply_copper_fills(routed, netlist, RouterConfig())

@@ -40,7 +40,8 @@ def _obstacles(board, gnd):
         if t.Type() == pcbnew.PCB_VIA_T:
             c = t.GetPosition()
             holes.append((TOMM(c.x), TOMM(c.y), TOMM(t.GetDrill()) / 2))
-            pads.append((TOMM(c.x), TOMM(c.y), TOMM(t.GetDrill()) / 2, t.GetNetCode()))
+            # Copper obstacle is the via's annular ring (width), not its drill.
+            pads.append((TOMM(c.x), TOMM(c.y), TOMM(t.GetWidth()) / 2, t.GetNetCode()))
         else:
             s, e = t.GetStart(), t.GetEnd()
             segs.append((TOMM(s.x), TOMM(s.y), TOMM(e.x), TOMM(e.y),
@@ -86,10 +87,11 @@ def _through_points(board, gnd):
     return pts
 
 
-def _interior(region, dia, drill, inset, pads, segs, holes, gnd):
+def _interior(contains, bb, dia, drill, inset, pads, segs, holes, gnd):
+    """First scan point inside the region (hole-aware `contains` predicate)
+    with `inset` copper margin on 4 sides and clear of all obstacles."""
     FROM, TOMM = pcbnew.FromMM, pcbnew.ToMM
     r = dia / 2
-    bb = region.BBox()
     step = FROM(0.3)
     ci = FROM(inset)
     yy = bb.GetY()
@@ -97,8 +99,8 @@ def _interior(region, dia, drill, inset, pads, segs, holes, gnd):
         xx = bb.GetX()
         while xx <= bb.GetRight():
             p = pcbnew.VECTOR2I(int(xx), int(yy))
-            if region.Contains(p) and all(
-                region.Contains(pcbnew.VECTOR2I(int(xx + dx), int(yy + dy)))
+            if contains(p) and all(
+                contains(pcbnew.VECTOR2I(int(xx + dx), int(yy + dy)))
                 for dx, dy in ((ci, 0), (-ci, 0), (0, ci), (0, -ci))
             ) and _clear(TOMM(int(xx)), TOMM(int(yy)), r, drill, pads, segs, holes, gnd):
                 return p
@@ -126,16 +128,27 @@ def main(path):
                 continue
             sp = z.GetFilledPolysList(z.GetLayer())
             for i in range(sp.OutlineCount()):
-                region = pcbnew.SHAPE_POLY_SET(sp.Outline(i))
-                if any(region.Contains(pt) for pt in tp):
+                # Hole-aware containment (Contains with the subpolygon index):
+                # testing only the outline would count a via sitting in a
+                # clearance void as "on this island" and skip a real island,
+                # or pick a scan point inside a void where the via touches no
+                # island copper.
+                def _in_region(pt, _sp=sp, _i=i):
+                    return _sp.Contains(pt, _i)
+                if any(_in_region(pt) for pt in tp):
                     continue  # already tied to the plane
-                ip = None
-                drill = 0.3
+                bb = sp.Outline(i).BBox()
                 for dia, drl, inset in VIA_TRIES:
-                    ip = _interior(region, dia, drl, inset, pads, segs, holes, gnd)
+                    ip = _interior(_in_region, bb, dia, drl, inset,
+                                   pads, segs, holes, gnd)
                     if ip is not None:
-                        drill = drl
                         new_pts.append((ip, dia, drl))
+                        # Same-round mutual drill clearance: later islands this
+                        # round must respect the via just chosen (two identical
+                        # F.Cu/B.Cu islands would otherwise pick coincident
+                        # points -> duplicate drill hit).
+                        TOMM = pcbnew.ToMM
+                        holes.append((TOMM(ip.x), TOMM(ip.y), drl / 2))
                         break
         if not new_pts:
             break

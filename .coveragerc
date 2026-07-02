@@ -22,6 +22,8 @@ omit =
     # Network-backed lookups (EasyEDA/LCSC, 3D model fetch)
     orchestrator/gather/easyeda_lookup.py
     exporters/model_fetcher.py
+    # Runs only under KiCad's bundled python (imports pcbnew at module top)
+    exporters/_gnd_stitch.py
 
 [report]
 exclude_lines =

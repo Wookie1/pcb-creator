@@ -9,7 +9,9 @@ dependencies = [
     "jsonschema>=4.0",
     "gerber-writer>=0.4",
     "cairosvg>=2.7",
-    "fastmcp>=2.0",
+    # 3.x required: tests (and any in-process caller) invoke @mcp.tool()
+    # functions directly; 2.x FunctionTool objects are not callable.
+    "fastmcp>=3",
     # platformio (common on Pi) caps at click<8.4; litellm allows <9.0.
     # Pin to the intersection so both coexist in the same environment.
     "click>=8.0.4,<8.4",

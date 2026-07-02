@@ -39,3 +39,23 @@ def test_island_rescued_to_inner_gnd_plane():
     assert len(vias) == 1, "4-layer: a through-via must rescue the island to In1 GND"
     v = vias[0]
     assert v.from_layer == "top" and v.to_layer == "bottom"   # through via spans In1
+
+
+def test_rescue_via_never_lands_on_foreign_bottom_trace():
+    """The inner-plane bypass must still check the BOTTOM layer: a through via
+    dropped onto a foreign signal trace there is a hard GND-to-signal short."""
+    FOREIGN = 7
+    grid, ft, fb = _island_grid()
+    for r in range(3, 6):
+        for c in range(3, 6):
+            grid.layers["bottom"][r * grid.cols + c] = FOREIGN
+    vias = _add_rescue_vias(ft, fb, grid, FILL_NET, RouterConfig(),
+                            inner_gnd_plane=True)
+    assert vias == [], "no clear bottom cell -> island must stay unrescued, not shorted"
+
+    # Free ONE bottom cell — the via must land exactly there.
+    grid.layers["bottom"][4 * grid.cols + 4] = 0
+    vias = _add_rescue_vias(ft, fb, grid, FILL_NET, RouterConfig(),
+                            inner_gnd_plane=True)
+    assert len(vias) == 1
+    assert grid.grid_to_mm(4, 4) == (vias[0].x_mm, vias[0].y_mm)

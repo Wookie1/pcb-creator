@@ -2800,11 +2800,17 @@ def _add_rescue_vias(
         cx = sum(idx % cols for idx in cells) / len(cells)
         cy = sum(idx // cols for idx in cells) / len(cells)
 
+        bottom_data = grid.layers["bottom"]
         for idx in cells:
             # A through via rescues the island if it reaches GND copper on
             # another layer: the bottom fill (2-layer), OR — on a 4-layer board —
             # the solid In1 GND plane directly (no bottom fill needed) (B5).
-            if filled_bottom[idx] or inner_gnd_plane:
+            # The plane path must still verify the BOTTOM cell: a through via
+            # lands on the bottom layer too, and dropping it onto a foreign
+            # signal trace there is a hard short.
+            if filled_bottom[idx] or (
+                    inner_gnd_plane
+                    and bottom_data[idx] in (EMPTY, fill_net_int)):
                 col, row = idx % cols, idx // cols
                 # Skip cells where a through via would pierce an inner-layer
                 # signal trace (via-exclusion zone).
@@ -5680,11 +5686,15 @@ def apply_copper_fills(
     # Update statistics
     stats = result["routing"].get("statistics", {})
     stats["via_count"] = len(result["routing"]["vias"])
-    stats["routed_nets"] = stats.get("total_nets", 0) - len(unrouted)
+    # unrouted may now include plane nets that ses_importer never counted in
+    # total_nets (B3 keeps an unstitched plane net unrouted) — grow the
+    # denominator so routed_nets/completion_pct stay non-negative true fractions
+    # instead of e.g. -1 nets / -100%.
+    total = max(stats.get("total_nets", 0), len(unrouted))
+    stats["routed_nets"] = total - len(unrouted)
     stats["unrouted_nets"] = len(unrouted)
     stats["completion_pct"] = round(
-        100 * stats["routed_nets"] / stats.get("total_nets", 1), 1
-    ) if stats.get("total_nets", 0) > 0 else 100.0
+        100 * stats["routed_nets"] / total, 1) if total > 0 else 100.0
     if fill_regions:
         total_fill_polygons = sum(len(f["polygons"]) for f in fill_regions)
         stats["copper_fill_polygons"] = total_fill_polygons
