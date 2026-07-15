@@ -31,6 +31,20 @@ from optimizers.pad_geometry import (
 )
 
 
+def _esc(s) -> str:
+    """Escape a string for HTML/SVG text and attribute contexts.
+
+    Component/net/silk strings originate from LLM output or imported files, and
+    this viewer is served to the browser by the approval server (same origin as
+    its state-changing API), so an unescaped ``<script>`` would run there. Escape
+    ``&`` first so the other replacements aren't double-encoded.
+    """
+    return (
+        str(s).replace("&", "&amp;").replace("<", "&lt;")
+        .replace(">", "&gt;").replace('"', "&quot;")
+    )
+
+
 # Component type → fill color
 TYPE_COLORS = {
     "resistor": "#4a90d9",
@@ -130,7 +144,7 @@ def _routing_stats_html(routed: dict | None, netlist: dict | None = None) -> str
     if fill_polygons > 0:
         fill_layers_str = " + ".join(fill_layers)
         fill_net = routing.get("copper_fills", [{}])[0].get("net_name", "GND") if routing.get("copper_fills") else "GND"
-        html += f'\n        <div style="color:#3b82f6">Copper fill: {fill_net} ({fill_layers_str}), {fill_polygons} polygons</div>'
+        html += f'\n        <div style="color:#3b82f6">Copper fill: {_esc(fill_net)} ({fill_layers_str}), {fill_polygons} polygons</div>'
 
     html += '\n      </div>\n    </div>'
 
@@ -263,7 +277,7 @@ def _kicad_export_html(routed: dict | None, netlist: dict | None) -> str:
     <div style="margin-bottom:16px">
       <div class="legend-title">Export</div>
       <div style="display:flex;gap:8px;align-items:center;margin-bottom:8px">
-        <input type="text" id="kicadFilename" value="{default_filename}"
+        <input type="text" id="kicadFilename" value="{_esc(default_filename)}"
           style="flex:1;background:#1a1a2e;border:1px solid #2a2a4a;color:#e2e8f0;
                  padding:4px 8px;border-radius:4px;font-size:12px">
         <button onclick="exportKicad()"
@@ -539,7 +553,7 @@ def generate_svg(
                     f'<polygon points="{points_str}" '
                     f'fill="{fill_color}" opacity="{fill_opacity}" '
                     f'stroke="none" class="copper-fill">'
-                    f'<title>Fill: {fill_region.get("net_name", fill_nid)} ({fill_layer})</title>'
+                    f'<title>Fill: {_esc(fill_region.get("net_name", fill_nid))} ({fill_layer})</title>'
                     f'</polygon>'
                 )
 
@@ -584,7 +598,7 @@ def generate_svg(
 
                 # Data attributes for custom tooltip
                 data_attrs = (
-                    f'data-trace-net="{net_name}" '
+                    f'data-trace-net="{_esc(net_name)}" '
                     f'data-trace-class="{net_class}" '
                     f'data-trace-width="{tw_mm:.2f}" '
                     f'data-trace-layer="{layer_name}" '
@@ -615,7 +629,7 @@ def generate_svg(
             parts.append(
                 f'<circle cx="{vx:.1f}" cy="{vy:.1f}" r="{outer_r:.1f}" '
                 f'fill="{color}" opacity="0.8" class="via">'
-                f'<title>Via: {via.get("net_name", nid)}</title></circle>'
+                f'<title>Via: {_esc(via.get("net_name", nid))}</title></circle>'
             )
             parts.append(
                 f'<circle cx="{vx:.1f}" cy="{vy:.1f}" r="{inner_r:.1f}" '
@@ -647,7 +661,7 @@ def generate_svg(
                 f'text-anchor="middle" font-size="{fh:.1f}px" '
                 f'fill="{text_fill}" font-family="monospace" font-weight="{font_weight}" '
                 f'opacity="{silk_opacity}" pointer-events="none" class="silkscreen">'
-                f'{silk["text"]}</text>'
+                f'{_esc(silk["text"])}</text>'
             )
         elif silk["type"] == "dot":
             dr = silk.get("diameter_mm", 0.5) / 2 * scale
@@ -690,11 +704,7 @@ def generate_svg(
         specs_str = _format_specs(specs) if specs else ""
         description = bom_item.get("description", "")
 
-        # Data attributes for custom tooltip
-        # Escape quotes in values for HTML attributes
-        def _esc(s: str) -> str:
-            return str(s).replace('"', '&quot;').replace('<', '&lt;').replace('>', '&gt;')
-
+        # Data attributes for custom tooltip (escaped via module-level _esc)
         data_attrs = (
             f'data-des="{_esc(des)}" data-type="{_esc(ctype)}" data-pkg="{_esc(pkg)}" '
             f'data-pos="({x_mm:.1f}, {y_mm:.1f})" data-size="{w_mm:.1f} x {h_mm:.1f}" '
@@ -744,7 +754,7 @@ def generate_svg(
             f'<text x="{cx:.1f}" y="{cy + font_size * 0.35:.1f}" '
             f'text-anchor="middle" font-size="{font_size:.1f}px" '
             f'fill="#fff" font-family="monospace" font-weight="bold" '
-            f'pointer-events="none">{des}</text>'
+            f'pointer-events="none">{_esc(des)}</text>'
         )
 
     # Pads — render ALL physical pins from footprint definitions (not just netlist ports)

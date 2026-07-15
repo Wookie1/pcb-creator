@@ -1538,12 +1538,18 @@ class TestFreerouterEnsureJar:
         cache = tmp_path / "cache"
         monkeypatch.setattr(frx, "DEFAULT_CACHE_DIR", cache)
 
+        import hashlib
+        monkeypatch.setattr(
+            frx, "FREEROUTING_JAR_SHA256",
+            hashlib.sha256(b"jar-bytes").hexdigest(),
+        )
+
         def _fake_urlretrieve(url, dest):
-            Path(dest).write_text("jar-bytes")
+            Path(dest).write_bytes(b"jar-bytes")
         monkeypatch.setattr(frx.urllib.request, "urlretrieve", _fake_urlretrieve)
         result = frx.ensure_jar(None)
         assert result == cache / frx.FREEROUTING_JAR_NAME
-        assert result.read_text() == "jar-bytes"
+        assert result.read_bytes() == b"jar-bytes"
 
     def test_download_failure_cleans_partial(self, monkeypatch, tmp_path):
         cache = tmp_path / "cache"

@@ -242,8 +242,61 @@ def _slugify(text: str) -> str:
     return slug or "pcb_project"
 
 
+# Project names become directory names, so anything with a path separator or a
+# ".." component is a traversal attempt. Tool args originate from the LLM agent,
+# which is steerable by injected content — validate at the single choke point
+# every path flows through rather than trusting each of ~30 callers.
+_PROJECT_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
+
+
+def _validate_project_name(project_name: str) -> None:
+    """Reject project names that could escape the projects directory.
+
+    Raises ValueError (which fastmcp surfaces as a tool error) on a bad name.
+    """
+    if not _PROJECT_NAME_RE.match(project_name or ""):
+        raise ValueError(
+            f"Invalid project_name {project_name!r}: use lowercase letters, "
+            "digits, '_' and '-' only (must start with a letter or digit)."
+        )
+
+
+def _safe_name(filename: str) -> str:
+    """Strip any directory component from a user-supplied filename.
+
+    ``os.path.basename`` neutralizes ``../`` and absolute paths; we additionally
+    reject empty / dot names so an attachment can only land inside its project
+    directory.
+    """
+    name = os.path.basename(filename or "")
+    if not name or name in (".", "..") or name.startswith("."):
+        raise ValueError(f"Unsafe attachment filename: {filename!r}")
+    return name
+
+
+def _reject_bad_project_name(project_name: str) -> dict | None:
+    """Graceful ``fail`` envelope for a traversal-unsafe name, else None.
+
+    Project-creation tools call this first so a bad name yields a structured
+    error (with a safe suggestion) instead of the hard ValueError that
+    ``_project_dir`` raises as its last-line backstop. Same regex as the
+    backstop, so anything this accepts is safe to hand to ``_project_dir``.
+    """
+    if _PROJECT_NAME_RE.match(project_name or ""):
+        return None
+    return fail(
+        f"Invalid project_name {project_name!r}: use lowercase letters, digits, "
+        "'_' and '-' only (must start with a letter or digit).",
+        remediation=[option(
+            f"Retry with the safe name '{_slugify(project_name)}'",
+            "create_circuit", {"project_name": _slugify(project_name)},
+        )],
+    )
+
+
 def _project_dir(project_name: str) -> Path:
-    """Get the project directory path."""
+    """Get the project directory path (validated against traversal)."""
+    _validate_project_name(project_name)
     return _get_projects_dir() / project_name
 
 
@@ -425,6 +478,10 @@ def design_pcb(  # pragma: no cover - spawns the background LLM design pipeline 
 
     if not project_name:
         project_name = _slugify(description)
+
+    bad = _reject_bad_project_name(project_name)
+    if bad:
+        return bad
 
     # Single-flight: don't launch a duplicate pipeline for a project that is
     # already running. A second call returns the in-progress job to poll.
@@ -647,6 +704,7 @@ def _design_pcb_sync(  # pragma: no cover - full LLM pipeline worker (requiremen
                     "errors": ["Failed to translate natural language to requirements JSON"],
                 }
 
+    _validate_project_name(project_name)
     projects_dir = _get_projects_dir()
     project_dir = projects_dir / project_name
     project_dir.mkdir(parents=True, exist_ok=True)
@@ -661,7 +719,8 @@ def _design_pcb_sync(  # pragma: no cover - full LLM pipeline worker (requiremen
             purpose = att.get("purpose", "")
             used_by = att.get("used_by_steps", [3])
 
-            # Write file to project directory
+            # Write file to project directory (basename-only: never escape it)
+            filename = _safe_name(filename)
             file_path = project_dir / filename
             file_path.write_bytes(base64.b64decode(content_b64))
 
@@ -1751,6 +1810,9 @@ def create_circuit(project_name: str, description: str,
     Example: create_circuit("led_blinker", "555 LED blinker at 1Hz",
                             board_width_mm=40, board_height_mm=30)
     """
+    bad = _reject_bad_project_name(project_name)
+    if bad:
+        return bad
     from orchestrator import circuit_builder as cb
     result = cb.create_draft(_project_dir(project_name), project_name,
                              description, board_width_mm, board_height_mm,
@@ -2947,6 +3009,10 @@ def register_custom_footprint(
     if not safe_name:
         return {"success": False, "error": f"Cannot derive a safe filename from package_name '{package_name}'."}
 
+    bad = _reject_bad_project_name(project_name)
+    if bad:
+        return bad
+
     # Ensure the project custom-footprints.pretty directory exists
     custom_dir = _project_dir(project_name) / "custom-footprints.pretty"
     try:
@@ -2999,7 +3065,9 @@ def main():  # pragma: no cover - server entry point: starts the stdio MCP loop 
     try:
         os.getcwd()
     except FileNotFoundError:
-        os.chdir("/tmp")
+        # Private per-process dir, not world-writable /tmp, so relative-path
+        # resolution can't be influenced by other local users.
+        os.chdir(_get_projects_dir())
 
     # Initialise footprint lookup globals so the KiCad library tier is active
     # for all placement/export calls in this server process.

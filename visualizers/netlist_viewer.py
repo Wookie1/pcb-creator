@@ -11,6 +11,19 @@ import math
 from pathlib import Path
 
 
+def _esc(s) -> str:
+    """Escape a string for HTML/SVG text and attribute contexts.
+
+    Designators/net/pin names come from LLM output or imported files; this
+    viewer's HTML is opened in the browser, so unescaped ``<`` would allow markup
+    injection. Escape ``&`` first to avoid double-encoding.
+    """
+    return (
+        str(s).replace("&", "&amp;").replace("<", "&lt;")
+        .replace(">", "&gt;").replace('"', "&quot;")
+    )
+
+
 # Component type → fill color (matching placement_viewer palette)
 TYPE_COLORS = {
     "resistor": "#4a90d9",
@@ -172,7 +185,7 @@ def generate_netlist_html(netlist: dict, bom: dict | None = None) -> str:
     layouts, comp_ports = _layout_components(components, ports)
     pin_pos = _build_pin_positions(layouts, comp_ports)
 
-    project_name = netlist.get("project_name", "PCB")
+    project_name = _esc(netlist.get("project_name", "PCB"))
 
     # Build BOM lookup for tooltips
     bom_lookup = {}
@@ -209,7 +222,8 @@ def generate_netlist_html(netlist: dict, bom: dict | None = None) -> str:
 
     for nid, net in nets.items():
         color = NET_COLORS.get(net.get("net_class", "signal"), NET_COLORS["signal"])
-        net_name = net.get("name", nid)
+        net_name = _esc(net.get("name", nid))
+        net_class = _esc(net.get("net_class", ""))
         connected = net.get("connected_port_ids", [])
 
         pin_data = [pin_pos[pid] for pid in connected if pid in pin_pos]
@@ -226,7 +240,7 @@ def generate_netlist_html(netlist: dict, bom: dict | None = None) -> str:
                 svg_parts.append(
                     f'<path d="{d}" '
                     f'stroke="{color}" stroke-width="2" fill="none" opacity="0.7">'
-                    f'<title>{net_name} ({net.get("net_class", "")})</title></path>'
+                    f'<title>{net_name} ({net_class})</title></path>'
                 )
             # Junction dot
             svg_parts.append(
@@ -249,7 +263,7 @@ def generate_netlist_html(netlist: dict, bom: dict | None = None) -> str:
             svg_parts.append(
                 f'<path d="M{p1x},{p1y} C{c1x},{p1y} {c2x},{p2y} {p2x},{p2y}" '
                 f'stroke="{color}" stroke-width="2" fill="none" opacity="0.7">'
-                f'<title>{net_name} ({net.get("net_class", "")})</title></path>'
+                f'<title>{net_name} ({net_class})</title></path>'
             )
 
     # Draw component boxes
@@ -258,20 +272,22 @@ def generate_netlist_html(netlist: dict, bom: dict | None = None) -> str:
         x, y, w, h = lay["x"], lay["y"], lay["w"], lay["h"]
         des = comp.get("designator", "?")
         ctype = comp.get("component_type", "")
-        value = comp.get("value", "")
+        value = _esc(comp.get("value", ""))
         color = TYPE_COLORS.get(ctype, DEFAULT_COLOR)
-        desc = comp.get("description", "")
+        desc = _esc(comp.get("description", ""))
 
-        # BOM info for tooltip
+        # BOM info for tooltip (look up by raw designator, then escape for render)
         bom_item = bom_lookup.get(des, {})
         specs = bom_item.get("specs", {})
-        specs_str = ", ".join(f"{k}: {v}" for k, v in specs.items()) if specs else ""
+        specs_str = _esc(", ".join(f"{k}: {v}" for k, v in specs.items()) if specs else "")
+        des = _esc(des)
+        ctype = _esc(ctype)
 
         tooltip_lines = [f"{des} — {ctype}"]
         if value:
             tooltip_lines.append(f"Value: {value}")
         if comp.get("package"):
-            tooltip_lines.append(f"Package: {comp['package']}")
+            tooltip_lines.append(f"Package: {_esc(comp['package'])}")
         if specs_str:
             tooltip_lines.append(f"Specs: {specs_str}")
         if desc:
@@ -304,8 +320,8 @@ def generate_netlist_html(netlist: dict, bom: dict | None = None) -> str:
         # Draw pins
         for i, port in enumerate(lay["pins_left"]):
             py = y + 24 + i * 28
-            pin_name = port.get("name", str(port.get("pin_number", "")))
-            etype = port.get("electrical_type", "")
+            pin_name = _esc(port.get("name", str(port.get("pin_number", ""))))
+            etype = _esc(port.get("electrical_type", ""))
 
             # Pin dot
             svg_parts.append(
@@ -320,8 +336,8 @@ def generate_netlist_html(netlist: dict, bom: dict | None = None) -> str:
 
         for i, port in enumerate(lay["pins_right"]):
             py = y + 24 + i * 28
-            pin_name = port.get("name", str(port.get("pin_number", "")))
-            etype = port.get("electrical_type", "")
+            pin_name = _esc(port.get("name", str(port.get("pin_number", ""))))
+            etype = _esc(port.get("electrical_type", ""))
 
             svg_parts.append(
                 f'<circle cx="{x + w}" cy="{py}" r="3" fill="{color}">'

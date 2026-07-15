@@ -7,6 +7,7 @@ Auto-downloads the Freerouting JAR to ~/.cache/pcb-creator/ on first use.
 from __future__ import annotations
 
 import atexit
+import hashlib
 import os
 import re
 import shutil
@@ -38,6 +39,14 @@ FREEROUTING_JAR_NAME = f"freerouting-{FREEROUTING_VERSION}.jar"
 FREEROUTING_DOWNLOAD_URL = (
     f"https://github.com/freerouting/freerouting/releases/download/"
     f"v{FREEROUTING_VERSION}/{FREEROUTING_JAR_NAME}"
+)
+# SHA-256 of the official freerouting-2.1.0.jar release asset. The download is
+# HTTPS from GitHub, but TLS alone doesn't protect against a redirect or a
+# compromised release; this JAR is then run via `java -jar`, so pin the hash and
+# refuse to execute anything that doesn't match. Regenerate for a new version:
+#   shasum -a 256 ~/.cache/pcb-creator/freerouting-<ver>.jar
+FREEROUTING_JAR_SHA256 = (
+    "2c07d58f75dac03782664081e7a58b41c25400d871a9fcf166a2ea6fe60d5def"
 )
 DEFAULT_CACHE_DIR = Path.home() / ".cache" / "pcb-creator"
 
@@ -274,6 +283,15 @@ def ensure_jar(jar_path: Path | None = None) -> Path:
         if default_path.exists():
             default_path.unlink()
         raise RuntimeError(f"Failed to download Freerouting: {e}")
+
+    # Verify the downloaded bytes before this JAR is ever handed to `java -jar`.
+    digest = hashlib.sha256(default_path.read_bytes()).hexdigest()
+    if digest != FREEROUTING_JAR_SHA256:
+        default_path.unlink(missing_ok=True)
+        raise RuntimeError(
+            "Downloaded Freerouting JAR failed integrity check "
+            f"(expected {FREEROUTING_JAR_SHA256}, got {digest}); refusing to run it."
+        )
 
     logger.info(f"  Saved to: {default_path}")
     return default_path
