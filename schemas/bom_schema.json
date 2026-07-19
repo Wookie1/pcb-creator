@@ -93,6 +93,19 @@
         "notes": {
           "type": "string",
           "description": "Optional circuit context or selection rationale."
+        },
+        "mpn": {
+          "type": "string",
+          "description": "Manufacturer part number, when confidently known. Example: 'CC0603KRX7R9BB104'"
+        },
+        "manufacturer": {
+          "type": "string",
+          "description": "Component manufacturer, when confidently known. Example: 'YAGEO'"
+        },
+        "lcsc": {
+          "type": "string",
+          "pattern": "^C[0-9]+$",
+          "description": "LCSC part number for JLCPCB assembly auto-matching, when confidently known. Example: 'C14663'"
         }
       }
     }

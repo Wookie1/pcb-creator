@@ -152,3 +152,71 @@ def fetch_footprint(value: str, lcsc_id: str = "") -> "FootprintDef | None":
 
     # No LCSC ID or failed — cannot search by name through this API
     return None
+
+
+# ---------------------------------------------------------------------------
+# Live part availability (stock / price / MPN) by LCSC id
+# ---------------------------------------------------------------------------
+
+# The products endpoint 403s hard after a burst of requests; once that happens
+# stop calling it for a while instead of burning every remaining lookup.
+_disabled_until = 0.0
+_BACKOFF_S = 600.0
+
+
+def fetch_part_info(lcsc_id: str) -> dict | None:
+    """Fetch live availability for an LCSC part id (e.g. "C14663").
+
+    Uses the same EasyEDA products endpoint as the footprint fetcher, via
+    stdlib urllib (no easyeda2kicad needed). Returns {lcsc, mpn, manufacturer,
+    stock, unit_price_usd, min_order, basic_part} or None when the id is
+    invalid, the network is unavailable, or the API rate-limits (a 403
+    disables further lookups for this process for a few minutes).
+    """
+    global _disabled_until
+    if not _LCSC_RE.match(lcsc_id or ""):
+        return None
+    if time.monotonic() < _disabled_until:
+        return None
+
+    import json as _json
+    import urllib.error
+    import urllib.request
+
+    _rate_limit()
+    url = f"https://easyeda.com/api/products/{lcsc_id}/components?version=6.4.19.5"
+    req = urllib.request.Request(url, headers={
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
+        "Accept": "application/json, text/javascript, */*; q=0.01",
+    })
+    try:
+        data = _json.load(urllib.request.urlopen(req, timeout=15))
+    except urllib.error.HTTPError as e:
+        if e.code == 403:
+            _disabled_until = time.monotonic() + _BACKOFF_S
+            logger.warning("EasyEDA part-info API rate-limited (403); "
+                           "pausing live lookups for %d s", int(_BACKOFF_S))
+        else:
+            logger.debug(f"EasyEDA part-info error for {lcsc_id}: {e}")
+        return None
+    except Exception as e:
+        logger.debug(f"EasyEDA part-info error for {lcsc_id}: {e}")
+        return None
+
+    result = data.get("result") or {}
+    if not isinstance(result, dict) or not result:
+        return None
+    lcsc = result.get("lcsc") or {}
+    szlcsc = result.get("szlcsc") or {}
+    c_para = ((result.get("dataStr") or {}).get("head") or {}).get("c_para") or {}
+    return {
+        "lcsc": lcsc.get("number") or szlcsc.get("number") or lcsc_id,
+        "mpn": c_para.get("Manufacturer Part") or result.get("title"),
+        "manufacturer": c_para.get("Manufacturer"),
+        # lcsc block is USD but sometimes zeroed; szlcsc is the CNY mirror —
+        # only the USD price is reported, stock falls back to szlcsc.
+        "stock": lcsc.get("stock") or szlcsc.get("stock"),
+        "unit_price_usd": lcsc.get("price") or None,
+        "min_order": lcsc.get("min") or szlcsc.get("min"),
+        "basic_part": c_para.get("JLCPCB Part Class") == "Basic Part",
+    }

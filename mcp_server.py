@@ -387,7 +387,9 @@ def _route_failure_next_step(project_name: str, err: str) -> dict:
             "going to 4 layers first; only with their approval run this "
             "optimize_placement (layers=4, plane_layers=2 — GND + power planes "
             "free both outer layers for signal) and route again. Do NOT promote "
-            "to 4 layers on your own.",
+            "to 4 layers on your own — the tool enforces this and will refuse "
+            "without approved=True, which you may pass ONLY after the user "
+            "agrees.",
         )
         step["requires_user_approval"] = True
         return step
@@ -421,10 +423,43 @@ def _route_failure_next_step(project_name: str, err: str) -> dict:
         "(plane_layers=0), so the only lever left is board area. Board size is "
         "often fixed by an enclosure or mating part, so ASK THE USER before "
         "enlarging it; only with their approval re-run optimize_placement ~15% "
-        "larger and route again.",
+        "larger and route again. The tool enforces this and will refuse "
+        "without approved=True, which you may pass ONLY after the user agrees.",
     )
     step["requires_user_approval"] = True
     return step
+
+
+def _requires_approval(project_name: str, layers: int | None,
+                       plane_layers: int | None,
+                       board_width_mm: float | None,
+                       board_height_mm: float | None) -> str | None:
+    """Reason a placement change needs explicit user approval, or None.
+
+    Hard, in-code version of the route-failure ladder's two "ASK THE USER"
+    rungs: promoting a placed 2-layer board to 4 layers (cost/stackup) and
+    enlarging a placed board (enclosure/mating fit). The FIRST placement is
+    never gated — those are up-front design choices, not mid-flow escalations
+    — and neither are plane_layers reallocations on an already-4-layer board,
+    same-size re-placements, or shrinks.
+    """
+    board = (_read_project_json(project_name, "_placement.json") or {}).get("board", {})
+    if not board:
+        return None
+    cur_layers = board.get("layers", 2)
+    # plane_layers on a 2-layer board implies 4-layer promotion (see the
+    # optimize_placement docstring), so it gates exactly like layers=4.
+    if cur_layers == 2 and (layers == 4 or
+                            (layers is None and plane_layers is not None)):
+        return ("promoting this placed 2-layer board to 4 layers changes the "
+                "stackup and raises fab cost")
+    cur_w, cur_h = board.get("width_mm"), board.get("height_mm")
+    grew_w = board_width_mm and cur_w and board_width_mm > cur_w + 1e-6
+    grew_h = board_height_mm and cur_h and board_height_mm > cur_h + 1e-6
+    if grew_w or grew_h:
+        return (f"enlarging the board beyond its current {cur_w}x{cur_h} mm "
+                "may break enclosure or mating-part fit")
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -955,6 +990,10 @@ def get_workflow_guide() -> dict:
                                    "board or re-route, then re-run."},
                     {"order": 9, "tool": "export_outputs",
                      "args_template": {"project_name": "my_board"}},
+                    {"order": 10, "tool": "get_fab_quote",
+                     "args_template": {"project_name": "my_board", "quantity": 5},
+                     "optional": True,
+                     "note": "Fab cost estimate + BOM part availability."},
                 ],
             },
             "import_kicad": {
@@ -977,6 +1016,10 @@ def get_workflow_guide() -> dict:
                      "args_template": {"project_name": "my_board"}},
                     {"order": 6, "tool": "export_outputs",
                      "args_template": {"project_name": "my_board"}},
+                    {"order": 7, "tool": "get_fab_quote",
+                     "args_template": {"project_name": "my_board", "quantity": 5},
+                     "optional": True,
+                     "note": "Fab cost estimate + BOM part availability."},
                 ],
             },
             "autonomous": {
@@ -2128,6 +2171,7 @@ def optimize_placement(
     two_sided: bool = False,
     plane_layers: int | None = None,
     layers: int | None = None,
+    approved: bool = False,
 ) -> dict:
     """Place components deterministically and optimize the layout (no LLM).
 
@@ -2165,6 +2209,13 @@ def optimize_placement(
     has no meaning on 2 layers, and silently ignoring it is how a board that
     needed 4 layers ends up over-crammed onto 2).
 
+    approved: two changes the user likely constrained are ENFORCED to need
+    their explicit approval once a placement exists — promoting a 2-layer
+    board to 4 layers (cost/stackup) and enlarging the board (enclosure /
+    mating fit). Such a call fails until you re-run it with approved=True,
+    which you may pass ONLY after the user has agreed in conversation. The
+    first placement is never gated.
+
     Example: optimize_placement("my_board", board_width_mm=45,
                                 board_height_mm=18, layers=4, plane_layers=1)
     """
@@ -2193,6 +2244,27 @@ def optimize_placement(
 
     # Activate project-local custom footprints (tier 0) before placement so
     # agent-registered .kicad_mod files are visible to the placement engine.
+    if not approved:
+        reason = _requires_approval(project_name, layers, plane_layers,
+                                    board_width_mm, board_height_mm)
+        if reason:
+            args = {k: v for k, v in {
+                "project_name": project_name,
+                "board_width_mm": board_width_mm,
+                "board_height_mm": board_height_mm,
+                "seed": seed, "two_sided": two_sided or None,
+                "plane_layers": plane_layers, "layers": layers,
+            }.items() if v is not None}
+            args["approved"] = True
+            return fail(
+                f"This change requires explicit user approval: {reason}. "
+                "ASK THE USER first — do not decide this on your own. Only "
+                "after they agree, re-run with approved=True.",
+                remediation=[option(
+                    "Re-run once the user has approved the change",
+                    "optimize_placement", args)],
+            )
+
     _activate_project_lookup(project_name)
 
     try:
@@ -2629,8 +2701,53 @@ def export_outputs(project_name: str) -> dict:
 
     if not result.get("success"):
         return fail(result.get("error", "Export failed."), data=result)
-    return ok(result, "Done — the ZIP package is ready for manufacturer upload. "
-                      "Optionally call get_board_image for a final visual check.")
+    return ok(result, next_step(
+        "get_fab_quote", {"project_name": project_name},
+        "Done — the ZIP package is ready for manufacturer upload. Optionally "
+        "get a fab cost estimate + part availability with get_fab_quote, and "
+        "call get_board_image for a final visual check."))
+
+
+@mcp.tool()
+def get_fab_quote(project_name: str, quantity: int = 5,
+                  live: bool = True) -> dict:
+    """Estimate fabrication cost and check BOM part availability (no LLM).
+
+    Combines a deterministic board price estimate (from board size, layer
+    count, and quantity — JLCPCB published-pricing ballpark, clearly marked
+    estimate=True) with per-line part status: each BOM line's LCSC/MPN part
+    number (auto-filled for common jellybean parts), and — with live=True —
+    current LCSC stock and USD unit price per unique part id, plus an MPN
+    cross-check that flags lines worth a human look before ordering.
+
+    Works any time after a netlist exists; the board price needs a placement
+    or routed board for dimensions. Lines listed in 'unresolved' have no part
+    number yet — set 'lcsc'/'mpn' in the BOM or pick parts at order time.
+
+    Args:
+        project_name: The project slug/name.
+        quantity: Number of boards to price (default 5).
+        live: Also query LCSC for stock/price (rate-limited; falls back to
+              catalog-only silently when offline).
+    """
+    pdir = _project_dir(project_name)
+    if not pdir.exists():
+        return fail(
+            f"Project '{project_name}' not found.",
+            remediation=[option("List existing projects", "list_projects", {})],
+        )
+    from orchestrator.quoting import quote_project
+    try:
+        result = quote_project(pdir, project_name, qty=quantity, live=live)
+    except Exception as exc:
+        return fail(f"Quote failed: {exc}")
+    if not result.get("success"):
+        return fail(
+            result.get("error", "Quote failed."),
+            remediation=[option(
+                "Build or import the circuit first", "get_workflow_guide", {})],
+        )
+    return ok(result)
 
 
 # ---------------------------------------------------------------------------
@@ -2643,6 +2760,7 @@ def set_component_positions(
     positions: list[dict],
     board_width_mm: float | None = None,
     board_height_mm: float | None = None,
+    approved: bool = False,
 ) -> dict:
     """Pre-position components with placement_source='user' so optimize_placement
     treats them as fixed anchors and only moves everything else.
@@ -2666,12 +2784,31 @@ def set_component_positions(
                            "layer"        (str, optional, "top" or "bottom", default "top")
         board_width_mm:  Board width (mm). Required when no placement exists yet.
         board_height_mm: Board height (mm). Required when no placement exists yet.
+        approved:        Growing an already-placed board is enforced to need
+                         the user's explicit approval (enclosure/mating fit) —
+                         pass approved=True ONLY after they agree.
 
     Returns:
         {success: True, pinned_count: int, total_components: int,
          placement_path: str, notes: [str]}
         or {success: False, error: str}
     """
+    if not approved:
+        reason = _requires_approval(project_name, None, None,
+                                    board_width_mm, board_height_mm)
+        if reason:
+            return fail(
+                f"This change requires explicit user approval: {reason}. "
+                "ASK THE USER first — do not decide this on your own. Only "
+                "after they agree, re-run with approved=True.",
+                remediation=[option(
+                    "Re-run once the user has approved the change",
+                    "set_component_positions",
+                    {"project_name": project_name, "positions": positions,
+                     "board_width_mm": board_width_mm,
+                     "board_height_mm": board_height_mm, "approved": True})],
+            )
+
     pdir = _project_dir(project_name)
     draft_path = pdir / f"{project_name}_circuit_draft.json"
     netlist_path = pdir / f"{project_name}_netlist.json"

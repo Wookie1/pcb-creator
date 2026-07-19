@@ -33,9 +33,11 @@ def export_bom_csv(
 
     with open(output_path, "w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
+        # "LCSC Part #" is the header JLCPCB's assembly BOM matcher keys on.
         writer.writerow([
             "Designator", "Value", "Package", "Quantity",
-            "Description", "Specs", "Notes",
+            "Description", "LCSC Part #", "MPN", "Manufacturer",
+            "Specs", "Notes",
         ])
 
         for item in sorted(items, key=lambda x: x.get("designator", "")):
@@ -51,6 +53,9 @@ def export_bom_csv(
                 item.get("package", ""),
                 item.get("quantity", 1),
                 item.get("description", ""),
+                item.get("lcsc", ""),
+                item.get("mpn", ""),
+                item.get("manufacturer", ""),
                 specs_str,
                 item.get("notes", ""),
             ])

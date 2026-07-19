@@ -112,7 +112,8 @@ def test_bom_csv_columns_and_rows(tmp_path, bom):
     out = export_bom_csv(bom, tmp_path / "bom.csv")
     rows = list(csv.reader(out.open()))
     assert rows[0] == ["Designator", "Value", "Package", "Quantity",
-                       "Description", "Specs", "Notes"]
+                       "Description", "LCSC Part #", "MPN", "Manufacturer",
+                       "Specs", "Notes"]
     assert len(rows) - 1 == len(bom["bom"])
 
 

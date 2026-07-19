@@ -49,3 +49,8 @@ scripts/spike_output/
 # coverage artifacts
 .coverage
 htmlcov/
+
+# Local run artifacts (untracked user data)
+/v18r8/
+/morgan_carrier_v14.kicad_pcb
+projects/*.json

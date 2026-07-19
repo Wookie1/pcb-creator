@@ -161,13 +161,17 @@ class KiCadLibraryIndex:
         if not self._root.is_dir():
             return index
 
-        for mod_file in self._root.rglob("*.kicad_mod"):
-            stem = mod_file.stem
-            for alias in _generate_aliases(stem):
-                # First file wins for each alias (most specific filenames
-                # are typically in the right .pretty directory)
-                if alias not in index:
-                    index[alias] = mod_file
+        files = list(self._root.rglob("*.kicad_mod"))
+        # Pass 1: exact filename stems; pass 2: generated short aliases into
+        # empty slots only. A real SOT-23.kicad_mod must always win the
+        # "SOT-23" key over the alias generated from SOT-23-5_HandSoldering,
+        # regardless of scan order. Within each pass, first file wins (most
+        # specific filenames are typically in the right .pretty directory).
+        for mod_file in files:
+            index.setdefault(mod_file.stem.upper(), mod_file)
+        for mod_file in files:
+            for alias in _generate_aliases(mod_file.stem)[1:]:
+                index.setdefault(alias, mod_file)
 
         return index
 

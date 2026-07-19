@@ -1549,13 +1549,14 @@ def _bom_from_netlist(netlist: dict) -> dict:
         ctype = e.get("component_type", "")
         if ctype in ("fiducial", "mounting_hole") or "mountinghole" in pkg.lower():
             continue
-        groups[(e.get("value", "") or "", pkg)].append(e.get("designator", ""))
+        groups[(ctype, e.get("value", "") or "", pkg)].append(e.get("designator", ""))
 
     bom = []
-    for (value, pkg), dess in groups.items():
+    for (ctype, value, pkg), dess in groups.items():
         dess_sorted = sorted((d for d in dess if d), key=_natkey)
         bom.append({
             "designator": ", ".join(dess_sorted),
+            "component_type": ctype,
             "value": value,
             "package": pkg,
             "quantity": len(dess_sorted),
@@ -1611,6 +1612,12 @@ def run_export(project_dir: Path, project_name: str, config, log=None) -> dict:
     _log(f"  Drill file: {drill_path.name}")
 
     if bom_data is not None:
+        # Fill orderable part numbers (curated tables + cache) so the CSV's
+        # "LCSC Part #" column auto-matches at JLCPCB assembly; persist the
+        # enriched BOM so later quotes/status see the same numbers.
+        from orchestrator.quoting import resolve_part_numbers
+        if resolve_part_numbers(bom_data):
+            bom_path.write_text(json.dumps(bom_data, indent=2))
         bom_csv = export_bom_csv(bom_data, output_dir / f"{project_name}_bom.csv")
         produced.append(str(bom_csv))
         _log(f"  BOM: {bom_csv.name}")

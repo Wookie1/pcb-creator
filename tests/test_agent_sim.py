@@ -456,3 +456,124 @@ def test_builder_flow_through_routing_and_drc(server):
     out = call(server, "export_outputs", {"project_name": "sim_led"})
     assert out["success"], out.get("error")
     assert out.get("files") or out.get("output_dir")
+
+
+# ---------------------------------------------------------------------------
+# Code-enforced approval gate (layer promotion / board enlargement)
+# ---------------------------------------------------------------------------
+
+def test_layer_promotion_requires_approval(server, tmp_path):
+    """Promoting a placed 2-layer board to 4 layers must fail without
+    approved=True, and the remediation must carry the ready-to-run call."""
+    _write_placement(tmp_path, "gate2l", 2, None)
+    r = call(server, "optimize_placement",
+             {"project_name": "gate2l", "layers": 4, "plane_layers": 2})
+    assert r["success"] is False and "approval" in r["error"].lower()
+    rem = r["remediation"][0]
+    assert rem["tool"] == "optimize_placement"
+    assert rem["args"]["approved"] is True and rem["args"]["layers"] == 4
+
+    # plane_layers alone implies promotion on a 2-layer board — also gated.
+    r = call(server, "optimize_placement",
+             {"project_name": "gate2l", "plane_layers": 1})
+    assert r["success"] is False and "approval" in r["error"].lower()
+
+    # With approved=True the gate opens (fails later on the missing netlist,
+    # NOT on approval).
+    r = call(server, "optimize_placement",
+             {"project_name": "gate2l", "layers": 4, "approved": True})
+    assert "approval" not in (r.get("error") or "").lower()
+
+
+def test_board_enlargement_requires_approval(server, tmp_path):
+    _write_placement(tmp_path, "gategrow", 2, None, w=40, h=30)
+    r = call(server, "optimize_placement",
+             {"project_name": "gategrow", "board_width_mm": 60,
+              "board_height_mm": 30})
+    assert r["success"] is False and "approval" in r["error"].lower()
+    # Same size / shrink stays free.
+    r = call(server, "optimize_placement",
+             {"project_name": "gategrow", "board_width_mm": 40,
+              "board_height_mm": 30})
+    assert "approval" not in (r.get("error") or "").lower()
+    r = call(server, "optimize_placement",
+             {"project_name": "gategrow", "board_width_mm": 35,
+              "board_height_mm": 25})
+    assert "approval" not in (r.get("error") or "").lower()
+
+
+def test_first_placement_and_plane_reallocation_ungated(server, tmp_path):
+    # No placement yet: 4-layer from the start is a design choice, not gated.
+    (tmp_path / "projects" / "gatenew").mkdir(parents=True)
+    r = call(server, "optimize_placement",
+             {"project_name": "gatenew", "layers": 4, "plane_layers": 2,
+              "board_width_mm": 50, "board_height_mm": 40})
+    assert "approval" not in (r.get("error") or "").lower()
+    # Already 4-layer: plane_layers reallocation (capacity, free) is ungated.
+    _write_placement(tmp_path, "gate4l", 4, 2)
+    r = call(server, "optimize_placement",
+             {"project_name": "gate4l", "plane_layers": 1})
+    assert "approval" not in (r.get("error") or "").lower()
+
+
+def test_set_component_positions_enlargement_gated(server, tmp_path):
+    _write_placement(tmp_path, "gatepos", 2, None, w=40, h=30)
+    pos = [{"designator": "J1", "x_mm": 5, "y_mm": 5}]
+    r = call(server, "set_component_positions",
+             {"project_name": "gatepos", "positions": pos,
+              "board_width_mm": 80, "board_height_mm": 30})
+    assert r["success"] is False and "approval" in r["error"].lower()
+    assert r["remediation"][0]["args"]["approved"] is True
+    # Approved: gate opens (later failure, if any, is about the netlist).
+    r = call(server, "set_component_positions",
+             {"project_name": "gatepos", "positions": pos,
+              "board_width_mm": 80, "board_height_mm": 30, "approved": True})
+    assert "approval" not in (r.get("error") or "").lower()
+
+
+def test_fab_quote_tool(server, tmp_path):
+    """get_fab_quote returns a marked estimate + resolved jellybean parts."""
+    pdir = tmp_path / "projects" / "quoted"
+    pdir.mkdir(parents=True)
+    (pdir / "quoted_bom.json").write_text(json.dumps({"bom": [
+        {"designator": "R1", "component_type": "resistor", "value": "10kohm",
+         "package": "0805", "quantity": 1}]}))
+    (pdir / "quoted_placement.json").write_text(json.dumps(
+        {"board": {"width_mm": 40, "height_mm": 30, "layers": 2}}))
+    r = call(server, "get_fab_quote", {"project_name": "quoted", "live": False})
+    assert r["success"] is True
+    assert r["board_estimate"]["estimate"] is True
+    assert r["parts"][0]["lcsc"] == "C17414"
+
+    r = call(server, "get_fab_quote", {"project_name": "nosuchproj"})
+    assert_fail_with_remediation(r, ["list_projects"])
+
+
+def test_fab_quote_failure_paths(server, tmp_path, monkeypatch):
+    # No BOM and no netlist → structured failure steering to the guide.
+    (tmp_path / "projects" / "quotempty").mkdir(parents=True)
+    r = call(server, "get_fab_quote", {"project_name": "quotempty"})
+    assert_fail_with_remediation(r, ["get_workflow_guide"])
+
+    # An unexpected exception is wrapped in the envelope, not raised.
+    import orchestrator.quoting as quoting
+    def boom(*a, **k):
+        raise RuntimeError("nope")
+    monkeypatch.setattr(quoting, "quote_project", boom)
+    r = call(server, "get_fab_quote", {"project_name": "quotempty"})
+    assert r["success"] is False and "nope" in r["error"]
+
+
+def test_create_circuit_duplicate_without_overwrite_fails(server):
+    args = {"project_name": "dupdraft", "description": "d",
+            "board_width_mm": 30, "board_height_mm": 20}
+    assert call(server, "create_circuit", args)["success"] is True
+    r = call(server, "create_circuit", args)     # same project, no overwrite
+    assert r["success"] is False
+
+
+def test_register_custom_footprint_rejects_bad_project_name(server):
+    r = call(server, "register_custom_footprint",
+             {"project_name": "../evil", "package_name": "PKG-1",
+              "kicad_mod_content": "(footprint \"PKG-1\")"})
+    assert r["success"] is False

@@ -388,3 +388,100 @@ def lookup_footprint_dims(package: str) -> dict | None:
             return dict(v)
 
     return None
+
+
+# ---------------------------------------------------------------------------
+# Part numbers — JLCPCB basic/preferred parts for jellybean components.
+#
+# LCSC ids for widely-documented JLCPCB basic parts. Only high-confidence
+# entries belong here; get_fab_quote(live=True) cross-checks each id against
+# LCSC and flags mismatches, and part numbers should always be verified at
+# order time.
+# ---------------------------------------------------------------------------
+
+# Resistors keyed by (package, ohms); UNI-ROYAL thick film 1%.
+_RESISTOR_PARTS: dict[tuple[str, float], dict] = {
+    ("0603", 100.0):     {"lcsc": "C22775", "mpn": "0603WAF1000T5E", "manufacturer": "UNI-ROYAL"},
+    ("0603", 220.0):     {"lcsc": "C22962", "mpn": "0603WAF2200T5E", "manufacturer": "UNI-ROYAL"},
+    ("0603", 330.0):     {"lcsc": "C23138", "mpn": "0603WAF3300T5E", "manufacturer": "UNI-ROYAL"},
+    ("0603", 470.0):     {"lcsc": "C23179", "mpn": "0603WAF4700T5E", "manufacturer": "UNI-ROYAL"},
+    ("0603", 1000.0):    {"lcsc": "C21190", "mpn": "0603WAF1001T5E", "manufacturer": "UNI-ROYAL"},
+    ("0603", 4700.0):    {"lcsc": "C23162", "mpn": "0603WAF4701T5E", "manufacturer": "UNI-ROYAL"},
+    ("0603", 10000.0):   {"lcsc": "C25804", "mpn": "0603WAF1002T5E", "manufacturer": "UNI-ROYAL"},
+    ("0603", 100000.0):  {"lcsc": "C25803", "mpn": "0603WAF1003T5E", "manufacturer": "UNI-ROYAL"},
+    ("0805", 100.0):     {"lcsc": "C17408", "mpn": "0805W8F1000T5E", "manufacturer": "UNI-ROYAL"},
+    ("0805", 220.0):     {"lcsc": "C17557", "mpn": "0805W8F2200T5E", "manufacturer": "UNI-ROYAL"},
+    ("0805", 330.0):     {"lcsc": "C17630", "mpn": "0805W8F3300T5E", "manufacturer": "UNI-ROYAL"},
+    ("0805", 1000.0):    {"lcsc": "C17513", "mpn": "0805W8F1001T5E", "manufacturer": "UNI-ROYAL"},
+    ("0805", 4700.0):    {"lcsc": "C17673", "mpn": "0805W8F4701T5E", "manufacturer": "UNI-ROYAL"},
+    ("0805", 10000.0):   {"lcsc": "C17414", "mpn": "0805W8F1002T5E", "manufacturer": "UNI-ROYAL"},
+    ("0805", 100000.0):  {"lcsc": "C17407", "mpn": "0805W8F1003T5E", "manufacturer": "UNI-ROYAL"},
+}
+
+# Capacitors keyed by (package, farads); X7R/X5R MLCC.
+_CAPACITOR_PARTS: dict[tuple[str, float], dict] = {
+    ("0603", 22e-12):   {"lcsc": "C1653",  "mpn": "CL10C220JB8NNNC", "manufacturer": "SAMSUNG"},
+    ("0603", 100e-9):   {"lcsc": "C14663", "mpn": "CC0603KRX7R9BB104", "manufacturer": "YAGEO"},
+    ("0603", 1e-6):     {"lcsc": "C15849", "mpn": "CL10A105KB8NNNC", "manufacturer": "SAMSUNG"},
+    ("0805", 100e-9):   {"lcsc": "C49678", "mpn": "CC0805KRX7R9BB104", "manufacturer": "YAGEO"},
+    ("0805", 10e-6):    {"lcsc": "C15850", "mpn": "CL21A106KAYNNNE", "manufacturer": "SAMSUNG"},
+}
+
+# Everything else keyed by normalised value (part number); optional package check.
+_NAMED_PARTS: dict[str, dict] = {
+    "ATMEGA328P-AU":  {"lcsc": "C14877",  "mpn": "ATMEGA328P-AU", "manufacturer": "MICROCHIP", "package": "TQFP-32"},
+    "NE555":          {"lcsc": "C7593",   "mpn": "NE555DR", "manufacturer": "TI", "package": "SOIC-8"},
+    "AMS1117-3.3":    {"lcsc": "C6186",   "mpn": "AMS1117-3.3", "manufacturer": "AMS", "package": "SOT-223"},
+    "AMS1117-5.0":    {"lcsc": "C6187",   "mpn": "AMS1117-5.0", "manufacturer": "AMS", "package": "SOT-223"},
+    "S8050":          {"lcsc": "C2146",   "mpn": "S8050", "manufacturer": "CJ", "package": "SOT-23"},
+    "2N7002":         {"lcsc": "C8545",   "mpn": "2N7002", "manufacturer": "CJ", "package": "SOT-23"},
+    "1N4148W":        {"lcsc": "C81598",  "mpn": "1N4148W", "manufacturer": "ST", "package": "SOD-123"},
+    "TYPE-C-31-M-12": {"lcsc": "C165948", "mpn": "TYPE-C-31-M-12", "manufacturer": "Korean Hroparts"},
+}
+
+
+def lookup_part_number(component_type: str, value: str, package: str = "") -> dict | None:
+    """Look up an orderable part number (LCSC/MPN) from the curated tables.
+
+    Returns {"lcsc", "mpn", "manufacturer"} or None. Resistors and capacitors
+    match on parsed canonical value + package; other parts match on the value
+    string as a part number.
+    """
+    ctype = component_type.strip().lower()
+    pkg = package.strip().upper()
+    val = value.strip().upper()
+
+    if ctype == "resistor":
+        from validators.engineering_constants import parse_resistance
+        try:
+            ohms = parse_resistance(value)
+        except ValueError:
+            return None
+        entry = _RESISTOR_PARTS.get((pkg, round(ohms, 3)))
+        return {k: v for k, v in entry.items()} if entry else None
+
+    if ctype == "capacitor":
+        from validators.engineering_constants import parse_capacitance
+        try:
+            farads = parse_capacitance(value)
+        except ValueError:
+            return None
+        for (p, f), entry in _CAPACITOR_PARTS.items():
+            if p == pkg and abs(f - farads) <= f * 1e-3:
+                return dict(entry)
+        return None
+
+    entry = _NAMED_PARTS.get(val)
+    if entry is None:
+        # Tolerate suffix variants (NE555P → NE555) like lookup_specs does.
+        for key, e in _NAMED_PARTS.items():
+            if val.startswith(key):
+                entry = e
+                break
+    if entry is None:
+        return None
+    # If the curated entry names a package, a conflicting BOM package means a
+    # different physical part — don't hand out the wrong orderable number.
+    if entry.get("package") and pkg and entry["package"] != pkg:
+        return None
+    return {k: v for k, v in entry.items() if k != "package"}

@@ -36,6 +36,8 @@ Upload to JLCPCB and order your board
 - **DXF board outline** — attach a DXF file to define non-rectangular board shapes
 - **Assembly drawing PDF** — print-friendly component placement reference with BOM table for manufacturing
 - **Manufacturer-ready output** — Gerber RS-274X, Excellon drill, BOM CSV, pick-and-place CSV, assembly PDF, STEP 3D model
+- **Orderable BOM + fab quote** — BOM lines carry real part numbers (`lcsc`/`mpn`/`manufacturer`, auto-filled for common jellybean parts from a curated JLCPCB basic-parts table) so the BOM CSV's `LCSC Part #` column auto-matches at JLCPCB assembly; `get_fab_quote` adds a deterministic board price estimate plus live LCSC stock/price per part with an MPN cross-check
+- **Code-enforced approval gate** — once a board is placed, promoting 2→4 layers or enlarging the board (the two things a user likely constrained) is refused unless the call passes `approved=True`, so an agent must ask the user before changing cost or fit
 - **Interactive board viewer** — HTML/SVG visualization with traces, copper fills, component hover tooltips, DRC results
 - **Incremental routing** — `route_board(keep_existing=True)` protects the current routing as fixed wiring and routes only the UNROUTED nets, so the tool *finishes* a partly-routed (or KiCad-imported) board instead of redoing it
 - **KiCad export/import** — export to KiCad for manual editing, re-import to continue the pipeline. The exported `.kicad_pcb` ships with **poured zones** (filled via `pcbnew`) so `kicad-cli` DRC sees connected copper, and on 4-layer boards a pour-stitch pass ties any isolated GND pour island back to the inner GND plane — both no-ops when KiCad's `pcbnew` isn't installed
