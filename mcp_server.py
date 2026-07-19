@@ -2731,8 +2731,9 @@ def get_fab_quote(project_name: str, quantity: int = 5,
 
     Works any time after a netlist exists; the board price needs a placement
     or routed board for dimensions. Lines listed in 'unresolved' have no part
-    number yet — look each part up and record it with set_part_number, then
-    re-run this tool to verify stock/price.
+    number yet — record each with set_part_number (prefer the manufacturer
+    part number mpn=; never guess an LCSC 'C####' id), then re-run this tool
+    to verify stock/price.
 
     Args:
         project_name: The project slug/name.
@@ -2763,10 +2764,14 @@ def get_fab_quote(project_name: str, quantity: int = 5,
         nxt = next_step(
             "set_part_number",
             {"project_name": project_name, "designator": first,
-             "lcsc": "<C-number>"},
-            f"{len(result['unresolved'])} BOM line(s) have no part number — "
-            "look each part up (LCSC/datasheet) and record it with "
-            "set_part_number, then re-run get_fab_quote to verify stock/price.")
+             "mpn": "<manufacturer part number>"},
+            f"{len(result['unresolved'])} BOM line(s) have no part number. "
+            "Record the MANUFACTURER part number (mpn=) — it is the reliable, "
+            "distributor-agnostic id you can derive from the part/datasheet "
+            "(e.g. IRLML2502 -> IRLML2502TRPBF) and search on Digikey/Mouser/"
+            "LCSC. Do NOT guess an LCSC 'C####' id from memory — a wrong guess "
+            "silently points at a different part; set lcsc= only if you have "
+            "actually looked it up. Then re-run get_fab_quote to verify.")
     elif (pdir / "output" / f"{project_name}_bom.csv").exists():
         # Part numbers are all resolved but a manufacturing package was already
         # exported — its BOM CSV predates these ids and is now stale. Steer to a
@@ -2786,12 +2791,21 @@ def set_part_number(project_name: str, designator: str,
     """Record an orderable part number on one BOM line (no LLM).
 
     The write half of the get_fab_quote loop: when a line shows up in the
-    quote's 'unresolved' list (or carries a wrong id), look the part up
-    yourself and record it here. The value lands in <project>_bom.json (the
-    BOM is synthesized from the netlist first if it doesn't exist yet), flows
-    into the exported BOM CSV's 'LCSC Part #' / 'MPN' columns for JLCPCB
-    assembly matching, and is cached by type:value:package so the same part
-    resolves automatically in every future project.
+    quote's 'unresolved' list (or carries a wrong id), record the part here.
+
+    PREFER the manufacturer part number (mpn). It is the reliable,
+    distributor-agnostic identity you can derive from the part or its
+    datasheet (IRLML2502 -> "IRLML2502TRPBF", 1N4007 -> "1N4007") and search
+    on Digikey, Mouser, or LCSC. The LCSC 'C####' id is an opaque catalog
+    number: DO NOT guess one from memory — a wrong guess (e.g. C2146 is an
+    S8050 BJT, not the MOSFET you meant) silently records a completely
+    different part. Set lcsc= only when you have actually looked it up (a live
+    get_fab_quote back-fills the MPN from a correct LCSC id for you).
+
+    The value lands in <project>_bom.json (synthesized from the netlist first
+    if absent), flows into the exported BOM CSV's 'MPN' / 'LCSC Part #'
+    columns, and is cached by type:value:package so the same part resolves
+    automatically in future projects.
 
     Grouped BOM lines are matched by membership: designator "D2" updates the
     "D1, D2, D3, D4" line (they are the same part by construction). Provided
@@ -2800,11 +2814,13 @@ def set_part_number(project_name: str, designator: str,
     Args:
         project_name: The project slug/name.
         designator: Any designator on the target BOM line (e.g. "R1", "CN1").
-        lcsc: LCSC part id, e.g. "C2286" (validated: C + digits).
-        mpn: Manufacturer part number, e.g. "1N4007".
+        mpn: Manufacturer part number, e.g. "1N4007" (preferred).
         manufacturer: Manufacturer name, e.g. "onsemi".
+        lcsc: LCSC part id, e.g. "C2286" (validated: C + digits). Only if
+              looked up — never recalled from memory.
 
-    Example: set_part_number("my_board", "D1", lcsc="C64898", mpn="1N4007")
+    Example: set_part_number("my_board", "Q1", mpn="IRLML2502TRPBF",
+                             manufacturer="Infineon")
     """
     pdir = _project_dir(project_name)
     if not pdir.exists():
