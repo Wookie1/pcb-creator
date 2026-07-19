@@ -993,7 +993,8 @@ def get_workflow_guide() -> dict:
                     {"order": 10, "tool": "get_fab_quote",
                      "args_template": {"project_name": "my_board", "quantity": 5},
                      "optional": True,
-                     "note": "Fab cost estimate + BOM part availability."},
+                     "note": "Fab cost estimate + BOM part availability. Record "
+                             "missing/wrong part ids with set_part_number."},
                 ],
             },
             "import_kicad": {
@@ -1019,7 +1020,8 @@ def get_workflow_guide() -> dict:
                     {"order": 7, "tool": "get_fab_quote",
                      "args_template": {"project_name": "my_board", "quantity": 5},
                      "optional": True,
-                     "note": "Fab cost estimate + BOM part availability."},
+                     "note": "Fab cost estimate + BOM part availability. Record "
+                             "missing/wrong part ids with set_part_number."},
                 ],
             },
             "autonomous": {
@@ -2722,7 +2724,8 @@ def get_fab_quote(project_name: str, quantity: int = 5,
 
     Works any time after a netlist exists; the board price needs a placement
     or routed board for dimensions. Lines listed in 'unresolved' have no part
-    number yet — set 'lcsc'/'mpn' in the BOM or pick parts at order time.
+    number yet — look each part up and record it with set_part_number, then
+    re-run this tool to verify stock/price.
 
     Args:
         project_name: The project slug/name.
@@ -2747,7 +2750,72 @@ def get_fab_quote(project_name: str, quantity: int = 5,
             remediation=[option(
                 "Build or import the circuit first", "get_workflow_guide", {})],
         )
-    return ok(result)
+    nxt = None
+    if result.get("unresolved"):
+        first = str(result["unresolved"][0]).split(",")[0].strip()
+        nxt = next_step(
+            "set_part_number",
+            {"project_name": project_name, "designator": first,
+             "lcsc": "<C-number>"},
+            f"{len(result['unresolved'])} BOM line(s) have no part number — "
+            "look each part up (LCSC/datasheet) and record it with "
+            "set_part_number, then re-run get_fab_quote to verify stock/price.")
+    return ok(result, nxt)
+
+
+@mcp.tool()
+def set_part_number(project_name: str, designator: str,
+                    lcsc: str | None = None, mpn: str | None = None,
+                    manufacturer: str | None = None) -> dict:
+    """Record an orderable part number on one BOM line (no LLM).
+
+    The write half of the get_fab_quote loop: when a line shows up in the
+    quote's 'unresolved' list (or carries a wrong id), look the part up
+    yourself and record it here. The value lands in <project>_bom.json (the
+    BOM is synthesized from the netlist first if it doesn't exist yet), flows
+    into the exported BOM CSV's 'LCSC Part #' / 'MPN' columns for JLCPCB
+    assembly matching, and is cached by type:value:package so the same part
+    resolves automatically in every future project.
+
+    Grouped BOM lines are matched by membership: designator "D2" updates the
+    "D1, D2, D3, D4" line (they are the same part by construction). Provided
+    fields overwrite existing values; omitted fields are left unchanged.
+
+    Args:
+        project_name: The project slug/name.
+        designator: Any designator on the target BOM line (e.g. "R1", "CN1").
+        lcsc: LCSC part id, e.g. "C2286" (validated: C + digits).
+        mpn: Manufacturer part number, e.g. "1N4007".
+        manufacturer: Manufacturer name, e.g. "onsemi".
+
+    Example: set_part_number("my_board", "D1", lcsc="C64898", mpn="1N4007")
+    """
+    pdir = _project_dir(project_name)
+    if not pdir.exists():
+        return fail(
+            f"Project '{project_name}' not found.",
+            remediation=[option("List existing projects", "list_projects", {})],
+        )
+    from orchestrator.quoting import set_part_number as _set
+    try:
+        result = _set(pdir, project_name, designator,
+                      lcsc=lcsc, mpn=mpn, manufacturer=manufacturer)
+    except Exception as exc:
+        return fail(f"set_part_number failed: {exc}")
+    if not result.get("success"):
+        remediation = []
+        if result.get("known_designators"):
+            remediation.append(option(
+                "Check the BOM's designator groups in the quote",
+                "get_fab_quote", {"project_name": project_name, "live": False}))
+        return fail(result.get("error", "set_part_number failed."),
+                    data={k: v for k, v in result.items()
+                          if k == "known_designators"},
+                    remediation=remediation or None)
+    return ok(result, next_step(
+        "get_fab_quote", {"project_name": project_name},
+        "Part recorded. Re-run get_fab_quote (live) to verify LCSC stock/price "
+        "and the MPN cross-check before ordering."))
 
 
 # ---------------------------------------------------------------------------

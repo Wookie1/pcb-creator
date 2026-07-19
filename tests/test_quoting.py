@@ -132,3 +132,60 @@ def test_quote_synthesizes_bom_from_netlist(tmp_path):
     assert r["success"] is True
     assert r["parts"][0]["lcsc"] == "C21190"     # resolved via _bom_from_netlist
     assert r["board_estimate"] is None           # no placement yet
+
+
+# ---------------------------------------------------------------------------
+# set_part_number (the write half of the quote loop)
+# ---------------------------------------------------------------------------
+
+def test_set_part_number_updates_line_and_persists(project):
+    r = quoting.set_part_number(project, "quoteme", "J1",
+                                lcsc="c2286", mpn="XKB-9")
+    assert r["success"] and r["line"]["lcsc"] == "C2286"  # normalized upper
+    on_disk = json.loads((project / "quoteme_bom.json").read_text())
+    j1 = [i for i in on_disk["bom"] if i["designator"] == "J1"][0]
+    assert j1["lcsc"] == "C2286" and j1["mpn"] == "XKB-9"
+    # And the quote now reports it resolved.
+    q = quote_project(project, "quoteme", live=False)
+    assert "J1" not in q["unresolved"]
+
+
+def test_set_part_number_matches_grouped_designator(tmp_path):
+    pdir = tmp_path / "p"
+    pdir.mkdir()
+    (pdir / "g_bom.json").write_text(json.dumps({"bom": [
+        {"designator": "D1, D2, D3", "component_type": "diode",
+         "value": "1N4007", "package": "DO-41", "quantity": 3}]}))
+    r = quoting.set_part_number(pdir, "g", "D2", lcsc="C64898")
+    assert r["success"] and r["line"]["designator"] == "D1, D2, D3"
+
+
+def test_set_part_number_synthesizes_bom_from_netlist(tmp_path):
+    pdir = tmp_path / "p"
+    pdir.mkdir()
+    (pdir / "n_netlist.json").write_text(json.dumps({"elements": [
+        {"element_type": "component", "designator": "R1",
+         "component_type": "resistor", "value": "1kohm", "package": "0805"}]}))
+    r = quoting.set_part_number(pdir, "n", "R1", mpn="RC0805FR-071KL")
+    assert r["success"]
+    assert (pdir / "n_bom.json").exists()
+
+
+def test_set_part_number_caches_for_future_resolution(project):
+    quoting.set_part_number(project, "quoteme", "J1", lcsc="C2286")
+    # A different project with the same type:value:package resolves from cache.
+    bom = {"bom": [{"designator": "J9", "component_type": "connector",
+                    "value": "weird", "package": "CUSTOM-9", "quantity": 1}]}
+    assert quoting.resolve_part_numbers(bom) == 1
+    assert bom["bom"][0]["lcsc"] == "C2286"
+
+
+def test_set_part_number_rejects_bad_input(project, tmp_path):
+    assert not quoting.set_part_number(project, "quoteme", "J1")["success"]
+    bad = quoting.set_part_number(project, "quoteme", "J1", lcsc="2286")
+    assert not bad["success"] and "lcsc" in bad["error"]
+    missing = quoting.set_part_number(project, "quoteme", "ZZ9", lcsc="C1")
+    assert not missing["success"] and "J1" in str(missing["known_designators"])
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    assert not quoting.set_part_number(empty, "nope", "R1", lcsc="C1")["success"]

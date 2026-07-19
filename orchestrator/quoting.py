@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from pathlib import Path
 from typing import Any
 
@@ -123,6 +124,76 @@ def resolve_part_numbers(bom_data: dict) -> int:
     return changed
 
 
+_LCSC_RE = re.compile(r"^C\d+$")
+
+
+def set_part_number(project_dir: Path, project_name: str, designator: str,
+                    lcsc: str | None = None, mpn: str | None = None,
+                    manufacturer: str | None = None) -> dict[str, Any]:
+    """Set the part number on one BOM line (the write half of the quote loop).
+
+    Loads <project>_bom.json (synthesizing it from the netlist first if it
+    doesn't exist, same as export does), finds the line whose designator —
+    or designator group, e.g. "D1, D2, D3, D4" — contains *designator*,
+    overwrites the provided fields, persists the BOM, and caches the part
+    keyed by type:value:package so future resolve_part_numbers() calls fill
+    it automatically in any project.
+
+    Returns {success, line, bom_path} or {success: False, error,
+    known_designators?}.
+    """
+    provided = {k: v.strip() for k, v in
+                (("lcsc", lcsc or ""), ("mpn", mpn or ""),
+                 ("manufacturer", manufacturer or "")) if v and v.strip()}
+    if not provided:
+        return {"success": False,
+                "error": "Provide at least one of lcsc / mpn / manufacturer."}
+    if "lcsc" in provided:
+        provided["lcsc"] = provided["lcsc"].upper()
+        if not _LCSC_RE.match(provided["lcsc"]):
+            return {"success": False,
+                    "error": f"lcsc must look like 'C2286' (got "
+                             f"{provided['lcsc']!r})."}
+
+    bom_path = project_dir / f"{project_name}_bom.json"
+    if bom_path.exists():
+        bom_data = json.loads(bom_path.read_text())
+    else:
+        netlist_path = project_dir / f"{project_name}_netlist.json"
+        if not netlist_path.exists():
+            return {"success": False,
+                    "error": "No BOM or netlist found — build the circuit first."}
+        from orchestrator.stages import _bom_from_netlist
+        bom_data = _bom_from_netlist(json.loads(netlist_path.read_text()))
+
+    want = designator.strip().upper()
+    line = None
+    for item in bom_data.get("bom", []):
+        group = [d.strip().upper() for d in
+                 str(item.get("designator", "")).split(",")]
+        if want in group:
+            line = item
+            break
+    if line is None:
+        return {"success": False,
+                "error": f"No BOM line contains designator '{designator}'.",
+                "known_designators": [i.get("designator")
+                                      for i in bom_data.get("bom", [])]}
+
+    line.update(provided)
+    bom_path.write_text(json.dumps(bom_data, indent=2))
+
+    if line.get("lcsc") or line.get("mpn"):
+        from orchestrator.cache import ComponentCache
+        cache = ComponentCache(os.environ.get("PCB_COMPONENT_CACHE_PATH"))
+        key = (f"part:{line.get('component_type', '')}:"
+               f"{line.get('value', '')}:{line.get('package', '')}")
+        cache.put_specs(key, {k: line[k] for k in ("lcsc", "mpn", "manufacturer")
+                              if line.get(k)}, source="agent")
+
+    return {"success": True, "line": dict(line), "bom_path": str(bom_path)}
+
+
 def quote_project(project_dir: Path, project_name: str, qty: int = 5,
                   live: bool = False) -> dict[str, Any]:
     """Order-readiness quote: board price estimate + per-line part status.
@@ -210,7 +281,8 @@ def quote_project(project_dir: Path, project_name: str, qty: int = 5,
                      "quote uses catalog data only.")
     if unresolved:
         notes.append(f"{len(unresolved)} BOM line(s) have no part number — "
-                     "set 'lcsc'/'mpn' in the BOM or pick parts at order time.")
+                     "set them with set_part_number(designator, lcsc=...) or "
+                     "pick parts at order time.")
 
     return {
         "success": True,

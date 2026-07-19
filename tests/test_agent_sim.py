@@ -564,6 +564,59 @@ def test_fab_quote_failure_paths(server, tmp_path, monkeypatch):
     assert r["success"] is False and "nope" in r["error"]
 
 
+def test_fab_quote_unresolved_chains_to_set_part_number(server, tmp_path):
+    """Unresolved BOM lines steer the agent to the write tool."""
+    pdir = tmp_path / "projects" / "quotegap"
+    pdir.mkdir(parents=True)
+    (pdir / "quotegap_bom.json").write_text(json.dumps({"bom": [
+        {"designator": "J1", "component_type": "connector", "value": "weird",
+         "package": "CUSTOM-9", "quantity": 1}]}))
+    r = call(server, "get_fab_quote", {"project_name": "quotegap", "live": False})
+    assert r["success"] is True and r["unresolved"] == ["J1"]
+    assert r["next_step"]["tool"] == "set_part_number"
+    assert r["next_step"]["args"]["designator"] == "J1"
+
+
+def test_set_part_number_tool(server, tmp_path):
+    """set_part_number writes the BOM line and chains back to the quote."""
+    pdir = tmp_path / "projects" / "setpn"
+    pdir.mkdir(parents=True)
+    (pdir / "setpn_bom.json").write_text(json.dumps({"bom": [
+        {"designator": "J1", "component_type": "connector", "value": "weird",
+         "package": "CUSTOM-9", "quantity": 1}]}))
+    r = call(server, "set_part_number",
+             {"project_name": "setpn", "designator": "J1", "lcsc": "c2286"})
+    assert r["success"] is True and r["line"]["lcsc"] == "C2286"
+    assert r["next_step"]["tool"] == "get_fab_quote"
+    on_disk = json.loads((pdir / "setpn_bom.json").read_text())
+    assert on_disk["bom"][0]["lcsc"] == "C2286"
+    # The quote no longer lists the line as unresolved (loop closed).
+    q = call(server, "get_fab_quote", {"project_name": "setpn", "live": False})
+    assert q["unresolved"] == [] and "next_step" not in q
+
+    # Unknown designator → structured fail with the known groups + remediation.
+    r = call(server, "set_part_number",
+             {"project_name": "setpn", "designator": "ZZ9", "lcsc": "C1"})
+    assert r["success"] is False and r["known_designators"] == ["J1"]
+    assert_fail_with_remediation(r, ["get_fab_quote"])
+
+    # Missing project / wrapped exception paths.
+    r = call(server, "set_part_number",
+             {"project_name": "nosuchproj", "designator": "J1", "lcsc": "C1"})
+    assert_fail_with_remediation(r, ["list_projects"])
+
+
+def test_set_part_number_tool_wraps_exceptions(server, tmp_path, monkeypatch):
+    (tmp_path / "projects" / "setpnboom").mkdir(parents=True)
+    import orchestrator.quoting as quoting
+    def boom(*a, **k):
+        raise RuntimeError("kaput")
+    monkeypatch.setattr(quoting, "set_part_number", boom)
+    r = call(server, "set_part_number",
+             {"project_name": "setpnboom", "designator": "R1", "lcsc": "C1"})
+    assert r["success"] is False and "kaput" in r["error"]
+
+
 def test_create_circuit_duplicate_without_overwrite_fails(server):
     args = {"project_name": "dupdraft", "description": "d",
             "board_width_mm": 30, "board_height_mm": 20}
