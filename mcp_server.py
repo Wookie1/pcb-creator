@@ -2722,6 +2722,13 @@ def get_fab_quote(project_name: str, quantity: int = 5,
     current LCSC stock and USD unit price per unique part id, plus an MPN
     cross-check that flags lines worth a human look before ordering.
 
+    With live=True, the manufacturer part number (MPN) + manufacturer fetched
+    from LCSC are written back into the BOM for any line that has an LCSC id
+    but no MPN yet — turning an LCSC-only part into a distributor-agnostic
+    identity you can search on Digikey/Mouser. Existing MPNs are never
+    overwritten. Re-run export_outputs afterward to refresh the BOM CSV's MPN
+    column.
+
     Works any time after a netlist exists; the board price needs a placement
     or routed board for dimensions. Lines listed in 'unresolved' have no part
     number yet — look each part up and record it with set_part_number, then

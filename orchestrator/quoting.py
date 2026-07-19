@@ -246,6 +246,7 @@ def quote_project(project_dir: Path, project_name: str, qty: int = 5,
     unresolved: list[str] = []
     parts_total = 0.0
     have_prices = False
+    enriched = 0  # BOM lines that gained an mpn/manufacturer from the live data
     notes: list[str] = []
     for item in bom_data.get("bom", []):
         line: dict[str, Any] = {
@@ -253,7 +254,6 @@ def quote_project(project_dir: Path, project_name: str, qty: int = 5,
             "value": item.get("value"),
             "package": item.get("package"),
             "lcsc": item.get("lcsc"),
-            "mpn": item.get("mpn"),
         }
         info = live_info.get(item.get("lcsc") or "")
         if info:
@@ -264,17 +264,37 @@ def quote_project(project_dir: Path, project_name: str, qty: int = 5,
                 have_prices = True
             if not info.get("stock"):
                 notes.append(f"{line['designator']}: {line['lcsc']} appears out of stock")
-            # MPN cross-check: a curated/LLM id that fetches a different part
-            # number is worth a human look before ordering. Prefix-tolerant:
-            # LCSC decorates some MPNs (e.g. "0805W8F1003T5E (SMT...)")
+            # MPN cross-check (against the ORIGINAL mpn, before any fill below):
+            # a curated/LLM id that fetches a different part number is worth a
+            # human look. Prefix-tolerant — LCSC decorates some MPNs (e.g.
+            # "0805W8F1003T5E (SMT...)").
             a, b = item.get("mpn", "").upper(), str(info.get("mpn") or "").upper()
             if a and b and not (a.startswith(b) or b.startswith(a)):
                 line["needs_review"] = True
                 notes.append(f"{line['designator']}: BOM mpn {item['mpn']} != "
                              f"LCSC {info['mpn']} for {line['lcsc']}")
+            # Back-fill mpn/manufacturer from LCSC so a C-number set by hand
+            # becomes a distributor-agnostic identity (Digikey/Mouser search
+            # by MPN). Only fills what's missing — never overwrites an
+            # existing value (the cross-check above already flagged conflicts).
+            for k in ("mpn", "manufacturer"):
+                if not item.get(k) and info.get(k):
+                    item[k] = info[k]
+                    if k == "mpn":
+                        enriched += 1
+        line["mpn"] = item.get("mpn")
+        if item.get("manufacturer"):
+            line["manufacturer"] = item["manufacturer"]
         if not (item.get("lcsc") or item.get("mpn")):
             unresolved.append(item.get("designator", "?"))
         parts.append(line)
+
+    # Persist the live-enriched MPNs so a subsequent export_outputs writes them
+    # into the BOM CSV's MPN column (mirrors set_part_number's write path).
+    if enriched:
+        bom_path.write_text(json.dumps(bom_data, indent=2))
+        notes.append(f"Filled MPN from LCSC for {enriched} line(s) — re-run "
+                     "export_outputs to refresh the BOM CSV (MPN column).")
 
     if live and not live_info and any(i.get("lcsc") for i in bom_data.get("bom", [])):
         notes.append("Live LCSC lookups unavailable (offline or rate-limited); "

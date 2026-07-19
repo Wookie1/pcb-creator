@@ -94,6 +94,31 @@ def test_quote_live_prices_and_mpn_cross_check(project, monkeypatch):
     assert any("mpn" in n.lower() or "!=" in n for n in r["notes"])
 
 
+def test_quote_backfills_mpn_from_lcsc_and_persists(project, monkeypatch):
+    # A C-number set by hand with no MPN — the Digikey/Mouser case.
+    quoting.set_part_number(project, "quoteme", "J1", lcsc="C2286")
+
+    def fake_info(lcsc_id):
+        if lcsc_id == "C2286":
+            return {"lcsc": lcsc_id, "mpn": "XKB-U262-GS", "manufacturer": "XKB",
+                    "stock": 800, "unit_price_usd": 0.10}
+        return {"lcsc": lcsc_id, "mpn": "0805W8F1002T5E", "manufacturer": "UNI",
+                "stock": 9, "unit_price_usd": 0.001}
+    monkeypatch.setattr("orchestrator.gather.easyeda_lookup.fetch_part_info",
+                        fake_info)
+
+    r = quote_project(project, "quoteme", qty=5, live=True)
+    j1 = {p["designator"]: p for p in r["parts"]}["J1"]
+    assert j1["mpn"] == "XKB-U262-GS" and j1["manufacturer"] == "XKB"
+    # Persisted to disk so a re-export picks it up.
+    on_disk = {i["designator"]: i for i in
+               json.loads((project / "quoteme_bom.json").read_text())["bom"]}
+    assert on_disk["J1"]["mpn"] == "XKB-U262-GS"
+    assert any("MPN from LCSC" in n for n in r["notes"])
+    # An existing MPN is never overwritten — R1 keeps its curated part number.
+    assert on_disk["R1"]["mpn"] == "0805W8F1002T5E"
+
+
 def test_quote_flags_out_of_stock(project, monkeypatch):
     monkeypatch.setattr(
         "orchestrator.gather.easyeda_lookup.fetch_part_info",
