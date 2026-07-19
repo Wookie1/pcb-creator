@@ -2760,6 +2760,15 @@ def get_fab_quote(project_name: str, quantity: int = 5,
             f"{len(result['unresolved'])} BOM line(s) have no part number — "
             "look each part up (LCSC/datasheet) and record it with "
             "set_part_number, then re-run get_fab_quote to verify stock/price.")
+    elif (pdir / "output" / f"{project_name}_bom.csv").exists():
+        # Part numbers are all resolved but a manufacturing package was already
+        # exported — its BOM CSV predates these ids and is now stale. Steer to a
+        # re-export so the file the user uploads carries the part numbers.
+        nxt = next_step(
+            "export_outputs", {"project_name": project_name},
+            "All BOM lines have part numbers. The exported BOM CSV predates "
+            "them — re-run export_outputs to refresh the manufacturing package "
+            "(CSV/ZIP) with the finalized part numbers before ordering.")
     return ok(result, nxt)
 
 

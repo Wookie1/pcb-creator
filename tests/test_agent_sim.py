@@ -577,6 +577,25 @@ def test_fab_quote_unresolved_chains_to_set_part_number(server, tmp_path):
     assert r["next_step"]["args"]["designator"] == "J1"
 
 
+def test_fab_quote_resolved_with_stale_export_steers_to_reexport(server, tmp_path):
+    """All parts resolved + an already-exported CSV → steer to re-export."""
+    pdir = tmp_path / "projects" / "quotedone"
+    pdir.mkdir(parents=True)
+    (pdir / "quotedone_bom.json").write_text(json.dumps({"bom": [
+        {"designator": "R1", "component_type": "resistor", "value": "10kohm",
+         "package": "0805", "quantity": 1, "lcsc": "C17414"}]}))
+    (pdir / "quotedone_placement.json").write_text(json.dumps(
+        {"board": {"width_mm": 40, "height_mm": 30, "layers": 2}}))
+    # No export yet → resolved, but no next_step (nothing stale to refresh).
+    r = call(server, "get_fab_quote", {"project_name": "quotedone", "live": False})
+    assert r["success"] is True and r["unresolved"] == [] and "next_step" not in r
+    # A prior export exists → its CSV is stale, so steer to export_outputs.
+    (pdir / "output").mkdir()
+    (pdir / "output" / "quotedone_bom.csv").write_text("Designator,LCSC Part #\n")
+    r = call(server, "get_fab_quote", {"project_name": "quotedone", "live": False})
+    assert r["next_step"]["tool"] == "export_outputs"
+
+
 def test_set_part_number_tool(server, tmp_path):
     """set_part_number writes the BOM line and chains back to the quote."""
     pdir = tmp_path / "projects" / "setpn"
