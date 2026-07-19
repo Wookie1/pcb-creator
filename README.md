@@ -255,4 +255,10 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for detailed documentation of the pipelin
 
 ## License
 
-MIT
+MIT (see [LICENSE](LICENSE)).
+
+## Acknowledgements
+
+PCB-Creator builds on Freerouting, KiCad and its footprint libraries,
+EasyEDA/LCSC data, and a number of open-source Python packages. See
+[NOTICE.md](NOTICE.md) for full third-party attributions and their licenses.
