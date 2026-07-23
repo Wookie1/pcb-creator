@@ -27,13 +27,13 @@ def test_boxes_overlap():
 
 # --- scene builder --------------------------------------------------------
 
-def _scene(comps, board=(60.0, 60.0)):
+def _scene(comps, board=(60.0, 60.0), ctype="resistor"):
     """comps: [(des, cx, cy, w, h, [(pin, px, py, pw, ph), ...]), ...]"""
     placements, elements, pad_map = [], [], {}
     for des, cx, cy, w, h, pads in comps:
         cid = f"c_{des}"
         placements.append({
-            "designator": des, "component_type": "resistor", "layer": "top",
+            "designator": des, "component_type": ctype, "layer": "top",
             "x_mm": cx, "y_mm": cy, "rotation_deg": 0,
             "footprint_width_mm": w, "footprint_height_mm": h,
         })
@@ -129,3 +129,53 @@ def test_boxed_in_designator_kept_best_effort():
     d = _designators(_generate_silkscreen(pl, nl, pm))
     assert len(d) == 1  # not dropped
     assert "_box" not in d[0]  # private key stripped
+
+
+# --- markers (pin-1 dot / anode "A") stay off copper ----------------------
+
+def test_anode_marker_clear_of_all_pads():
+    """A DO-41-class diode: 1.7mm pads. The old fixed 1.0mm-from-pad-CENTRE
+    offset put the "A" on the pad; it must now sit past the pad edge."""
+    placement, netlist, pad_map = _scene([
+        ("D1", 30, 30, 4.0, 2.0,
+         [(1, 26.0, 30.0, 1.7, 1.7), (2, 34.0, 30.0, 1.7, 1.7)]),
+    ], ctype="diode")
+    silk = _generate_silkscreen(placement, netlist, pad_map)
+    a = [s for s in silk if s.get("purpose") == "anode"]
+    assert len(a) == 1
+    for pad_box in _pad_boxes(pad_map):
+        assert not _boxes_overlap(_bb(a[0]), pad_box)
+    # Still meaningful: on the anode side (pin 1 at x=26 -> left of centre)
+    assert a[0]["x_mm"] < 26.0
+
+
+def test_pin1_dot_clear_of_all_pads():
+    placement, netlist, pad_map = _scene([
+        ("J1", 30, 30, 6.0, 6.0,
+         [(1, 27.5, 27.5, 2.0, 2.0), (2, 30.0, 27.5, 2.0, 2.0),
+          (3, 32.5, 27.5, 2.0, 2.0)]),
+    ], ctype="connector")
+    silk = _generate_silkscreen(placement, netlist, pad_map)
+    dots = [s for s in silk if s.get("purpose") == "pin1"]
+    assert len(dots) == 1
+    r = dots[0]["diameter_mm"] / 2
+    dot_bb = (dots[0]["x_mm"] - r, dots[0]["y_mm"] - r,
+              dots[0]["x_mm"] + r, dots[0]["y_mm"] + r)
+    for pad_box in _pad_boxes(pad_map):
+        assert not _boxes_overlap(dot_bb, pad_box)
+
+
+# --- designators avoid neighbouring component bodies ----------------------
+
+def test_designator_avoids_neighbor_body():
+    """R1's default label spot (above) is under U9's housing — the label must
+    relocate so it stays visible after assembly."""
+    neighbor_body = (25.0, 31.5, 35.0, 37.5)  # U9: 10x6 body centred (30, 34.5)
+    placement, netlist, pad_map = _scene([
+        ("R1", 30, 30, 2.0, 1.0,
+         [(1, 29.2, 30.0, 0.9, 0.9), (2, 30.8, 30.0, 0.9, 0.9)]),
+        ("U9", 30, 34.5, 10.0, 6.0, [(1, 26.0, 32.5, 0.5, 0.5)]),
+    ])
+    silk = _generate_silkscreen(placement, netlist, pad_map)
+    r1 = [d for d in _designators(silk) if d["text"] == "R1"][0]
+    assert not _boxes_overlap(_bb(r1), neighbor_body)

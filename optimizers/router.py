@@ -4870,20 +4870,20 @@ def _generate_silkscreen(
             pin1_port = next((p for p in ports if p.get("pin_number") == 1), None)
             if pin1_port and pin1_port["port_id"] in pad_map:
                 pad = pad_map[pin1_port["port_id"]]
-                # Place dot slightly outside the component body, toward pin 1
+                # Outward direction (centre -> pin-1 pad); the marker pass
+                # below slides the dot along it until clear of copper/bodies.
                 dx = pad.x_mm - cx
                 dy = pad.y_mm - cy
-                # Normalize and push 0.5mm outside the component
                 dist = max(0.1, math.hypot(dx, dy))
-                dot_x = pad.x_mm + dx / dist * 0.5
-                dot_y = pad.y_mm + dy / dist * 0.5
                 silk.append({
                     "type": "dot",
-                    "x_mm": round(dot_x, 3),
-                    "y_mm": round(dot_y, 3),
+                    "x_mm": round(pad.x_mm, 3),
+                    "y_mm": round(pad.y_mm, 3),
                     "diameter_mm": 0.5,
                     "layer": silk_layer,
                     "purpose": "pin1",
+                    "_marker": (pad.x_mm, pad.y_mm, pad.pad_width_mm / 2,
+                                pad.pad_height_mm / 2, dx / dist, dy / dist),
                 })
 
         # 3. Anode "A" marker — for LEDs and diodes
@@ -4901,21 +4901,22 @@ def _generate_silkscreen(
 
             if anode_port and anode_port["port_id"] in pad_map:
                 pad = pad_map[anode_port["port_id"]]
-                # Place "A" label 0.8mm outside the anode pad
+                # Outward direction (centre -> anode pad); the marker pass
+                # below places the "A" just past the pad edge, clear of copper.
                 dx = pad.x_mm - cx
                 dy = pad.y_mm - cy
                 dist = max(0.1, math.hypot(dx, dy))
-                a_x = pad.x_mm + dx / dist * 1.0
-                a_y = pad.y_mm + dy / dist * 1.0
                 silk.append({
                     "type": "text",
                     "text": "A",
-                    "x_mm": round(a_x, 3),
-                    "y_mm": round(a_y, 3),
+                    "x_mm": round(pad.x_mm, 3),
+                    "y_mm": round(pad.y_mm, 3),
                     "font_height_mm": 1.0,
                     "layer": silk_layer,
                     "anchor": "center",
                     "purpose": "anode",
+                    "_marker": (pad.x_mm, pad.y_mm, pad.pad_width_mm / 2,
+                                pad.pad_height_mm / 2, dx / dist, dy / dist),
                 })
 
     # Build exclusion zones from component pads, fiducials, and vias
@@ -4944,13 +4945,80 @@ def _generate_silkscreen(
                 plc["y_mm"] + r + pad_margin,
             ))
 
+    # Component-body exclusion zones: silk under a part's housing is invisible
+    # after assembly (a designator "relocated clear of pads" could still end up
+    # beneath a neighbouring connector or IC body).
+    # ponytail: layer-blind like the pad zones above — a top label also avoids
+    # bottom-side bodies; conservative but simple. Split per-layer if two-sided
+    # boards get crowded.
+    for plc in placement.get("placements", []):
+        if plc.get("component_type") == "fiducial":
+            continue
+        bw = plc.get("footprint_width_mm", 0) or 0
+        bh = plc.get("footprint_height_mm", 0) or 0
+        if plc.get("rotation_deg", 0) in (90, 270):
+            bw, bh = bh, bw
+        exclusion_zones.append((
+            plc["x_mm"] - bw / 2 - pad_margin,
+            plc["y_mm"] - bh / 2 - pad_margin,
+            plc["x_mm"] + bw / 2 + pad_margin,
+            plc["y_mm"] + bh / 2 + pad_margin,
+        ))
+
+    # --- Marker cleanup: slide pin-1 dots / anode "A"s off copper -----------
+    # A marker is meaningful only next to its pad, so it keeps its direction
+    # (component centre -> pad) and slides outward, starting just past the pad
+    # edge, until clear of pads/fiducials/bodies. Best effort: if nothing
+    # within ~2.5mm is clear it stays at the pad-edge spot (never on the pad
+    # itself — the old code offset from the pad CENTRE, which put "A" markers
+    # on any pad longer than the offset).
+    marker_margin = 0.15
+    for item in silk:
+        info = item.pop("_marker", None)
+        if info is None:
+            continue
+        px, py, phw, phh, ux, uy = info
+        if item["type"] == "dot":
+            mhalf = item.get("diameter_mm", 0.5) / 2
+        else:
+            bb0 = _silk_text_bbox(0.0, 0.0, item["text"],
+                                  item.get("font_height_mm", 1.0), "center")
+            mhalf = (abs(ux) * (bb0[2] - bb0[0]) + abs(uy) * (bb0[3] - bb0[1])) / 2
+        mx = my = None
+        # Primary direction first; if everything within the walk cap is blocked
+        # (dense board — e.g. the outward path runs into a neighbour's pad
+        # field), try the two perpendicular directions, still hugging the pad.
+        for vx, vy in ((ux, uy), (-uy, ux), (uy, -ux)):
+            pad_ext = abs(vx) * phw + abs(vy) * phh  # pad half-extent along push
+            base = pad_ext + marker_margin + mhalf
+            if mx is None:                            # pad-edge fallback (primary dir)
+                mx, my = px + vx * base, py + vy * base
+            found = False
+            for step in range(11):
+                tx, ty = px + vx * (base + 0.25 * step), py + vy * (base + 0.25 * step)
+                if item["type"] == "dot":
+                    r = item.get("diameter_mm", 0.5) / 2
+                    bb = (tx - r, ty - r, tx + r, ty + r)
+                else:
+                    bb = _silk_text_bbox(tx, ty, item["text"],
+                                         item.get("font_height_mm", 1.0), "center")
+                if not any(_boxes_overlap(bb, z) for z in exclusion_zones):
+                    mx, my = tx, ty
+                    found = True
+                    break
+            if found:
+                break
+        item["x_mm"] = round(mx, 3)
+        item["y_mm"] = round(my, 3)
+
     # --- Silkscreen cleanup: relocate designators ---------------------------
-    # Each designator moves to the first position clear of pads/fiducials
-    # (exclusion_zones) AND of any already-placed silk, trying upright (0°) spots
-    # all around the part first, then rotated 90°. Copper traces are NOT avoided
-    # (silk over copper is allowed). Pin-1 dots and anode "A" marks keep their
-    # meaningful positions and only act as obstacles. If nothing is clear the
-    # designator stays at its default spot (best effort) rather than vanishing.
+    # Each designator moves to the first position clear of pads/fiducials/
+    # component bodies (exclusion_zones) AND of any already-placed silk, trying
+    # upright (0°) spots all around the part first, then rotated 90°. Copper
+    # traces are NOT avoided (silk over copper is allowed). Pin-1 dots and
+    # anode "A" marks were finalized above and only act as obstacles here. If
+    # nothing is clear the designator stays at its default spot (best effort)
+    # rather than vanishing.
     out_silk: list[dict] = []
 
     # Non-designator items: keep, and register each as an obstacle.
