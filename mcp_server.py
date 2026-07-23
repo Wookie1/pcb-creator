@@ -2581,8 +2581,20 @@ def export_outputs(project_name: str) -> dict:
     there is no override, because manufacturing files are only ever wanted for a
     board that can actually be built:
       - open/disconnected nets       -> finish with route_board(keep_existing=True)
-      - geometry DRC errors          -> route_board auto-cleans clearance/short/
-                                        thermal; re-route, then export
+      - geometry DRC errors          -> a failed DRC returns the offending
+                                        violations (top_violations: rule /
+                                        message / location) and a
+                                        reroute_cleanable flag. When True, EVERY
+                                        error is clearance/short/mask geometry
+                                        that route_board(keep_existing=True)
+                                        rips up and re-routes clear on its own
+                                        (it runs the same kicad-cli DRC) — do
+                                        not hand-edit or re-pour, just re-route
+                                        and export. When False, some errors are
+                                        structural (annular ring, hole spacing,
+                                        edge clearance, trace width) and must be
+                                        fixed at the source (placement / via /
+                                        board rules) first.
       - DRC can't be certified       -> install/locate kicad-cli (PCB_KICAD_CLI)
     To inspect an imperfect board instead of manufacturing it, use export_kicad
     (writes the .kicad_pcb) or get_board_image.
@@ -2673,18 +2685,53 @@ def export_outputs(project_name: str) -> dict:
 
     if not drc.get("passed", True):
         n = drc.get("statistics", {}).get("errors", 0)
-        failing = sorted({c["rule"] for c in drc.get("checks", [])
-                          if not c.get("passed")})
+        failing_checks = [c for c in drc.get("checks", []) if not c.get("passed")]
+        failing = sorted({c["rule"] for c in failing_checks})
+        # Surface the actual violations (rule / message / location) in the
+        # refusal so the agent can act without a get_drc_report round-trip — and
+        # so it stops improvising manual re-pours to see what/where.
+        top_violations = [
+            {"rule": v.get("rule"), "message": v.get("message"),
+             "location": v.get("location")}
+            for c in failing_checks for v in c.get("violations", [])
+            if v.get("severity") == "error"
+        ][:6]
+        # If EVERY failing rule is one that rip-up+re-route fixes on its own,
+        # steer straight to the built-in auto-clean instead of leaving the agent
+        # to invent a fix (the "re-pour cleaned the clearance" improvisation).
+        from validators.kicad_drc import reroute_cleanable_rules
+        auto = bool(failing) and set(failing) <= reroute_cleanable_rules()
+        data = {"drc_errors": n, "failing_rules": failing,
+                "top_violations": top_violations,
+                "reroute_cleanable": auto}
+        if auto:
+            return fail(
+                f"Refusing to export: {n} DRC error(s) ({', '.join(failing)}) — "
+                "but all are clearance/short/mask geometry that "
+                "route_board(keep_existing=True) rips up and re-routes clear "
+                "automatically (it runs the same kicad-cli DRC internally). Do "
+                "NOT hand-edit or re-pour — just re-route, then export.",
+                data=data,
+                remediation=[
+                    option("Auto-clean the geometry (protects all good wiring), "
+                           "then export", "route_board",
+                           {"project_name": project_name, "keep_existing": True}),
+                    option("Review the full DRC report", "get_drc_report",
+                           {"project_name": project_name, "verbose": True}),
+                ])
         return fail(
             f"Refusing to export: the board has {n} DRC error(s) "
             f"({', '.join(failing)}). Manufacturing files from a board with "
             "shorts, disconnected nets, or plane-clearance errors are not "
-            "fabricable — do not ship or commit them. Fix the errors first, then "
-            "export (route_board auto-cleans clearance/short/thermal geometry).",
-            data={"drc_errors": n, "failing_rules": failing},
+            "fabricable — do not ship or commit them. Some failing rules are "
+            "structural (annular ring, hole spacing, edge clearance, trace "
+            "width) and are NOT fixed by re-routing — see top_violations for "
+            "each rule/location and fix at the source (placement, via/board "
+            "rules) before exporting.",
+            data=data,
             remediation=[
-                option("Finish residual connectivity (geometry auto-cleans)",
-                       "route_board",
+                option("Finish residual connectivity / auto-clean the "
+                       "reroute-fixable ones", "route_board",
                        {"project_name": project_name, "keep_existing": True}),
                 option("Review the full DRC report", "get_drc_report",
                        {"project_name": project_name, "verbose": True}),

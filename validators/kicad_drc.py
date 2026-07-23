@@ -45,6 +45,28 @@ _TYPE_TO_RULE: dict[str, tuple[str, str]] = {
 _UNKNOWN_RULE = ("other", "dfm")
 
 
+def reroute_cleanable_rules() -> set[str]:
+    """drc_report rule names that rip-up + re-route can fix on its own.
+
+    route_cleanup._FIXABLE_BY_REROUTE lists the raw kicad-cli violation *types*
+    that `route_board(keep_existing=True)` rips and re-routes away (shorts +
+    clearance + mask bridge). This maps them through _TYPE_TO_RULE into the
+    report-*rule* namespace the DRC gate sees, keeping only rules to which NO
+    non-fixable type also maps. So an ambiguous rule like `hole_to_hole` — the
+    fixable `hole_clearance` collapses onto the same rule as non-fixable drill
+    spacing — is deliberately EXCLUDED: the gate must never promise an
+    auto-clean it can't deliver. Derived (not hardcoded) so it tracks both
+    source sets. Currently {no_shorts, clearance_min, solder_mask_bridge}.
+    """
+    from collections import defaultdict
+    from optimizers.route_cleanup import _FIXABLE_BY_REROUTE
+    rule_types: dict[str, set[str]] = defaultdict(set)
+    for raw_type, (rule, _cat) in _TYPE_TO_RULE.items():
+        rule_types[rule].add(raw_type)
+    return {rule for rule, types in rule_types.items()
+            if types <= _FIXABLE_BY_REROUTE}
+
+
 def _first_pos(items: list[dict]) -> dict | None:
     for it in items:
         if it.get("pos"):

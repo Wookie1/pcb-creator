@@ -107,3 +107,65 @@ def test_export_blocked_when_drc_raises(tmp_path, monkeypatch):
     assert r["success"] is False
     assert exported["v"] is False
     assert "could not be verified" in r["error"]
+
+
+# --- refusal detail: violations surfaced + reroute-cleanable steering --------
+
+_CLEANABLE_DRC = {
+    "passed": False, "authoritative": True, "drc_engine": "kicad-cli",
+    "statistics": {"errors": 2},
+    "checks": [
+        {"rule": "clearance_min", "passed": False, "violations": [
+            {"rule": "clearance_min", "severity": "error",
+             "message": "Clearance 0.10 < 0.20mm", "location": {"x_mm": 5.0, "y_mm": 6.0}}]},
+        {"rule": "no_shorts", "passed": False, "violations": [
+            {"rule": "no_shorts", "severity": "error",
+             "message": "Net A shorts Net B", "location": {"x_mm": 1.0, "y_mm": 2.0}}]},
+    ]}
+
+_STRUCTURAL_DRC = {
+    "passed": False, "authoritative": True, "drc_engine": "kicad-cli",
+    "statistics": {"errors": 2},
+    "checks": [
+        {"rule": "annular_ring", "passed": False, "violations": [
+            {"rule": "annular_ring", "severity": "error",
+             "message": "Annular 0.10 < 0.13mm", "location": {"x_mm": 3.0, "y_mm": 4.0}}]},
+        {"rule": "clearance_min", "passed": False, "violations": [
+            {"rule": "clearance_min", "severity": "error",
+             "message": "Clearance 0.10 < 0.20mm", "location": None}]},
+    ]}
+
+
+def test_reroute_cleanable_rules_are_derived():
+    from validators.kicad_drc import reroute_cleanable_rules
+    # Derived from route_cleanup._FIXABLE_BY_REROUTE ∩ unambiguous report rules.
+    assert reroute_cleanable_rules() == {"no_shorts", "clearance_min",
+                                         "solder_mask_bridge"}
+
+
+def test_all_cleanable_steers_to_route_board(tmp_path, monkeypatch):
+    proj = _project(tmp_path, monkeypatch)
+    monkeypatch.setattr(stages, "run_drc", lambda *a, **k: _CLEANABLE_DRC)
+    monkeypatch.setattr(stages, "run_export", lambda *a, **k: {"success": True})
+    r = mcp_server.export_outputs(proj)
+    assert r["success"] is False
+    assert r["reroute_cleanable"] is True
+    assert "route_board" in r["error"]
+    # Top violations surfaced with rule/message/location — no round-trip needed.
+    rules = {v["rule"] for v in r["top_violations"]}
+    assert rules == {"clearance_min", "no_shorts"}
+    assert any(v["location"] == {"x_mm": 5.0, "y_mm": 6.0} for v in r["top_violations"])
+    # First remediation is the auto-clean re-route.
+    assert r["remediation"][0]["tool"] == "route_board"
+    assert r["remediation"][0]["args"].get("keep_existing") is True
+
+
+def test_structural_errors_not_marked_cleanable(tmp_path, monkeypatch):
+    proj = _project(tmp_path, monkeypatch)
+    monkeypatch.setattr(stages, "run_drc", lambda *a, **k: _STRUCTURAL_DRC)
+    monkeypatch.setattr(stages, "run_export", lambda *a, **k: {"success": True})
+    r = mcp_server.export_outputs(proj)
+    assert r["success"] is False
+    assert r["reroute_cleanable"] is False           # annular_ring is structural
+    assert "structural" in r["error"].lower()
+    assert {v["rule"] for v in r["top_violations"]} == {"annular_ring", "clearance_min"}
