@@ -116,6 +116,44 @@ def test_build_circuit_reports_each_failure_and_keeps_what_worked(server):
     assert {c["designator"] for c in listed["components"]} == {"R1", "D1", "J1"}
 
 
+def test_build_circuit_marks_no_connect_pins_so_finalize_passes(server):
+    """A spare pin blocks finalize_circuit — no_connect is how a one-call build
+    gets past it without a second round trip."""
+    spare = {"designator": "J2", "component_type": "connector",
+             "value": "3pin", "package": "PinHeader_1x3"}
+    r = _build_led(
+        server, "ux_nc",
+        components=LED_COMPONENTS + [spare],
+        nets=LED_NETS + [{"net_name": "VCC", "pins": ["J2.1"]},
+                         {"net_name": "GND", "pins": ["J2.2"]}],
+        no_connect=["J2.3"],
+    )
+    assert r["success"], r.get("error")
+    assert r["next_step"]["tool"] == "optimize_placement"
+
+    listed = call(server, "list_circuit", {"project_name": "ux_nc"})
+    assert listed["no_connect"] == ["J2.3"]
+    assert not listed["unconnected_pins"]
+
+
+def test_build_circuit_rejects_malformed_items_without_crashing(server):
+    """Bad arg SHAPES (not bad values) must come back as per-item errors — a
+    TypeError escaping the loop would lose every other item's result."""
+    r = _build_led(
+        server, "ux_shapes",
+        components=[{"designator": "R1", "component_type": "resistor",
+                     "value": "1k"}],                       # no package
+        nets=[{"net_name": "VCC"},                          # no pins
+              {"net_name": "GND", "pins": ["R1.1"], "klass": "ground"}],
+    )
+    assert r["success"] is False
+    assert r["added"] == 0 and r["connected"] == 0
+    assert len(r["failed"]) == 3
+    assert any("package" in f["error"] for f in r["failed"])
+    assert any("pins" in f["error"] for f in r["failed"])
+    assert any("klass" in f["error"] for f in r["failed"])
+
+
 def test_build_circuit_refuses_to_clobber_an_existing_project(server):
     assert _build_led(server, "ux_exists")["success"]
     again = _build_led(server, "ux_exists")
@@ -146,6 +184,26 @@ def test_board_image_renders_the_placement_before_any_routing(server):
     assert meta["next_step"]["tool"] == "route_board"
 
 
+def test_board_image_placement_and_routed_renders_differ(server, tmp_path):
+    """The stage label is not enough: assert the PIXELS differ too.
+
+    An image that reports stage='placement' while rendering the routed board
+    (or vice versa) is exactly the failure this tool exists to prevent, and it
+    is invisible to a test that only checks the envelope.
+    """
+    name = "ux_img_stages"
+    _build_led(server, name)
+    _place(server, name)
+    before, meta_before = _image_blocks(server, name, width=512)
+
+    _write_routed(tmp_path, name, 100.0)
+    after, meta_after = _image_blocks(server, name, width=512)
+
+    assert meta_before["stage"] == "placement"
+    assert meta_after["stage"] == "routed"
+    assert before[0].data != after[0].data
+
+
 def test_board_image_width_is_capped(server):
     _build_led(server, "ux_img_cap")
     _place(server, "ux_img_cap")
@@ -165,14 +223,24 @@ def test_board_image_without_placement_points_at_placement(server, tmp_path):
 # ---------------------------------------------------------------------------
 
 def _write_routed(tmp_path, name, completion):
+    """Synthesize a routed board over the real placement (no Java needed). It
+    carries an actual trace segment so a routed render is visibly different
+    from a placement render."""
     pdir = _projects_dir(tmp_path) / name
     placement = json.loads((pdir / f"{name}_placement.json").read_text())
+    board = placement["board"]
     (pdir / f"{name}_routed.json").write_text(json.dumps({
-        "board": placement["board"],
+        "board": board,
         "placements": placement["placements"],
-        "routing": {"traces": [], "vias": [], "copper_fills": [],
-                    "statistics": {"completion_pct": completion},
-                    "unrouted_nets": []},
+        "routing": {
+            "traces": [{"layer": "top", "net_id": "net_vcc", "width_mm": 0.25,
+                        "start_x_mm": 2.0, "start_y_mm": 2.0,
+                        "end_x_mm": board["width_mm"] - 2.0,
+                        "end_y_mm": board["height_mm"] - 2.0}],
+            "vias": [], "copper_fills": [],
+            "statistics": {"completion_pct": completion},
+            "unrouted_nets": [],
+        },
     }))
 
 
@@ -214,6 +282,30 @@ def test_revert_board_does_not_resurrect_a_route_the_snapshot_never_had(
     assert r["completion_pct"] is None
     assert r["next_step"]["tool"] == "route_board"
     assert not (_projects_dir(tmp_path) / name / f"{name}_routed.json").exists()
+
+
+def test_snapshot_slot_never_claims_a_file_that_is_no_longer_there(tmp_path,
+                                                                   monkeypatch):
+    """Unit-level, because the tool surface cannot currently reach this state.
+
+    The slot must mirror what exists NOW: if a routed board is gone at snapshot
+    time, the stale .prev must go with it, or the next revert restores a board
+    from two runs ago on top of a placement it does not match.
+    """
+    monkeypatch.setenv("PCB_PROJECTS_DIR", str(tmp_path / "projects"))
+    import mcp_server
+
+    pdir = tmp_path / "projects" / "snap"
+    pdir.mkdir(parents=True)
+    (pdir / "snap_placement.json").write_text('{"board": {"width_mm": 30}}')
+    (pdir / "snap_routed.json").write_text('{"routing": {}}')
+    mcp_server._snapshot_board("snap")
+    assert (pdir / "snap_routed.json.prev").exists()
+
+    (pdir / "snap_routed.json").unlink()
+    mcp_server._snapshot_board("snap")
+    assert not (pdir / "snap_routed.json.prev").exists()
+    assert (pdir / "snap_placement.json.prev").exists()
 
 
 def test_revert_board_with_nothing_to_revert(server):

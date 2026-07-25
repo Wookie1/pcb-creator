@@ -1531,8 +1531,7 @@ def get_board_image(project_name: str, width: int = 1024):
     from fastmcp.utilities.types import Image
 
     try:
-        png_bytes = render_board_png(board, netlist, bom, width=width,
-                                     placement_only=stage == "placement")
+        png_bytes = render_board_png(board, netlist, bom, width=width)
     except Exception as e:
         return fail(f"Failed to render board image: {e}")
 
