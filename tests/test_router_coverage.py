@@ -358,6 +358,20 @@ def test_add_stitching_vias_bridges_seeded_top_to_unseeded_bottom():
     assert all(v.from_layer == "top" and v.to_layer == "bottom" for v in vias)
 
 
+def test_add_stitching_vias_bridges_seeded_bottom_to_unseeded_top():
+    """Mirror of the case above: seeding only the BOTTOM fill must still drop a
+    via (extending connectivity upward). Covered explicitly so the branch does
+    not depend on incidental fill geometry in another test."""
+    g = RoutingGrid(20.0, 20.0, 0.5)
+    n = g.cols * g.rows
+    top = [True] * n
+    bot = [True] * n
+    g.set(20, 20, "bottom", 1)          # bottom seeded, top not
+    vias = _add_stitching_vias(top, bot, g, fill_net_int=1, config=RouterConfig())
+    assert len(vias) > 0
+    assert all(v.from_layer == "top" and v.to_layer == "bottom" for v in vias)
+
+
 # ===========================================================================
 # create_copper_fill (direct)
 # ===========================================================================
@@ -956,3 +970,139 @@ def test_apply_copper_fills_reverts_dangling_removal_on_regression():
 if __name__ == "__main__":
     import sys
     sys.exit(pytest.main([__file__, "-q"]))
+
+
+# --- gaps left when the built-in A* router was deleted --------------------
+
+def test_setup_grid_marks_fiducials_as_obstacle_and_no_via():
+    """A fiducial's mask opening must block both traces and vias — copper or a
+    via inside it ruins the pick-and-place camera target."""
+    placement = {
+        "board": {"width_mm": 20.0, "height_mm": 20.0, "layers": 2,
+                  "outline_type": "rectangle", "origin": [0, 0]},
+        "placements": [{
+            "designator": "FID1", "component_type": "fiducial",
+            "package": "Fiducial_1mm_Mask3mm", "footprint_width_mm": 3.0,
+            "footprint_height_mm": 3.0, "x_mm": 10.0, "y_mm": 10.0,
+            "rotation_deg": 0, "layer": "top"}],
+    }
+    pad_map = build_pad_map(placement, {"elements": []})
+    grid = RoutingGrid(20.0, 20.0, 0.5)
+    _setup_grid(grid, placement, pad_map, 0.2, {})
+    c, r = grid.mm_to_grid(10.0, 10.0)
+    assert grid.get(c, r, "top") == OBSTACLE
+    assert not grid.can_place_via(c, r)
+    # Outside the 3mm opening the board is still routable.
+    c2, r2 = grid.mm_to_grid(15.0, 15.0)
+    assert grid.get(c2, r2, "top") != OBSTACLE
+
+
+def test_remove_dangling_traces_zero_length_support_segment():
+    """A zero-length trace (both ends identical) is a degenerate segment: the
+    point-on-segment test must not divide by zero, and it still supports a
+    same-net endpoint sitting on it."""
+    routing = {"traces": [
+        # Ordered so the FAR degenerate segment is tested first (it must be
+        # skipped, not treated as support), then the coincident one.
+        _trace("net_0", "N0", 2.0, 2.0, 2.0, 2.0),      # zero-length, far away
+        _trace("net_0", "N0", 5.0, 5.0, 8.0, 5.0),      # real trace
+        _trace("net_0", "N0", 8.0, 5.0, 8.0, 5.0),      # zero-length, coincident
+    ]}
+    pad = PadInfo(port_id="P1", designator="R1", pin_number=1, net_id="net_0",
+                  x_mm=5.0, y_mm=5.0, pad_width_mm=1.0, pad_height_mm=1.0,
+                  layer="top")
+    removed = _remove_dangling_traces(routing, {"P1": pad})
+    # No ZeroDivisionError. The far degenerate segment supports nothing and is
+    # dropped; the coincident one counts as support for the real trace's free
+    # end, so that pair holds each other up (the pad anchors the other end).
+    assert removed == 1
+    remaining = {(t["start_x_mm"], t["end_x_mm"]) for t in routing["traces"]}
+    assert (2.0, 2.0) not in remaining
+    assert (5.0, 8.0) in remaining and (8.0, 8.0) in remaining
+
+
+def test_apply_copper_fills_skips_when_fill_net_absent():
+    """No GND net on the board → nothing to pour, returned unchanged."""
+    placement, netlist = _two_pad_board()          # only a signal net
+    routed = _as_routed(placement)
+    out = apply_copper_fills(routed, netlist, RouterConfig())
+    assert out["routing"].get("copper_fills", []) == []
+
+
+def test_power_plane_via_avoids_foreign_traces():
+    """A power-plane stitch via must not be dropped onto a foreign net's trace
+    (a through-via crosses every layer, so it would short it). Same-net power
+    traces are not obstacles."""
+    routed, netlist = _routed_4layer_gnd_and_power()
+    # Wall the VCC pad in: a dense fan of foreign SIG traces across every
+    # candidate ring position around R2 pin 1 (the VCC SMD pad at ~18,10).
+    # Each span is anchored by a via at both ends — otherwise
+    # _remove_dangling_traces strips them before the stitching pass and there
+    # are no trace obstacles left to test against.
+    px, py = 18.0, 10.0
+    x0, x1 = 13.0, 23.0
+    ys = (-2.4, -1.8, -1.2, -0.6, 0.0, 0.6, 1.2, 1.8, 2.4)
+    fan = [_trace("net_s", "SIG", x0, py + d, x1, py + d, width=1.0) for d in ys]
+    anchors = [{"x_mm": x, "y_mm": py + d, "drill_mm": 0.3, "diameter_mm": 0.6,
+                "net_id": "net_s", "net_name": "SIG",
+                "from_layer": "top", "to_layer": "bottom"}
+               for d in ys for x in (x0, x1)]
+    # A same-net (VCC) trace must be IGNORED as an obstacle (covers the skip).
+    vcc_span = _trace("net_v", "VCC", px - 1.0, py, px + 1.0, py)
+    anchors += [{"x_mm": px + s, "y_mm": py, "drill_mm": 0.3, "diameter_mm": 0.6,
+                 "net_id": "net_v", "net_name": "VCC",
+                 "from_layer": "top", "to_layer": "bottom"} for s in (-1.0, 1.0)]
+    routed["routing"]["traces"].extend(fan + [vcc_span])
+    routed["routing"]["vias"].extend(anchors)
+    before = {(v["x_mm"], v["y_mm"]) for v in routed["routing"]["vias"]}
+    out = apply_copper_fills(routed, netlist, RouterConfig())
+    cfg = RouterConfig()
+    # Every candidate site around the pad is now within via_r + trace_half +
+    # clearance of a foreign SIG trace, so the pass must place NO new power via
+    # there — and say so (B3) rather than dropping one that shorts.
+    new_pwr = [v for v in out["routing"]["vias"]
+               if v.get("net_id") == "net_v"
+               and (v["x_mm"], v["y_mm"]) not in before]
+    for v in new_pwr:
+        for t in fan:
+            if t["start_x_mm"] <= v["x_mm"] <= t["end_x_mm"]:
+                assert abs(v["y_mm"] - t["start_y_mm"]) >= \
+                    cfg.via_diameter_mm / 2 + 0.5 + cfg.clearance_mm - 1e-6, \
+                    f"power via {v['x_mm']},{v['y_mm']} shorts a foreign trace"
+    open_pads = {p["designator"] for p in
+                 out["routing"].get("unstitched_plane_pads", [])}
+    assert "R2" in open_pads, "a walled-in power pad must be surfaced, not faked"
+    assert "net_v" in out["routing"].get("unrouted_nets", [])
+
+
+def test_add_stitching_vias_rejects_site_touching_a_foreign_net():
+    """A stitching via must not be dropped where a neighbouring cell carries a
+    FOREIGN net — the through-via would pierce it. Pinned explicitly: this
+    branch was otherwise only reached via a live-Freerouting test."""
+    g = RoutingGrid(10.0, 10.0, 0.5)
+    n = g.cols * g.rows
+    top = [True] * n
+    bot = [True] * n
+    foreign = 7
+    # Blanket the top layer with a foreign net, leaving one fill-net seed.
+    for r in range(g.rows):
+        for c in range(g.cols):
+            g.set(c, r, "top", foreign)
+    g.set(5, 5, "top", 1)
+    vias = _add_stitching_vias(top, bot, g, fill_net_int=1, config=RouterConfig())
+    assert vias == [], "every candidate site abuts foreign copper -> no via"
+
+
+def test_silkscreen_board_label_truncates_long_project_name():
+    """Long project names are truncated to fit the silkscreen."""
+    placement = {
+        "board": {"width_mm": 40.0, "height_mm": 30.0, "layers": 2,
+                  "outline_type": "rectangle", "origin": [0, 0]},
+        "project_name": "a_very_long_project_name_that_will_not_fit",
+        "placements": [],
+    }
+    silk = _generate_silkscreen(placement, {"elements": []}, {})
+    label = [s for s in silk if s.get("purpose") == "board_name"]
+    assert label, "board name label must be emitted"
+    assert label[0]["text"].endswith("…")
+    assert len(label[0]["text"]) <= 15

@@ -59,3 +59,20 @@ def test_rescue_via_never_lands_on_foreign_bottom_trace():
                             inner_gnd_plane=True)
     assert len(vias) == 1
     assert grid.grid_to_mm(4, 4) == (vias[0].x_mm, vias[0].y_mm)
+
+
+def test_tiny_island_sliver_is_not_rescued():
+    """Islands below the 4-cell minimum are slivers — not worth a via (and a
+    via barely fits). Pinned explicitly: this branch was otherwise covered only
+    incidentally by a live-Freerouting integration test, so it dropped out of
+    coverage whenever that test's routing varied."""
+    grid = RoutingGrid(10.0, 10.0, 1.0)
+    n = grid.cols * grid.rows
+    filled_top = [False] * n
+    filled_bottom = [True] * n           # bottom fill available underneath
+    # A 3-cell island: one below the min_island_cells=4 threshold.
+    for c in (3, 4, 5):
+        filled_top[4 * grid.cols + c] = True
+    vias = _add_rescue_vias(filled_top, filled_bottom, grid, FILL_NET,
+                            RouterConfig(), inner_gnd_plane=True)
+    assert vias == [], "a 3-cell sliver must be skipped, not stitched"

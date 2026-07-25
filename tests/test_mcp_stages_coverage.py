@@ -1668,6 +1668,43 @@ def test_run_routing_missing_netlist(tmp_path):
     assert r["success"] is False and "netlist" in r["error"].lower()
 
 
+def test_run_routing_surfaces_freerouting_failure(tmp_path, monkeypatch):
+    """Freerouting is the only engine, so a crash must surface as a failure of
+    THIS run — not as a layer-count limit (agents abandon good 4-layer boards
+    when told 'routing failed' without that framing)."""
+    from orchestrator import stages
+    from optimizers import freerouter
+    pdir, name = _placed_project(tmp_path, "frfail")
+
+    def boom(*a, **k):
+        raise RuntimeError("JVM died")
+
+    monkeypatch.setattr(freerouter, "route_with_freerouting", boom)
+    r = stages.run_routing(pdir, name, _cfg())
+    assert r["success"] is False and r["engine"] == "freerouting"
+    assert "JVM died" in r["error"]
+    # Framing guard: names this run, and explicitly not a layer limit.
+    assert "THIS run" in r["error"] and "NOT a layer-count limit" in r["error"]
+
+
+def test_run_routing_freerouting_timeout_retries_once(tmp_path, monkeypatch):
+    """A timeout retries once at double the budget; a second timeout fails.
+    Only effort='best' retries (fast/normal do not)."""
+    from orchestrator import stages
+    from optimizers import freerouter
+    pdir, name = _placed_project(tmp_path, "frto")
+    budgets = []
+
+    def timeout(*a, **k):
+        budgets.append(k.get("timeout_s"))
+        raise RuntimeError("Freerouting timed out")
+
+    monkeypatch.setattr(freerouter, "route_with_freerouting", timeout)
+    r = stages.run_routing(pdir, name, _cfg(), effort="best")
+    assert r["success"] is False
+    assert len(budgets) == 2 and budgets[1] == budgets[0] * 2
+
+
 # --- build_incremental_fixed_routing / _components_for_unrouted -----------
 
 def test_build_incremental_fixed_routing_none_when_empty():
