@@ -89,7 +89,6 @@ class OrchestratorConfig:
     vision_max_review_attempts: int = 3
 
     # Router settings
-    router_engine: str = "freerouting"  # "freerouting" or "builtin"
     freerouting_jar_path: Path | None = None
     freerouting_timeout_s: int = 300
     # Pre-generate dog-bone escape fanout for single-row fine-pitch parts and
@@ -161,9 +160,6 @@ class OrchestratorConfig:
         config.optimizer_iterations = int(iter_env) if iter_env else None
         seed_env = os.environ.get("PCB_OPTIMIZER_SEED")
         config.optimizer_seed = int(seed_env) if seed_env else None
-        config.router_engine = os.environ.get(
-            "PCB_ROUTER_ENGINE", config.router_engine
-        )
         # Tri-state: unset → None (auto-enable on fine-pitch boards);
         # explicit true/false forces the behaviour.
         ef_env = os.environ.get("PCB_ESCAPE_FANOUT")

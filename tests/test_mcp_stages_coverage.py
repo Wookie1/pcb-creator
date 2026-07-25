@@ -1668,19 +1668,6 @@ def test_run_routing_missing_netlist(tmp_path):
     assert r["success"] is False and "netlist" in r["error"].lower()
 
 
-def test_run_routing_four_layer_requires_freerouting(tmp_path):
-    from orchestrator import stages
-    pdir, name = _placed_project(tmp_path, "fl")
-    pl = json.loads((pdir / f"{name}_placement.json").read_text())
-    pl["board"]["layers"] = 4
-    (pdir / f"{name}_placement.json").write_text(json.dumps(pl))
-    cfg = _cfg()
-    cfg.router_engine = "builtin"   # not freerouting → 4-layer guard fires
-    r = stages.run_routing(pdir, name, cfg)
-    assert r["success"] is False
-    assert "require" in r["error"].lower() and "freerouting" in r["error"].lower()
-
-
 # --- build_incremental_fixed_routing / _components_for_unrouted -----------
 
 def test_build_incremental_fixed_routing_none_when_empty():

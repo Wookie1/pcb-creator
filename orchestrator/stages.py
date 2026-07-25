@@ -843,7 +843,7 @@ def run_routing(project_dir: Path, project_name: str, config,
                 progress_callback=None, log=None,
                 effort: str = "normal", max_seconds: int | None = None,
                 fixed_routing: dict | None = None) -> dict:
-    """Route the board: Freerouting (if configured) or built-in A* (2-layer only).
+    """Route the board with Freerouting.
 
     Reads <project>_placement.json + <project>_netlist.json, writes
     <project>_routed.json.
@@ -889,7 +889,7 @@ def run_routing(project_dir: Path, project_name: str, config,
     _incremental = fixed_routing is not None
 
     routed = None
-    engine = "builtin"
+    engine = "freerouting"  # the only engine; kept in the result for callers
     num_layers = _routing_layer_count(project_dir, project_name, placement_data)
     # Persist the resolved count onto the board block so everything downstream
     # agrees on the stackup: inner_plane_count() (plane generation), the DSN
@@ -898,160 +898,139 @@ def run_routing(project_dir: Path, project_name: str, config,
     # generated 0 inner planes (count read 2 here, 4 there).
     placement_data.setdefault("board", {})["layers"] = num_layers
 
-    # 4-layer boards require Freerouting — the built-in A* is 2-layer only
-    if num_layers > 2 and config.router_engine != "freerouting":
-        return {
-            "success": False,
-            "error": f"{num_layers}-layer boards require Freerouting. "
-                     "Set PCB_ROUTER_ENGINE=freerouting (default) or check Java/JAR availability.",
+    try:  # pragma: no cover - live Freerouting/Java routing run (mirrors optimizers/freerouter.py JVM pragmas); covered end-to-end only in the manual flow
+        from optimizers.freerouter import route_with_freerouting
+        from optimizers.router import inner_plane_count
+        _log("  Engine: Freerouting")
+        plane_layers = inner_plane_count(placement_data.get("board", {}))
+        dsn_config = {
+            "trace_width_mm": router_kwargs.get("trace_width_signal_mm", 0.25),
+            "clearance_mm": router_kwargs.get("clearance_mm", 0.2),
+            "via_drill_mm": router_kwargs.get("via_drill_mm", 0.3),
+            "via_diameter_mm": router_kwargs.get("via_diameter_mm", 0.6),
+            "num_layers": num_layers,
+            "plane_layers": plane_layers,
         }
-
-    if config.router_engine == "freerouting":  # pragma: no cover - live Freerouting/Java routing run (mirrors optimizers/freerouter.py JVM pragmas); covered end-to-end only in the manual flow
-        try:
-            from optimizers.freerouter import route_with_freerouting
-            from optimizers.router import inner_plane_count
-            engine = "freerouting"
-            _log("  Engine: Freerouting")
-            plane_layers = inner_plane_count(placement_data.get("board", {}))
-            dsn_config = {
-                "trace_width_mm": router_kwargs.get("trace_width_signal_mm", 0.25),
-                "clearance_mm": router_kwargs.get("clearance_mm", 0.2),
-                "via_drill_mm": router_kwargs.get("via_drill_mm", 0.3),
-                "via_diameter_mm": router_kwargs.get("via_diameter_mm", 0.6),
-                "num_layers": num_layers,
-                "plane_layers": plane_layers,
-            }
-            if num_layers > 2:
-                _log(f"  Layer count: {num_layers}, inner plane layers: {plane_layers} "
-                     f"({2 - plane_layers if num_layers >= 4 else 0} inner signal layer(s))")
-            # GND is delivered by copper fill/plane → never routed point-to-point.
-            # The power net is excluded ONLY when In2 is a plane (plane_layers>=2);
-            # with an inner signal layer it is routed as traces instead.
-            exclude_nets = ["GND"]
-            if plane_layers >= 2:
-                best_pwr: tuple[int, str] = (0, "")
-                for elem in netlist_data.get("elements", []):
-                    if (elem.get("element_type") == "net"
-                            and elem.get("net_class") == "power"
-                            and elem.get("name", elem.get("net_id", "")) != "GND"):
-                        pin_count = len(elem.get("connected_port_ids", []))
-                        if pin_count > best_pwr[0]:
-                            best_pwr = (pin_count, elem.get("name", elem.get("net_id", "")))
-                if best_pwr[1]:
-                    exclude_nets.append(best_pwr[1])
-                    _log(f"  Excluding power plane net from routing: {best_pwr[1]} ({best_pwr[0]} pins)")
-            # Fine-pitch escape fanout: pre-route dog-bone escapes for single-row
-            # fine-pitch parts and hand them to Freerouting as protected wiring,
-            # so it only routes from comfortable-pitch breakout vias. AUTO-enabled
-            # when the board has a fine-pitch part (config.escape_fanout is None);
-            # PCB_ESCAPE_FANOUT=true/false forces it on/off. Only on a fresh route
-            # (an incremental caller's fixed_routing already carries the escapes).
-            _fresh_route = fixed_routing is None
-            # Escape wiring is preserved (never ripped) by the short-cleanup pass
-            # below, so a fine-pitch net's breakout survives a re-route.
-            escape_wiring = {"traces": [], "vias": [], "keepouts": []}
-            ef = getattr(config, "escape_fanout", None)
-            if ef is None:
-                _mp = _min_pad_pitch(project_dir, project_name)
-                ef = _mp is not None and _mp < FINE_PITCH_THRESHOLD_MM
-            if ef and fixed_routing is None:
-                try:
-                    from optimizers.escape_router import (
-                        generate_escape_routing, EscapeConfig,
-                    )
-                    ecfg = EscapeConfig(
-                        trace_width_mm=router_kwargs.get("trace_width_signal_mm", 0.127),
-                        clearance_mm=router_kwargs.get("clearance_mm", 0.127),
-                        via_diameter_mm=router_kwargs.get("via_diameter_mm", 0.45),
-                        via_drill_mm=router_kwargs.get("via_drill_mm", 0.2),
-                        num_layers=num_layers,
-                        plane_layers=plane_layers,
-                    )
-                    escapes = generate_escape_routing(
-                        placement_data, netlist_data, ecfg,
-                        exclude_nets=tuple(exclude_nets))
-                    if escapes["traces"]:
-                        _log(f"  Fine-pitch escape fanout: pre-routed "
-                             f"{len(escapes['vias'])} pin escape(s) as protected wiring")
-                        fixed_routing = escapes
-                        escape_wiring = escapes
-                except Exception as exc:
-                    _log(f"  Escape fanout skipped: {exc}")
-            eff = ROUTING_EFFORT.get(effort, ROUTING_EFFORT["normal"])
-            timeout_s = max_seconds or eff["timeout_s"] or config.freerouting_timeout_s
-            fr_kwargs = dict(
-                jar_path=config.freerouting_jar_path,
-                exclude_nets=exclude_nets,
-                dsn_config=dsn_config,
-                progress_callback=progress_callback,
-                max_passes=eff["max_passes"],
-                fixed_routing=fixed_routing,
-            )
+        if num_layers > 2:
+            _log(f"  Layer count: {num_layers}, inner plane layers: {plane_layers} "
+                 f"({2 - plane_layers if num_layers >= 4 else 0} inner signal layer(s))")
+        # GND is delivered by copper fill/plane → never routed point-to-point.
+        # The power net is excluded ONLY when In2 is a plane (plane_layers>=2);
+        # with an inner signal layer it is routed as traces instead.
+        exclude_nets = ["GND"]
+        if plane_layers >= 2:
+            best_pwr: tuple[int, str] = (0, "")
+            for elem in netlist_data.get("elements", []):
+                if (elem.get("element_type") == "net"
+                        and elem.get("net_class") == "power"
+                        and elem.get("name", elem.get("net_id", "")) != "GND"):
+                    pin_count = len(elem.get("connected_port_ids", []))
+                    if pin_count > best_pwr[0]:
+                        best_pwr = (pin_count, elem.get("name", elem.get("net_id", "")))
+            if best_pwr[1]:
+                exclude_nets.append(best_pwr[1])
+                _log(f"  Excluding power plane net from routing: {best_pwr[1]} ({best_pwr[0]} pins)")
+        # Fine-pitch escape fanout: pre-route dog-bone escapes for single-row
+        # fine-pitch parts and hand them to Freerouting as protected wiring,
+        # so it only routes from comfortable-pitch breakout vias. AUTO-enabled
+        # when the board has a fine-pitch part (config.escape_fanout is None);
+        # PCB_ESCAPE_FANOUT=true/false forces it on/off. Only on a fresh route
+        # (an incremental caller's fixed_routing already carries the escapes).
+        _fresh_route = fixed_routing is None
+        # Escape wiring is preserved (never ripped) by the short-cleanup pass
+        # below, so a fine-pitch net's breakout survives a re-route.
+        escape_wiring = {"traces": [], "vias": [], "keepouts": []}
+        ef = getattr(config, "escape_fanout", None)
+        if ef is None:
+            _mp = _min_pad_pitch(project_dir, project_name)
+            ef = _mp is not None and _mp < FINE_PITCH_THRESHOLD_MM
+        if ef and fixed_routing is None:
             try:
+                from optimizers.escape_router import (
+                    generate_escape_routing, EscapeConfig,
+                )
+                ecfg = EscapeConfig(
+                    trace_width_mm=router_kwargs.get("trace_width_signal_mm", 0.127),
+                    clearance_mm=router_kwargs.get("clearance_mm", 0.127),
+                    via_diameter_mm=router_kwargs.get("via_diameter_mm", 0.45),
+                    via_drill_mm=router_kwargs.get("via_drill_mm", 0.2),
+                    num_layers=num_layers,
+                    plane_layers=plane_layers,
+                )
+                escapes = generate_escape_routing(
+                    placement_data, netlist_data, ecfg,
+                    exclude_nets=tuple(exclude_nets))
+                if escapes["traces"]:
+                    _log(f"  Fine-pitch escape fanout: pre-routed "
+                         f"{len(escapes['vias'])} pin escape(s) as protected wiring")
+                    fixed_routing = escapes
+                    escape_wiring = escapes
+            except Exception as exc:
+                _log(f"  Escape fanout skipped: {exc}")
+        eff = ROUTING_EFFORT.get(effort, ROUTING_EFFORT["normal"])
+        timeout_s = max_seconds or eff["timeout_s"] or config.freerouting_timeout_s
+        fr_kwargs = dict(
+            jar_path=config.freerouting_jar_path,
+            exclude_nets=exclude_nets,
+            dsn_config=dsn_config,
+            progress_callback=progress_callback,
+            max_passes=eff["max_passes"],
+            fixed_routing=fixed_routing,
+        )
+        try:
+            routed = route_with_freerouting(
+                placement_data, netlist_data,
+                timeout_s=timeout_s, **fr_kwargs,
+            )
+        except RuntimeError as exc:
+            if eff["retry_on_timeout"] and "timed out" in str(exc):
+                _log(f"  Freerouting timed out at {timeout_s}s — retrying once "
+                     f"with {timeout_s * 2}s")
                 routed = route_with_freerouting(
                     placement_data, netlist_data,
-                    timeout_s=timeout_s, **fr_kwargs,
+                    timeout_s=timeout_s * 2, **fr_kwargs,
                 )
-            except RuntimeError as exc:
-                if eff["retry_on_timeout"] and "timed out" in str(exc):
-                    _log(f"  Freerouting timed out at {timeout_s}s — retrying once "
-                         f"with {timeout_s * 2}s")
-                    routed = route_with_freerouting(
-                        placement_data, netlist_data,
-                        timeout_s=timeout_s * 2, **fr_kwargs,
-                    )
-                else:
-                    raise
-            completion = routing_completion(routed)
-            if completion < 100:
-                unrouted = routed.get("routing", {}).get("unrouted_nets", [])
-                _log(f"  Freerouting incomplete ({completion:.0f}%): {len(unrouted)} nets unrouted")
-                _log("  Continuing with partial result (no fallback when Freerouting is the engine)")
-            from optimizers.router import apply_copper_fills, RouterConfig
-            routed = apply_copper_fills(routed, netlist_data, RouterConfig(**router_kwargs))
+            else:
+                raise
+        completion = routing_completion(routed)
+        if completion < 100:
+            unrouted = routed.get("routing", {}).get("unrouted_nets", [])
+            _log(f"  Freerouting incomplete ({completion:.0f}%): {len(unrouted)} nets unrouted")
+            _log("  Continuing with partial result (no fallback when Freerouting is the engine)")
+        from optimizers.router import apply_copper_fills, RouterConfig
+        routed = apply_copper_fills(routed, netlist_data, RouterConfig(**router_kwargs))
 
-            # Short-cleanup pass: rip up the nets kicad-cli DRC reports as
-            # shorting (or that are left incomplete) and re-route just those,
-            # holding everything else — including all escape wiring — protected.
-            # Authoritative bad-net list comes from kicad-cli (the internal
-            # geometric short-check over-reports); a no-op where kicad-cli isn't
-            # installed. Fresh routes only (an incremental caller drives its own).
-            if _fresh_route and getattr(config, "short_cleanup", True):
-                try:
-                    routed = _short_cleanup(
-                        routed, placement_data, netlist_data, exclude_nets,
-                        escape_wiring, fr_kwargs, router_kwargs, timeout_s,
-                        config, log=_log)
-                except Exception as exc:
-                    _log(f"  Short cleanup skipped: {exc}")
-        except Exception as exc:
-            _log(f"  Freerouting FAILED: {exc}")
-            # The built-in A* router is 2-layer only; falling back on a 4-layer
-            # board would silently route just the outer layers and report an
-            # incomplete result. Surface the real failure instead — but frame it
-            # as a failure of THIS run, not a layer-count limit. (Agents read
-            # "can't route >2 layers" as "the board needs fewer layers" and
-            # abandon a perfectly routable 4-layer board.)
-            if num_layers > 2:
-                return {"success": False, "engine": "freerouting",
-                        "error": (f"Freerouting did not finish this routing run on "
-                                  f"the {num_layers}-layer board: {exc} — this is a "
-                                  f"failure of THIS run, NOT a layer-count limit "
-                                  f"({num_layers}-layer routing is fully supported. "
-                                  f"Retry route_board (add keep_existing=True to "
-                                  f"finish from a partial result), or fix the cause "
-                                  f"above (the message says if it was out-of-memory). "
-                                  f"Do NOT reduce the layer count or enlarge the "
-                                  f"board on the basis of this error.")}
-            _log("  Falling back to built-in router")
-
-    if routed is None:  # pragma: no cover - built-in A* router invocation (live routing run); covered end-to-end only in the manual flow
-        from optimizers.router import route_board, RouterConfig
-        engine = "builtin"
-        _log("  Engine: Built-in")
-        rc = RouterConfig(**router_kwargs)
-        rc.ncr_progress_callback = progress_callback
-        routed = route_board(placement_data, netlist_data, rc)
+        # Short-cleanup pass: rip up the nets kicad-cli DRC reports as
+        # shorting (or that are left incomplete) and re-route just those,
+        # holding everything else — including all escape wiring — protected.
+        # Authoritative bad-net list comes from kicad-cli (the internal
+        # geometric short-check over-reports); a no-op where kicad-cli isn't
+        # installed. Fresh routes only (an incremental caller drives its own).
+        if _fresh_route and getattr(config, "short_cleanup", True):
+            try:
+                routed = _short_cleanup(
+                    routed, placement_data, netlist_data, exclude_nets,
+                    escape_wiring, fr_kwargs, router_kwargs, timeout_s,
+                    config, log=_log)
+            except Exception as exc:
+                _log(f"  Short cleanup skipped: {exc}")
+    except Exception as exc:
+        _log(f"  Freerouting FAILED: {exc}")
+        # Freerouting is the only engine — surface the real failure rather
+        # than a partial board. Frame it as a failure of THIS run, not a
+        # limit of the board: agents read "routing failed" on a 4-layer
+        # board as "the board needs fewer layers" and abandon a perfectly
+        # routable design.
+        return {"success": False, "engine": "freerouting",
+                "error": (f"Freerouting did not finish this routing run on "
+                          f"the {num_layers}-layer board: {exc} — this is a "
+                          f"failure of THIS run, NOT a layer-count limit "
+                          f"({num_layers}-layer routing is fully supported). "
+                          f"Retry route_board (add keep_existing=True to "
+                          f"finish from a partial result), or fix the cause "
+                          f"above (the message says if it was out-of-memory). "
+                          f"Do NOT reduce the layer count or enlarge the "
+                          f"board on the basis of this error.")}
 
     # Incremental safety net: never lose the caller's protected wiring. If
     # Freerouting echoed it (normal case) the union dedupes to a no-op; if it

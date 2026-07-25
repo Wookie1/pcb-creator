@@ -89,7 +89,6 @@ if [ ! -f ".env" ]; then
 # PCB_LLM_API_KEY=sk-...
 
 # === Router ===
-# PCB_ROUTER_ENGINE=freerouting    # or "builtin"
 # PCB_FREEROUTING_TIMEOUT=300      # seconds
 
 # === Advanced ===

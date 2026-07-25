@@ -26,7 +26,6 @@ def main() -> int:
     tmpcache = Path(tempfile.mkdtemp(prefix="fp-cache-"))
     configure_lookup(kicad_index=None,
                      cache=ComponentCache(str(tmpcache / "c.json")))
-    cfg.router_engine = "freerouting"
 
     # Cache a 0.5mm-pitch 1x16 row connector (like an FPC/board-to-board).
     cache = get_default_cache()

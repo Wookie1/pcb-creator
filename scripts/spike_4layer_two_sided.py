@@ -38,7 +38,6 @@ def main() -> int:
     cfg = OrchestratorConfig.from_env(base_dir=REPO)
     configure_lookup(kicad_index=None,
                      cache=ComponentCache(cfg.component_cache_path))
-    cfg.router_engine = "freerouting"
 
     # U1 SOIC-8 on top; C1/C2 decoupling caps on BOTTOM; R1 pullup on bottom;
     # J1 connector on top. Power (VCC) and ground (GND) become inner planes.

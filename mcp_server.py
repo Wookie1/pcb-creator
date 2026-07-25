@@ -14,7 +14,6 @@ Configuration (environment variables):
     PCB_LLM_API_BASE        — LLM API base URL
     PCB_GENERATE_MODEL  — Model for generation steps
     PCB_VISION_MODEL    — Model for vision-based board review
-    PCB_ROUTER_ENGINE   — "freerouting" (default) or "builtin"
 """
 
 from __future__ import annotations
@@ -505,7 +504,7 @@ def design_pcb(  # pragma: no cover - spawns the background LLM design pipeline 
             },
         )
 
-    settings overrides: {"model", "router_engine", "max_rework_attempts",
+    settings overrides: {"model", "max_rework_attempts",
     "skip_qa"}. attachments: list of {"filename", "content_base64", "type",
     "purpose", "used_by_steps"} (e.g. a "board_outline" DXF for step 3).
     """
@@ -630,7 +629,7 @@ def _design_pcb_sync(  # pragma: no cover - full LLM pipeline worker (requiremen
             get_requirements_schema(). When provided, the LLM translation step is
             skipped entirely — faster, cheaper, and more deterministic. Must include
             at minimum: components (list) and connections (list).
-        settings: Optional config overrides: {"model": "...", "router_engine": "...",
+        settings: Optional config overrides: {"model": "...",
             "max_rework_attempts": 5, "skip_qa": false}. QA reviews are skipped by
             default in MCP mode; set skip_qa to false to re-enable them.
         attachments: Optional list of file attachments. Each dict has:
@@ -659,8 +658,6 @@ def _design_pcb_sync(  # pragma: no cover - full LLM pipeline worker (requiremen
         if "model" in settings:
             config.generate_model = settings["model"]
             config.review_model = settings["model"]
-        if "router_engine" in settings:
-            config.router_engine = settings["router_engine"]
         if "max_rework_attempts" in settings:
             config.max_rework_attempts = int(settings["max_rework_attempts"])
         if "skip_qa" in settings:

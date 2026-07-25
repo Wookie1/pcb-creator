@@ -128,7 +128,6 @@ def build_netlist(name, components):
 
 def run(pcb_path, fine_pitch_enabled):
     cfg = OrchestratorConfig.from_env(base_dir=REPO)
-    cfg.router_engine = "freerouting"
     tmpcache = Path(tempfile.mkdtemp(prefix="rr-cache-"))
     configure_lookup(kicad_index=None, cache=ComponentCache(str(tmpcache / "c.json")))
 
@@ -173,7 +172,6 @@ def finish(pcb_path, effort="best", max_seconds=2400, plane_layers=None):
     """INCREMENTAL: keep the .kicad_pcb's existing routing as protected wiring
     and route only the UNROUTED nets (finish the board instead of redoing it)."""
     cfg = OrchestratorConfig.from_env(base_dir=REPO)
-    cfg.router_engine = "freerouting"
     tmpcache = Path(tempfile.mkdtemp(prefix="rr-cache-"))
     configure_lookup(kicad_index=None, cache=ComponentCache(str(tmpcache / "c.json")))
 
@@ -219,7 +217,6 @@ def replace_and_route(pcb_path, effort="best", max_seconds=None,
     routes via run_route_with_retry (so an incomplete first route triggers a
     focused re-place around the unrouted components)."""
     cfg = OrchestratorConfig.from_env(base_dir=REPO)
-    cfg.router_engine = "freerouting"
     cfg.escape_fanout = escape_fanout
     tmpcache = Path(tempfile.mkdtemp(prefix="rr-cache-"))
     configure_lookup(kicad_index=None, cache=ComponentCache(str(tmpcache / "c.json")))
@@ -314,7 +311,6 @@ def reopt_and_route(pcb_path, effort="best", max_seconds=None, plane_layers=1,
         find_placement_violations,
     )
     cfg = OrchestratorConfig.from_env(base_dir=REPO)
-    cfg.router_engine = "freerouting"
     cfg.escape_fanout = escape_fanout
     tmpcache = Path(tempfile.mkdtemp(prefix="rr-cache-"))
     configure_lookup(kicad_index=None, cache=ComponentCache(str(tmpcache / "c.json")))

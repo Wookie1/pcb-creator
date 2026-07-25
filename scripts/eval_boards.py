@@ -8,7 +8,6 @@ the regression gate for optimizer/router tuning.
 
 Usage:
     python scripts/eval_boards.py [--effort fast|normal|best]
-                                  [--engine freerouting|builtin]
                                   [--boards name1,name2] [--no-retry]
 Output:
     scripts/eval_output/scoreboard.md and scoreboard.json
@@ -204,8 +203,6 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--effort", default="normal",
                     choices=["fast", "normal", "best"])
-    ap.add_argument("--engine", default="freerouting",
-                    choices=["freerouting", "builtin"])
     ap.add_argument("--boards", default="",
                     help="comma-separated stems to run (default: all)")
     ap.add_argument("--no-retry", action="store_true",
@@ -215,7 +212,6 @@ def main() -> int:
     logging.basicConfig(level=logging.WARNING, stream=sys.stderr)
 
     config = OrchestratorConfig.from_env(base_dir=REPO)
-    config.router_engine = args.engine
 
     # Install the tiered footprint lookup (KiCad library + component cache),
     # exactly like the MCP server does — without it only the IPC-7351 and

@@ -73,7 +73,6 @@ class TestIncrementalEndToEnd:
         from optimizers.pad_geometry import configure_lookup
         from orchestrator.cache import ComponentCache
         cfg = OrchestratorConfig.from_env(base_dir=Path.cwd())
-        cfg.router_engine = "freerouting"
         configure_lookup(kicad_index=None,
                          cache=ComponentCache(cfg.component_cache_path))
         pdir = self._project(tmp_path)

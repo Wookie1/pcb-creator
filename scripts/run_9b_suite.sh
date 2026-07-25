@@ -15,7 +15,6 @@ export PCB_GENERATE_MODEL="openai/${MODEL}"
 export PCB_REVIEW_MODEL="openai/${MODEL}"
 export PCB_GATHER_MODEL="openai/${MODEL}"
 export PCB_MODEL_PROFILE="${PCB_MODEL_PROFILE:-small}"
-export PCB_ROUTER_ENGINE="freerouting"
 export PCB_LLM_TIMEOUT="600"
 
 TAG=$(echo "$MODEL" | tr -c 'A-Za-z0-9' '_')

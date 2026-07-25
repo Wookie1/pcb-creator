@@ -484,7 +484,7 @@ _PCB_VARS = [
     "PCB_LLM_API_BASE", "PCB_LLM_API_KEY", "PCB_LLM_MAX_TOKENS",
     "PCB_LLM_TIMEOUT", "PCB_MAX_REWORK", "PCB_MODEL_PROFILE", "PCB_SKIP_QA",
     "PCB_ENABLE_OPTIMIZER", "PCB_OPTIMIZER_ITERATIONS", "PCB_OPTIMIZER_SEED",
-    "PCB_ROUTER_ENGINE", "PCB_ESCAPE_FANOUT", "PCB_SHORT_CLEANUP",
+    "PCB_ESCAPE_FANOUT", "PCB_SHORT_CLEANUP",
     "PCB_FREEROUTING_JAR", "PCB_FREEROUTING_TIMEOUT", "PCB_KICAD_LIBRARY_PATH",
     "PCB_COMPONENT_CACHE_PATH", "PCB_LLM_ENRICHMENT_WORKERS", "PCB_VISION_MODEL",
     "PCB_VISION_MAX_ATTEMPTS", "PCB_3D_MODELS_DIR", "PCB_PROJECTS_DIR",
@@ -521,7 +521,7 @@ class TestConfig:
             "PCB_LLM_TIMEOUT": "60", "PCB_MAX_REWORK": "9",
             "PCB_MODEL_PROFILE": "SMALL", "PCB_SKIP_QA": "yes",
             "PCB_ENABLE_OPTIMIZER": "false", "PCB_OPTIMIZER_ITERATIONS": "500",
-            "PCB_OPTIMIZER_SEED": "42", "PCB_ROUTER_ENGINE": "builtin",
+            "PCB_OPTIMIZER_SEED": "42",
             "PCB_ESCAPE_FANOUT": "true", "PCB_SHORT_CLEANUP": "0",
             "PCB_FREEROUTING_JAR": "/jars/fr.jar",
             "PCB_FREEROUTING_TIMEOUT": "120",
@@ -547,7 +547,6 @@ class TestConfig:
         assert cfg.enable_optimizer is False
         assert cfg.optimizer_iterations == 500
         assert cfg.optimizer_seed == 42
-        assert cfg.router_engine == "builtin"
         assert cfg.escape_fanout is True
         assert cfg.short_cleanup is False
         assert cfg.freerouting_jar_path == Path("/jars/fr.jar")

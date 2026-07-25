@@ -55,7 +55,6 @@ def _demand_stats(placement_path, netlist_path, track_pitch):
 
 def run_board(pcb_path, plane_layers=1):
     cfg = OrchestratorConfig.from_env(base_dir=REPO)
-    cfg.router_engine = "freerouting"
     tmpcache = Path(tempfile.mkdtemp(prefix="dm-cache-"))
     configure_lookup(kicad_index=None, cache=ComponentCache(str(tmpcache / "c.json")))
     board, comps, placements = rr.parse_pcb(pcb_path)
@@ -69,7 +68,6 @@ def run_board(pcb_path, plane_layers=1):
         (pdir / "dm_requirements.json").write_text(json.dumps(
             {"board": board, "manufacturing": {"manufacturer": "jlcpcb_4layer"}}))
         cfg2 = OrchestratorConfig.from_env(base_dir=REPO)
-        cfg2.router_engine = "freerouting"
         old = po.SAConfig.demand_weight
         po.SAConfig.demand_weight = dw
         t = time.monotonic()
