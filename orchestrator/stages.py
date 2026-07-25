@@ -1394,8 +1394,13 @@ def run_route_with_retry(project_dir: Path, project_name: str, config,  # pragma
 # DRC (deterministic — kept as a first-class stage)
 # ---------------------------------------------------------------------------
 
-def run_drc(project_dir: Path, project_name: str, config, log=None) -> dict:
+def run_drc(project_dir: Path, project_name: str, config, log=None,
+            _recheck: bool = True) -> dict:
     """Run the deterministic DRC checks on the routed board.
+
+    `_recheck` is internal: when the authoritative export harvests GND stitch
+    vias into the board, DRC re-runs ONCE on the updated board so the verdict
+    certifies what will actually ship.
 
     Reads <project>_routed.json + <project>_netlist.json, writes
     <project>_drc_report.json.
@@ -1461,10 +1466,41 @@ def run_drc(project_dir: Path, project_name: str, config, log=None) -> dict:
                       "inner_plane_antipad"}
             extra = [c for c in report.get("checks", [])
                      if c.get("rule") in _carry]
+            # export_kicad_pcb harvests any export-time GND stitch vias back
+            # into `routed` (it mutates the dict). Persist them: the Gerbers are
+            # generated from routed.json, so without this the board kicad-cli
+            # just certified (islands tied to the plane) is NOT the board that
+            # ships (islands left floating). What ships must be what passed DRC.
+            _vias_before = len(routed.get("routing", {}).get("vias", []))
             auth = run_kicad_drc(
                 routed, netlist_data, kcli,
                 export_fn=lambda rt, nl, pcb: export_kicad_pcb(rt, nl, pcb),
                 project_name=project_name, extra_checks=extra)
+            _stitched = (len(routed.get("routing", {}).get("vias", []))
+                         - _vias_before)
+            if _stitched:
+                # Those vias are new through-holes punched into an already-
+                # poured board: the STORED inner-plane polygons have no antipad
+                # around them, so the Gerbers would short them to the power
+                # plane. (kicad-cli never sees it — KiCad re-pours and cuts its
+                # own antipads.) Re-cut the planes against the final via set.
+                import dataclasses as _dc
+                from optimizers.router import regenerate_inner_planes, RouterConfig
+                _fields = {f.name for f in _dc.fields(RouterConfig)}
+                _rcfg = RouterConfig(**{
+                    k: v for k, v in routed.get("routing", {}).get("config", {}).items()
+                    if k in _fields})
+                regenerate_inner_planes(routed, netlist_data, _rcfg)
+                routed_path.write_text(json.dumps(routed, indent=2))
+                _log(f"  DRC: merged {_stitched} GND stitch via(s) + re-cut the "
+                     "inner planes so the Gerbers match the validated board")
+                if _recheck:
+                    # Certify the board that will ACTUALLY ship, not the one we
+                    # started from. The re-run is idempotent: the islands are
+                    # now tied, so it harvests nothing and does not recurse.
+                    _log("  DRC: re-running on the updated board")
+                    return run_drc(project_dir, project_name, config, log=log,
+                                   _recheck=False)
             if auth is not None:
                 auth["manufacturer"] = report.get("manufacturer")
                 auth["dfm_profile"] = report.get("dfm_profile")

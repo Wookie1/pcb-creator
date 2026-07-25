@@ -580,6 +580,82 @@ def _net_class(name: str, clearance: float, track_w: float,
     }
 
 
+def board_via_minima(routed: dict) -> tuple[float, float]:
+    """(min via diameter, min drill) in mm this board's design rules allow.
+
+    The board MUST allow the smallest via/drill actually present — fine-pitch
+    escape fanout drops smaller vias (0.45/0.2) than the default routing via
+    (0.6/0.3); without lowering the rule minima DRC flags every escape via as
+    under-size. So the rule is floored at the tightest via on the board.
+
+    Single source of truth: `build_kicad_pro` writes these as the board's
+    min_via_diameter / min_through_hole_diameter, AND the export-time GND
+    island stitcher is capped by them. Anything that ADDS a via after the
+    rules are written (the stitcher) must never go below this, or it violates
+    the very .kicad_pro it was exported with — which is exactly how a 0.45/0.2
+    stitch via failed DRC on a 0.6/0.3 board while routed.json was clean.
+    """
+    cfg = routed.get("routing", {}).get("config", {})
+    via_dia = float(cfg.get("via_diameter_mm", 0.6))
+    via_drill = float(cfg.get("via_drill_mm", 0.3))
+    vias = routed.get("routing", {}).get("vias", [])
+    if vias:
+        via_dia = min([via_dia] + [float(v.get("diameter_mm", via_dia)) for v in vias])
+        via_drill = min([via_drill] + [float(v.get("drill_mm", via_drill)) for v in vias])
+    return via_dia, via_drill
+
+
+def _harvest_stitch_vias(routed: dict, net_elements: list[dict],
+                         stitched: dict) -> int:
+    """Merge export-time GND stitch vias back into `routed` (mutates it).
+
+    WHAT SHIPS MUST BE WHAT PASSED DRC. The stitcher adds its vias under pcbnew,
+    directly into the .kicad_pcb — but the Gerbers/drill are generated from
+    routed.json, so without this the validated board and the manufactured board
+    differed: kicad-cli certified a board whose GND islands were tied to the
+    plane, while the shipped Gerbers had no such vias and left those islands
+    floating. Merging them here closes that gap and makes re-export idempotent
+    (next pour finds the islands already tied, so nothing new is added).
+
+    Returns the number of vias merged. `skipped` islands (no rule-legal via
+    site) are surfaced at routing.unstitched_gnd_islands, mirroring
+    routing.unstitched_plane_pads.
+    """
+    routing = routed.setdefault("routing", {})
+    skipped = int(stitched.get("skipped", 0))
+    if skipped:
+        routing["unstitched_gnd_islands"] = skipped
+    else:
+        routing.pop("unstitched_gnd_islands", None)
+
+    added = stitched.get("added") or []
+    if not added:
+        return 0
+    gnd = next((n for n in net_elements
+                if str(n.get("name", "")).upper() == "GND"), None)
+    vias = routing.setdefault("vias", [])
+    # The stitcher is idempotent (it skips islands already tied to the plane),
+    # but dedupe by position anyway: harvesting the same via twice would ship a
+    # duplicate drill hit at one coordinate.
+    seen = {(round(float(v.get("x_mm", 0)), 3), round(float(v.get("y_mm", 0)), 3))
+            for v in vias}
+    merged = 0
+    for v in added:
+        key = (round(float(v["x_mm"]), 3), round(float(v["y_mm"]), 3))
+        if key in seen:
+            continue
+        seen.add(key)
+        merged += 1
+        vias.append({
+            "x_mm": v["x_mm"], "y_mm": v["y_mm"],
+            "drill_mm": v["drill_mm"], "diameter_mm": v["diameter_mm"],
+            "from_layer": "top", "to_layer": "bottom",
+            "net_id": (gnd or {}).get("net_id", "net_gnd"),
+            "net_name": (gnd or {}).get("name", "GND"),
+        })
+    return merged
+
+
 def build_kicad_pro(routed: dict, project_name: str) -> dict:
     """Build a .kicad_pro project dict whose design rules MATCH how the board
     was actually routed.
@@ -594,17 +670,7 @@ def build_kicad_pro(routed: dict, project_name: str) -> dict:
     cfg = routed.get("routing", {}).get("config", {})
     clearance = float(cfg.get("trace_clearance_mm", 0.2))
     track_w = float(cfg.get("trace_width_signal_mm", 0.2))
-    via_dia = float(cfg.get("via_diameter_mm", 0.6))
-    via_drill = float(cfg.get("via_drill_mm", 0.3))
-
-    # The board MUST allow the smallest via/drill actually present — fine-pitch
-    # escape fanout drops smaller vias (0.45/0.2) than the default routing via
-    # (0.6/0.3); without lowering the rule minima DRC flags every escape via as
-    # under-size. Floor the rule at the tightest via on the board.
-    vias = routed.get("routing", {}).get("vias", [])
-    if vias:
-        via_dia = min([via_dia] + [float(v.get("diameter_mm", via_dia)) for v in vias])
-        via_drill = min([via_drill] + [float(v.get("drill_mm", via_drill)) for v in vias])
+    via_dia, via_drill = board_via_minima(routed)
 
     return {
         "meta": {"filename": f"{project_name}.kicad_pro", "version": 3},
@@ -725,7 +791,8 @@ def fill_zones_pcbnew(pcb_path: str | Path) -> bool:
 _GND_STITCH_SCRIPT = str(Path(__file__).parent / "_gnd_stitch.py")
 
 
-def stitch_gnd_islands_pcbnew(pcb_path: str | Path) -> int:
+def stitch_gnd_islands_pcbnew(pcb_path: str | Path, min_diameter_mm: float = 0.6,
+                              min_drill_mm: float = 0.3) -> dict:
     """Tie isolated GND pour islands to the inner GND plane on the EXPORTED board.
 
     The in-core rescue (router._add_rescue_vias) works on the grid fill model,
@@ -733,23 +800,35 @@ def stitch_gnd_islands_pcbnew(pcb_path: str | Path) -> int:
     outer-pour fragment unconnected to the plane (B5). This runs the authoritative
     pour-and-stitch pass (exporters/_gnd_stitch.py) under KiCad's pcbnew: it pours,
     finds GND regions with no through-via to the plane, drops a clear GND
-    through-via into each, and re-pours in place. Best-effort: returns the number
-    of vias added, or 0 if no pcbnew is reachable (board left as-is).
+    through-via into each, and re-pours in place.
+
+    `min_diameter_mm`/`min_drill_mm` are the board's rule floor
+    (`board_via_minima`) — the script never emits a via below them, so it cannot
+    violate the .kicad_pro it was exported with. Islands with no legal via site
+    are left unstitched and counted in `skipped`.
+
+    Best-effort: returns {"added": [via dicts], "skipped": n}; an empty result
+    when no pcbnew is reachable (board left as-is). The caller must merge
+    `added` back into routed.json so the vias also reach the Gerbers.
     """
     pcb_path = Path(pcb_path)
+    empty: dict = {"added": [], "skipped": 0}
     for py in _kicad_python_candidates():
         try:
-            r = subprocess.run([py, _GND_STITCH_SCRIPT, str(pcb_path)],
+            r = subprocess.run([py, _GND_STITCH_SCRIPT, str(pcb_path),
+                                str(min_diameter_mm), str(min_drill_mm)],
                                capture_output=True, text=True, timeout=240)
         except (FileNotFoundError, OSError, subprocess.SubprocessError):
             continue
         if r.returncode == 0:
             try:
-                return int((r.stdout.strip().splitlines() or ["0"])[-1])
-            except ValueError:  # pragma: no cover - script always prints a count on success
-                return 0
+                out = json.loads((r.stdout.strip().splitlines() or ["{}"])[-1])
+                return {"added": out.get("added", []),
+                        "skipped": int(out.get("skipped", 0))}
+            except (ValueError, AttributeError):  # pragma: no cover - script always prints JSON on success
+                return empty
         # pcbnew missing in this interpreter → try the next candidate.
-    return 0
+    return empty
 
 
 def export_kicad_pro(routed: dict, output_path: str | Path) -> Path:
@@ -769,6 +848,12 @@ def export_kicad_pcb(
     output_path: str | Path,
 ) -> Path:
     """Export a routed PCB design to KiCad .kicad_pcb format.
+
+    MUTATES `routed`: on a 4-layer board the export-time GND island stitcher
+    (pcbnew) may add plane-tie vias to the .kicad_pcb; those are harvested back
+    into routed["routing"]["vias"] by `_harvest_stitch_vias` so callers can
+    persist them and the GERBERS carry the same vias the DRC certified. Callers
+    that own routed.json (stages.run_drc) write it back out.
 
     Args:
         routed: The routed JSON dict (from route_board or loaded from file).
@@ -863,7 +948,9 @@ def export_kicad_pcb(
             # plane to rescue to — on 2-layer the outer pours already cover it, so
             # skip the extra pour-and-analyze pass there.
             if num_layers >= 4:
-                stitch_gnd_islands_pcbnew(output_path)
+                min_dia, min_drill = board_via_minima(routed)
+                stitched = stitch_gnd_islands_pcbnew(output_path, min_dia, min_drill)
+                _harvest_stitch_vias(routed, net_elements, stitched)
     except Exception:
         pass
 

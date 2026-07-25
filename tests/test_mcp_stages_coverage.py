@@ -1747,6 +1747,48 @@ def test_run_drc_real_report(tmp_path):
     assert (pdir / f"{name}_drc_report.json").exists()
 
 
+def test_run_drc_persists_harvested_gnd_stitch_vias(tmp_path, monkeypatch):
+    """What ships must be what passed DRC: vias the export-time GND stitcher
+    adds are harvested into routed.json so the Gerbers (built from it) carry
+    the same vias kicad-cli certified."""
+    import json as _json
+    from orchestrator import stages
+    from validators import kicad_drc as _kd
+    pdir, name = _routed_on_disk(tmp_path, "stitch")
+    routed_path = pdir / f"{name}_routed.json"
+    before = len(_json.loads(routed_path.read_text())["routing"]["vias"])
+
+    monkeypatch.setattr("optimizers.route_cleanup.find_kicad_cli",
+                        lambda: "/fake/kicad-cli")
+
+    calls = []
+
+    def fake_run_kicad_drc(routed, netlist, kcli, *, export_fn, project_name,
+                           extra_checks=None, **kw):
+        # Stand in for export_kicad_pcb harvesting a stitch via into `routed`.
+        # Idempotent like the real stitcher: an island already tied to the
+        # plane is skipped, so a second pass adds nothing.
+        calls.append(1)
+        vias = routed.setdefault("routing", {}).setdefault("vias", [])
+        if not any(v.get("x_mm") == 9.9 and v.get("y_mm") == 8.8 for v in vias):
+            vias.append({"x_mm": 9.9, "y_mm": 8.8, "drill_mm": 0.3,
+                         "diameter_mm": 0.6, "from_layer": "top",
+                         "to_layer": "bottom", "net_id": "net_gnd",
+                         "net_name": "GND"})
+        return {"passed": True, "statistics": {"errors": 0}, "checks": []}
+
+    monkeypatch.setattr(_kd, "run_kicad_drc", fake_run_kicad_drc)
+    report = stages.run_drc(pdir, name, _cfg())
+    assert report["drc_engine"] == "kicad-cli"
+
+    vias = _json.loads(routed_path.read_text())["routing"]["vias"]
+    assert len(vias) == before + 1, "stitch via must be persisted to routed.json"
+    assert (vias[-1]["x_mm"], vias[-1]["y_mm"]) == (9.9, 8.8)
+    # Harvesting re-certifies: DRC re-runs once on the board that will ship,
+    # and that second pass must not harvest again (no infinite recursion).
+    assert len(calls) == 2
+
+
 # --- run_export (real Gerber/drill/BOM/STEP pipeline, no router) ----------
 
 def test_run_export_no_routed_board(tmp_path):

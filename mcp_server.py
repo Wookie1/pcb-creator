@@ -1409,6 +1409,9 @@ def export_kicad(project_name: str) -> dict:
     output_path = pdir / "output" / f"{project_name}.kicad_pcb"
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
+    # Same footprint geometry placement/routing used (see run_drc).
+    _activate_project_lookup(project_name)
+
     try:
         result_path = export_kicad_pcb(routed, netlist, output_path)
         return ok({"kicad_path": str(result_path)})
@@ -1437,6 +1440,9 @@ def get_board_image(project_name: str, width: int = 2048) -> dict:
 
     netlist = _read_project_json(project_name, "_netlist.json")
     bom = _read_project_json(project_name, "_bom.json")
+
+    # Render the pads the board actually has (see run_drc).
+    _activate_project_lookup(project_name)
 
     from orchestrator.vision_review import render_board_png
 
@@ -2404,6 +2410,11 @@ def route_board(project_name: str, effort: str = "normal",
             )],
         )
 
+    # Routing (and its escape/fill/cleanup passes) is driven entirely by pad
+    # geometry — activate the project's footprint lookup before the worker
+    # thread starts, so a cold server routes the same board a warm one does.
+    _activate_project_lookup(project_name)
+
     import time as _time
 
     with _ROUTE_LOCK:
@@ -2533,6 +2544,15 @@ def run_drc(project_name: str) -> dict:
             remediation=[option("Route the board first", "route_board",
                                 {"project_name": project_name})],
         )
+
+    # DRC exports the board to run kicad-cli on it, so it needs the SAME
+    # footprint geometry placement/routing used. Without this the pad geometry
+    # falls back to a different tier and DRC invents violations that are not on
+    # the board: on a cold server (no placement/route in this process yet) a
+    # clean 4-layer board reported 24 shorts + 15 clearance + 8 connectivity
+    # errors that all vanished once the lookup was activated. A warm server hid
+    # the bug because optimize_placement/route_board had already set it.
+    _activate_project_lookup(project_name)
 
     try:
         report = stages.run_drc(pdir, project_name, _get_config())

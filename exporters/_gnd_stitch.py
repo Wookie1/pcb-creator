@@ -2,7 +2,13 @@
 
 Runs under KiCad's bundled python (pcbnew), invoked as:
 
-    <kicad-python> exporters/_gnd_stitch.py <board.kicad_pcb>
+    <kicad-python> exporters/_gnd_stitch.py <board.kicad_pcb> [min_dia_mm] [min_drill_mm]
+
+The minima are the board's own design-rule floor (kicad_exporter.board_via_minima,
+written into the .kicad_pro). A via smaller than that violates the rules the board
+was exported with, so it is NEVER emitted: if no legal via fits an island, the
+island is left unstitched and counted in "skipped" rather than shipping an
+unmanufacturable hole.
 
 pcb-creator's grid fill model is not KiCad's poured geometry, so the in-core
 rescue (router._add_rescue_vias) can leave a GND outer-pour fragment that KiCad's
@@ -10,10 +16,15 @@ actual pour reports unconnected to the plane (kicad-cli: "Zone [GND] / Zone [GND
 This pass works on the AUTHORITATIVE poured geometry: it pours the board, finds GND
 filled regions with no through-connection to the plane, drops a GND through-via at a
 clear interior point of each (KiCad re-pours the inner power-plane antipad around it,
-so no short), re-pours, and saves. Prints the number of vias added.
+so no short), re-pours, and saves.
+
+Prints one JSON line: {"added": [{x_mm, y_mm, diameter_mm, drill_mm}, ...],
+"skipped": n}. The caller harvests "added" back into routed.json so the vias
+reach the GERBERS too — what ships must be what passed DRC.
 
 Self-contained / no project imports, so it runs under the KiCad interpreter.
 """
+import json
 import math
 import sys
 
@@ -109,20 +120,27 @@ def _interior(contains, bb, dia, drill, inset, pads, segs, holes, gnd):
     return None
 
 
-def main(path):
+def main(path, min_dia=0.6, min_drill=0.3):
     b = pcbnew.LoadBoard(path)
     gnet = b.FindNet("GND")
     if gnet is None:
-        print(0)
+        print(json.dumps({"added": [], "skipped": 0}))
         return
     gnd = gnet.GetNetCode()
     FROM = pcbnew.FromMM
-    added = 0
+    # Never emit a via below the board's own rule floor (see module docstring).
+    tries = [t for t in VIA_TRIES
+             if t[0] >= min_dia - 1e-9 and t[1] >= min_drill - 1e-9]
+    if not tries:  # board demands a via larger than any preset — use the floor
+        tries = [(min_dia, min_drill, min_dia * 0.75)]
+    added_vias = []
+    skipped = 0
     for _ in range(MAX_ROUNDS):
         pcbnew.ZONE_FILLER(b).Fill(b.Zones())
         tp = _through_points(b, gnd)
         pads, segs, holes = _obstacles(b, gnd)
         new_pts = []
+        skipped = 0  # recomputed each round: the last round's value is current
         for z in b.Zones():
             if z.GetNetCode() != gnd:
                 continue
@@ -138,7 +156,7 @@ def main(path):
                 if any(_in_region(pt) for pt in tp):
                     continue  # already tied to the plane
                 bb = sp.Outline(i).BBox()
-                for dia, drl, inset in VIA_TRIES:
+                for dia, drl, inset in tries:
                     ip = _interior(_in_region, bb, dia, drl, inset,
                                    pads, segs, holes, gnd)
                     if ip is not None:
@@ -150,6 +168,10 @@ def main(path):
                         TOMM = pcbnew.ToMM
                         holes.append((TOMM(ip.x), TOMM(ip.y), drl / 2))
                         break
+                else:
+                    # No rule-legal via fits this island. Leave it — an honest
+                    # unstitched island beats an unmanufacturable hole.
+                    skipped += 1
         if not new_pts:
             break
         for ip, dia, drl in new_pts:
@@ -161,13 +183,22 @@ def main(path):
             v.SetViaType(pcbnew.VIATYPE_THROUGH)
             v.SetLayerPair(pcbnew.F_Cu, pcbnew.B_Cu)
             b.Add(v)
+            # Report in the SAME coordinate space routed.json uses: _vias()
+            # writes via (at x y) straight through with no Y flip, so board mm
+            # here map 1:1 back into routed.json.
+            added_vias.append({
+                "x_mm": round(pcbnew.ToMM(ip.x), 3),
+                "y_mm": round(pcbnew.ToMM(ip.y), 3),
+                "diameter_mm": dia, "drill_mm": drl,
+            })
             # keep the new via out of the obstacle/through sets handled by re-loop
-        added += len(new_pts)
-    if added:
+    if added_vias:
         pcbnew.ZONE_FILLER(b).Fill(b.Zones())
         pcbnew.SaveBoard(path, b)
-    print(added)
+    print(json.dumps({"added": added_vias, "skipped": skipped}))
 
 
 if __name__ == "__main__":
-    main(sys.argv[1])
+    main(sys.argv[1],
+         float(sys.argv[2]) if len(sys.argv) > 2 else 0.6,
+         float(sys.argv[3]) if len(sys.argv) > 3 else 0.3)
