@@ -27,21 +27,26 @@ def render_board_png(
     netlist: dict | None = None,
     bom: dict | None = None,
     width: int = 2048,
+    placement_only: bool = False,
 ) -> bytes:
-    """Render the routed board to PNG bytes via SVG -> cairosvg.
+    """Render the board to PNG bytes via SVG -> cairosvg.
 
     Args:
-        routed: Routed board dict (placement + traces + vias + fills).
+        routed: Routed board dict (placement + traces + vias + fills), or a
+            plain placement dict when placement_only is set.
         netlist: Optional netlist for per-net coloring.
         bom: Optional BOM for component tooltips.
         width: Output image width in pixels.
+        placement_only: Render components/pads only (no traces, vias or fills)
+            so an unrouted placement can be reviewed before routing.
 
     Returns:
         PNG image as bytes.
     """
     from visualizers.placement_viewer import generate_svg
 
-    svg_str = generate_svg(routed, netlist, bom, routed=routed)
+    svg_str = generate_svg(routed, netlist, bom,
+                           routed=None if placement_only else routed)
     png_bytes = cairosvg.svg2png(
         bytestring=svg_str.encode("utf-8"),
         output_width=width,

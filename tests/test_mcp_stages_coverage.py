@@ -63,6 +63,16 @@ def call_list(server, tool, args=None):
     return asyncio.run(_run())
 
 
+def call_content(server, tool, args=None):
+    """Raw content blocks — for tools that return an image alongside the
+    envelope (get_board_image), where .data is None by design."""
+    async def _run():
+        async with Client(server) as client:
+            r = await client.call_tool(tool, args or {}, raise_on_error=False)
+            return r.content
+    return asyncio.run(_run())
+
+
 def _projects_dir(tmp_path):
     return tmp_path / "projects"
 
@@ -187,13 +197,18 @@ def test_export_kicad_surfaces_exporter_error(server, tmp_path, monkeypatch):
 def test_get_board_image_missing_then_render(server, tmp_path):
     miss = call(server, "get_board_image", {"project_name": "cov_img"})
     assert miss["success"] is False
-    assert any(o["tool"] == "route_board" for o in miss["remediation"])
+    assert any(o["tool"] == "optimize_placement" for o in miss["remediation"])
 
     name = _make_routed_project(server, tmp_path, "cov_img_ok")
-    img = call(server, "get_board_image", {"project_name": name, "width": 512})
-    assert img["success"], img.get("error")
-    assert img["mime_type"] == "image/png"
-    assert img["size_bytes"] > 0 and img["image_base64"]
+    blocks = call_content(server, "get_board_image",
+                          {"project_name": name, "width": 512})
+    # The agent must get a real ImageContent block — a base64 string inside the
+    # JSON envelope is unreadable to it and costs ~47k tokens at width=2048.
+    images = [b for b in blocks if b.type == "image"]
+    assert len(images) == 1 and images[0].mimeType == "image/png"
+    meta = json.loads([b for b in blocks if b.type == "text"][0].text)
+    assert meta["success"] and meta["stage"] == "routed"
+    assert "image_base64" not in meta
 
 
 def test_get_board_image_surfaces_render_error(server, tmp_path, monkeypatch):

@@ -189,7 +189,10 @@ approval, layer-count or board-size changes).
    immediately) → `connect_pins` (by pin number or name, e.g. `"D1.anode"`,
    `"U1.VCC"`) → `finalize_circuit` (full validation) → `optimize_placement`
    → `route_board` → `run_drc` → `export_outputs`. Many small validated
-   calls — no giant netlist JSON. Rework tools: `list_circuit`,
+   calls — no giant netlist JSON. If you already know the whole circuit,
+   `build_circuit(components=[...], nets=[...])` does the draft, every
+   component, every net and the compile in **one** call, reporting per-item
+   failures and keeping what worked. Rework tools: `list_circuit`,
    `remove_component`, `disconnect_pins`, `mark_no_connect`. Components that
    must sit at exact coordinates (edge connectors, mounting holes) are fixed
    with `place_component` — validated immediately against board bounds and
@@ -225,6 +228,13 @@ re-route, keeping the better result. `run_drc` returns a severity-ranked
 summary with a remediation hint per failing rule; when kicad-cli is present
 it is KiCad's authoritative DRC (`get_drc_report(verbose=True)` for the full
 report).
+
+`get_board_image` returns a real image the calling model can look at — the
+routed board, or the **placement** if it isn't routed yet, so a connector
+facing the wrong way is caught before routing rather than after. Routing is
+nondeterministic and a re-place/re-route can land *worse* than what it
+replaced: `revert_board` puts the previous placement + routed board back (one
+step of history, snapshotted at the start of every placement and routing run).
 
 Add to your MCP client config (e.g., `claude_desktop_config.json`):
 
