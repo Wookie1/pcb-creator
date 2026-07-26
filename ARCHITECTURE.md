@@ -1064,6 +1064,10 @@ Run coverage:
 coverage run -m pytest tests/ -q && coverage report -m   # logic core should read 100%
 ```
 
+**Opt-in live-Freerouting tests** (`PCB_RUN_FREEROUTING_INTEGRATION=1`): the carrier integration test (`test_integration_b3_carrier.py`) and `test_incremental_routing.py::test_finish_partly_routed`. Both drive the real autorouter, which is **not run-to-run deterministic** — the incremental test asserts a completion delta that genuinely varies, so it fails intermittently and is too noisy to gate the default suite. Run them deliberately, not in CI.
+
+The 100% target must NOT depend on them. Coverage that a live route only reaches *incidentally* silently drops whenever that route varies — exactly what happened after the A\* router deletion (lines in `_add_stitching_vias`, `_add_rescue_vias`, `_generate_silkscreen` came and went between runs). Every such branch now has a deterministic unit test, and the invariant to check when adding one is `pytest --deselect <the live test>` still reporting 100%.
+
 **PCB test-case suite (`tests/test_cases/`).** Eight requirements fixtures spanning the stackup matrix — 2-layer (tc01–tc03) and 4-layer with 0–3 inner planes (tc04–tc08) — each validatable against `REQUIREMENTS_SCHEMA` and runnable end-to-end through `pcb-creator run`. `manifest.json` maps each case to its layer/plane configuration. `tc08_4l_compact` (12 components) is sized so a local model reliably emits a valid netlist, so it exercises the full 4-layer plane-generation path end-to-end (the larger 4-layer cases tend to block at LLM schematic generation).
 
 ## Key Learnings
