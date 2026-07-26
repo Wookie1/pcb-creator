@@ -30,7 +30,13 @@ Thumbs.db
 *.swo
 
 # Test data (dev notes / logs / large fixtures — not unit tests)
-test/
+# ...except the eval board suite, which IS source: scripts/eval_boards.py and
+# tests/test_two_sided.py both read it. Written as test/* rather than test/ so
+# the subdirectory can be re-included — git cannot re-include anything under a
+# directory it was told to ignore wholesale, and the plain form silently
+# swallowed a new fixture.
+test/*
+!test/requirements/
 
 # Temp
 /tmp/

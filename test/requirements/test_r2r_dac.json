@@ -1,0 +1,365 @@
+{
+  "project_name": "test_r2r_dac",
+  "description": "8-bit R-2R ladder DAC with a rail-to-rail op-amp buffer. Deliberately passive-dominated and tightly sized so the top side alone cannot hold it \u2014 the two-sided placement fixture.",
+  "power": {
+    "voltage": "3.3V",
+    "source": "Host MCU via input header"
+  },
+  "components": [
+    {
+      "ref": "U1",
+      "type": "ic",
+      "value": "MCP6002",
+      "package": "SOIC-8",
+      "purpose": "Rail-to-rail dual op-amp; channel A buffers the ladder output",
+      "specs": {
+        "pin_count": 8,
+        "pinout": "1:OUTA 2:INA- 3:INA+ 4:VSS 5:INB+ 6:INB- 7:OUTB 8:VDD"
+      }
+    },
+    {
+      "ref": "R1",
+      "type": "resistor",
+      "value": "10kohm",
+      "package": "0805",
+      "purpose": "Ladder series R between node 1 and node 2"
+    },
+    {
+      "ref": "R2",
+      "type": "resistor",
+      "value": "10kohm",
+      "package": "0805",
+      "purpose": "Ladder series R between node 2 and node 3"
+    },
+    {
+      "ref": "R3",
+      "type": "resistor",
+      "value": "10kohm",
+      "package": "0805",
+      "purpose": "Ladder series R between node 3 and node 4"
+    },
+    {
+      "ref": "R4",
+      "type": "resistor",
+      "value": "10kohm",
+      "package": "0805",
+      "purpose": "Ladder series R between node 4 and node 5"
+    },
+    {
+      "ref": "R5",
+      "type": "resistor",
+      "value": "10kohm",
+      "package": "0805",
+      "purpose": "Ladder series R between node 5 and node 6"
+    },
+    {
+      "ref": "R6",
+      "type": "resistor",
+      "value": "10kohm",
+      "package": "0805",
+      "purpose": "Ladder series R between node 6 and node 7"
+    },
+    {
+      "ref": "R7",
+      "type": "resistor",
+      "value": "10kohm",
+      "package": "0805",
+      "purpose": "Ladder series R between node 7 and node 8"
+    },
+    {
+      "ref": "R8",
+      "type": "resistor",
+      "value": "20kohm",
+      "package": "0805",
+      "purpose": "Ladder termination to GND"
+    },
+    {
+      "ref": "R9",
+      "type": "resistor",
+      "value": "20kohm",
+      "package": "0805",
+      "purpose": "Bit D0 2R rung"
+    },
+    {
+      "ref": "R10",
+      "type": "resistor",
+      "value": "20kohm",
+      "package": "0805",
+      "purpose": "Bit D1 2R rung"
+    },
+    {
+      "ref": "R11",
+      "type": "resistor",
+      "value": "20kohm",
+      "package": "0805",
+      "purpose": "Bit D2 2R rung"
+    },
+    {
+      "ref": "R12",
+      "type": "resistor",
+      "value": "20kohm",
+      "package": "0805",
+      "purpose": "Bit D3 2R rung"
+    },
+    {
+      "ref": "R13",
+      "type": "resistor",
+      "value": "20kohm",
+      "package": "0805",
+      "purpose": "Bit D4 2R rung"
+    },
+    {
+      "ref": "R14",
+      "type": "resistor",
+      "value": "20kohm",
+      "package": "0805",
+      "purpose": "Bit D5 2R rung"
+    },
+    {
+      "ref": "R15",
+      "type": "resistor",
+      "value": "20kohm",
+      "package": "0805",
+      "purpose": "Bit D6 2R rung"
+    },
+    {
+      "ref": "R16",
+      "type": "resistor",
+      "value": "20kohm",
+      "package": "0805",
+      "purpose": "Bit D7 2R rung"
+    },
+    {
+      "ref": "C1",
+      "type": "capacitor",
+      "value": "100nF",
+      "package": "0805",
+      "purpose": "Op-amp supply decoupling"
+    },
+    {
+      "ref": "C2",
+      "type": "capacitor",
+      "value": "1uF",
+      "package": "0805",
+      "purpose": "Bulk supply decoupling"
+    },
+    {
+      "ref": "C3",
+      "type": "capacitor",
+      "value": "10nF",
+      "package": "0805",
+      "purpose": "Output filter, rolls off ladder switching glitches"
+    },
+    {
+      "ref": "J1",
+      "type": "connector",
+      "value": "1x10_header",
+      "package": "PinHeader_1x10",
+      "purpose": "Digital input D0-D7 plus VCC/GND"
+    },
+    {
+      "ref": "J2",
+      "type": "connector",
+      "value": "1x3_header",
+      "package": "PinHeader_1x3",
+      "purpose": "Analog output, VCC, GND"
+    }
+  ],
+  "connections": [
+    {
+      "net_name": "VCC",
+      "net_class": "power",
+      "pins": [
+        "J1.9",
+        "U1.VDD",
+        "C1.1",
+        "C2.1",
+        "J2.2"
+      ]
+    },
+    {
+      "net_name": "GND",
+      "net_class": "ground",
+      "pins": [
+        "J1.10",
+        "U1.VSS",
+        "C1.2",
+        "C2.2",
+        "C3.2",
+        "J2.3",
+        "R8.2",
+        "U1.INB+"
+      ]
+    },
+    {
+      "net_name": "D0",
+      "net_class": "signal",
+      "pins": [
+        "J1.1",
+        "R9.1"
+      ]
+    },
+    {
+      "net_name": "D1",
+      "net_class": "signal",
+      "pins": [
+        "J1.2",
+        "R10.1"
+      ]
+    },
+    {
+      "net_name": "D2",
+      "net_class": "signal",
+      "pins": [
+        "J1.3",
+        "R11.1"
+      ]
+    },
+    {
+      "net_name": "D3",
+      "net_class": "signal",
+      "pins": [
+        "J1.4",
+        "R12.1"
+      ]
+    },
+    {
+      "net_name": "D4",
+      "net_class": "signal",
+      "pins": [
+        "J1.5",
+        "R13.1"
+      ]
+    },
+    {
+      "net_name": "D5",
+      "net_class": "signal",
+      "pins": [
+        "J1.6",
+        "R14.1"
+      ]
+    },
+    {
+      "net_name": "D6",
+      "net_class": "signal",
+      "pins": [
+        "J1.7",
+        "R15.1"
+      ]
+    },
+    {
+      "net_name": "D7",
+      "net_class": "signal",
+      "pins": [
+        "J1.8",
+        "R16.1"
+      ]
+    },
+    {
+      "net_name": "NODE1",
+      "net_class": "signal",
+      "pins": [
+        "R9.2",
+        "R1.1",
+        "R8.1"
+      ]
+    },
+    {
+      "net_name": "NODE2",
+      "net_class": "signal",
+      "pins": [
+        "R10.2",
+        "R1.2",
+        "R2.1"
+      ]
+    },
+    {
+      "net_name": "NODE3",
+      "net_class": "signal",
+      "pins": [
+        "R11.2",
+        "R2.2",
+        "R3.1"
+      ]
+    },
+    {
+      "net_name": "NODE4",
+      "net_class": "signal",
+      "pins": [
+        "R12.2",
+        "R3.2",
+        "R4.1"
+      ]
+    },
+    {
+      "net_name": "NODE5",
+      "net_class": "signal",
+      "pins": [
+        "R13.2",
+        "R4.2",
+        "R5.1"
+      ]
+    },
+    {
+      "net_name": "NODE6",
+      "net_class": "signal",
+      "pins": [
+        "R14.2",
+        "R5.2",
+        "R6.1"
+      ]
+    },
+    {
+      "net_name": "NODE7",
+      "net_class": "signal",
+      "pins": [
+        "R15.2",
+        "R6.2",
+        "R7.1"
+      ]
+    },
+    {
+      "net_name": "NODE8",
+      "net_class": "signal",
+      "pins": [
+        "R16.2",
+        "R7.2",
+        "U1.INA+"
+      ]
+    },
+    {
+      "net_name": "VOUT",
+      "net_class": "signal",
+      "pins": [
+        "U1.OUTA",
+        "U1.INA-",
+        "C3.1",
+        "J2.1"
+      ]
+    },
+    {
+      "net_name": "NC_B",
+      "net_class": "signal",
+      "pins": [
+        "U1.OUTB",
+        "U1.INB-"
+      ]
+    }
+  ],
+  "board": {
+    "width_mm": 30,
+    "height_mm": 16,
+    "layers": 2,
+    "two_sided": true
+  },
+  "placement_hints": [
+    {
+      "ref": "J1",
+      "edge": "bottom"
+    },
+    {
+      "ref": "J2",
+      "edge": "top"
+    }
+  ]
+}

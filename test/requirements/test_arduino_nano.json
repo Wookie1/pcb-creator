@@ -412,8 +412,8 @@
     }
   ],
   "board": {
-    "width_mm": 45,
-    "height_mm": 18,
+    "width_mm": 50,
+    "height_mm": 20,
     "layers": 2,
     "two_sided": true
   },

@@ -266,3 +266,61 @@ class TestUnflip:
                     f"{des} was left on the bottom but fits on top (seed {seed})")
 
         assert checked, "expected at least one bottom-side part to verify"
+
+
+class TestTwoSidedEvalFixture:
+    """`test_r2r_dac` is the eval board that exercises two-sided placement end
+    to end. The failure mode this guards is silent: a fixture can drift into
+    fitting entirely on the top side and still look healthy on the scoreboard,
+    at which point nothing measures the bottom-side path. That is exactly what
+    happened to `test_arduino_nano`, which carried `two_sided: true` for a while
+    without it changing the outcome.
+
+    Placement only — deterministic (fixed seed sweep), no Java, and no KiCad
+    library needed: the DAC's packages all resolve from the built-in/IPC tiers.
+    """
+
+    @staticmethod
+    def _place(tmp_path, two_sided: bool):
+        import json
+        import sys
+        from pathlib import Path
+
+        repo = Path(__file__).parent.parent
+        sys.path.insert(0, str(repo / "scripts"))
+        try:
+            import eval_boards
+        finally:
+            sys.path.pop(0)
+        from orchestrator.config import OrchestratorConfig
+        from orchestrator.stages import run_placement
+
+        req = json.loads(
+            (repo / "test" / "requirements" / "test_r2r_dac.json").read_text())
+        req["board"]["two_sided"] = two_sided
+        pdir = tmp_path / "dac"
+        ok, msg = eval_boards._build_netlist(req, pdir, "dac", {})
+        assert ok, msg
+        (pdir / "dac_requirements.json").write_text(json.dumps(req))
+        result = run_placement(
+            pdir, "dac", OrchestratorConfig.from_env(base_dir=repo),
+            board_width_mm=req["board"]["width_mm"],
+            board_height_mm=req["board"]["height_mm"])
+        placement = json.loads((pdir / "dac_placement.json").read_text())
+        sides = [c.get("layer", "top") for c in placement["placements"]]
+        return result, sides
+
+    def test_fixture_actually_uses_the_bottom_side(self, tmp_path):
+        result, sides = self._place(tmp_path, two_sided=True)
+        assert result.get("success"), result.get("error")
+        assert sides.count("bottom"), (
+            "test_r2r_dac placed entirely on the top side — it no longer "
+            "exercises two-sided placement, so resize it or add parts")
+
+    def test_the_bottom_side_is_the_flag_talking(self, tmp_path):
+        """Same board, flag off: nothing may land on the bottom. Without this
+        the test above would still pass if two_sided were ignored and some
+        other code path were flipping parts."""
+        result, sides = self._place(tmp_path, two_sided=False)
+        assert result.get("success"), result.get("error")
+        assert "bottom" not in sides
