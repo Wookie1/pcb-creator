@@ -1636,6 +1636,57 @@ def test_run_placement_two_sided_defaults_off(tmp_path):
     assert all(p.get("layer", "top") == "top" for p in placement["placements"])
 
 
+def test_run_placement_two_sided_can_be_turned_back_off(tmp_path):
+    """Opt-in the user cannot opt back out of is not opt-in.
+
+    The previous placement's setting used to be OR'd in, which made the flag a
+    one-way latch: once any run turned two-sided on, `"two_sided": false` in
+    requirements was silently ignored forever and parts kept going to the
+    bottom. Each source is authoritative when it says anything, false included.
+    """
+    from orchestrator import stages
+    pdir = tmp_path / "off"
+    pdir.mkdir()
+    (pdir / "off_netlist.json").write_text(json.dumps(_two_r_netlist()))
+    req = pdir / "off_requirements.json"
+
+    req.write_text(json.dumps({"board": {"layers": 2, "two_sided": True}}))
+    stages.run_placement(pdir, "off", _cfg(), board_width_mm=30,
+                         board_height_mm=20, seed=1)
+    assert json.loads((pdir / "off_placement.json").read_text())["board"][
+        "two_sided"] is True
+
+    req.write_text(json.dumps({"board": {"layers": 2, "two_sided": False}}))
+    r = stages.run_placement(pdir, "off", _cfg(), board_width_mm=30,
+                             board_height_mm=20, seed=1)
+    assert r["success"], r.get("error")
+    placement = json.loads((pdir / "off_placement.json").read_text())
+    assert placement["board"]["two_sided"] is False
+    assert all(p.get("layer", "top") == "top" for p in placement["placements"])
+
+
+def test_run_placement_two_sided_survives_a_silent_requirements(tmp_path):
+    """...but a requirements file that says nothing must not turn it off either.
+
+    This is the routing retry loop's path: it re-places without passing the
+    flag, and must stay consistent with the route it is retrying.
+    """
+    from orchestrator import stages
+    pdir = tmp_path / "keep"
+    pdir.mkdir()
+    (pdir / "keep_netlist.json").write_text(json.dumps(_two_r_netlist()))
+    (pdir / "keep_requirements.json").write_text(json.dumps({"board": {"layers": 2}}))
+    stages.run_placement(pdir, "keep", _cfg(), board_width_mm=30,
+                         board_height_mm=20, seed=1, two_sided=True)
+    assert json.loads((pdir / "keep_placement.json").read_text())["board"][
+        "two_sided"] is True
+
+    stages.run_placement(pdir, "keep", _cfg(), board_width_mm=30,
+                         board_height_mm=20, seed=1)
+    assert json.loads((pdir / "keep_placement.json").read_text())["board"][
+        "two_sided"] is True
+
+
 def test_run_placement_promotes_for_plane_layers_arg(tmp_path):
     from orchestrator import stages
     pdir, name = _placed_project(tmp_path, "promo")

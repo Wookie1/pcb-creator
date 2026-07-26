@@ -507,24 +507,27 @@ def run_placement(
     # components on the bottom changes assembly cost and is the user's call, so
     # it is opt-in only. Explicit arg wins; then the board spec in requirements
     # (the durable, user-authored channel, same as plane_layers below); then the
-    # previous placement's setting, so the routing retry loop re-places
-    # consistently.
+    # previous placement's setting, so the routing retry loop — which re-places
+    # without passing the flag — stays consistent with the route it is retrying.
+    #
+    # Each source is authoritative when it says anything AT ALL, false included.
+    # The previous version OR'd the previous placement in, which made the flag a
+    # one-way latch: once any run turned it on, `"two_sided": false` in
+    # requirements was silently ignored forever and parts kept going to the
+    # bottom. Opt-in the user cannot opt back out of is not opt-in.
     if two_sided is None:
-        two_sided = bool(placement.get("board", {}).get("two_sided", False))
-        if not two_sided:
-            req_path = _p(project_dir, project_name, "requirements")
-            if req_path.exists():
-                try:
-                    two_sided = bool(
-                        _load(req_path).get("board", {}).get("two_sided"))
-                except Exception:
-                    pass
-        if placement_path.exists():
+        def _spec(path: Path):
             try:
-                two_sided = two_sided or bool(
-                    _load(placement_path).get("board", {}).get("two_sided"))
+                return _load(path).get("board", {}).get("two_sided")
             except Exception:
-                pass
+                return None
+
+        two_sided = False
+        for path in (_p(project_dir, project_name, "requirements"),
+                     placement_path):
+            if path.exists() and (said := _spec(path)) is not None:
+                two_sided = bool(said)
+                break
     placement.setdefault("board", {})["two_sided"] = two_sided
 
     # Inner-layer stackup (4-layer): how many inner layers are PLANES vs signal.
