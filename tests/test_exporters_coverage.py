@@ -147,6 +147,17 @@ _MOD_2PAD = """(footprint "R_0805" (layer "F.Cu")
 """
 
 
+# Corner-anchored like over half the stock KiCad library (e.g. DIP-8_W7.62mm
+# puts pin 1 at the origin). Pads must come back centred on the origin.
+_MOD_CORNER_ANCHORED = """(footprint "DIP-4" (layer "F.Cu")
+  (pad "1" thru_hole circle (at 0 0) (size 1.6 1.6) (layers "*.Cu"))
+  (pad "2" thru_hole circle (at 0 -2.54) (size 1.6 1.6) (layers "*.Cu"))
+  (pad "3" thru_hole circle (at 7.62 -2.54) (size 1.6 1.6) (layers "*.Cu"))
+  (pad "4" thru_hole circle (at 7.62 0) (size 1.6 1.6) (layers "*.Cu"))
+)
+"""
+
+
 class TestKicadModParser:
     def test_parse_real_footprint(self, tmp_path):
         from exporters.kicad_mod_parser import parse_kicad_mod
@@ -155,9 +166,33 @@ class TestKicadModParser:
         fp = parse_kicad_mod(p)
         # Two numbered pads; lettered "A1" and empty pads skipped (61, 71-74).
         assert set(fp.pin_offsets) == {1, 2}
-        # KiCad Y inverted: at 0.5 -> -0.5
-        assert fp.pin_offsets[1] == (-1.0, -0.5)
+        # Both pads sit at KiCad y=0.5, so the pad field's centre is y=0.5 and
+        # centring puts them on the axis. X was already centred.
+        assert fp.pin_offsets[1] == (-1.0, 0.0)
+        assert fp.pin_offsets[2] == (1.0, 0.0)
         assert fp.pad_size == (1.0, 1.25)
+
+    def test_pad_field_is_centred_on_origin(self, tmp_path):
+        """Corner-anchored footprints are re-centred (the #1 placement bug).
+
+        Left verbatim, a centred body box unioned with an off-centre pad box
+        roughly doubles the part's apparent size, so parts stopped fitting on
+        boards with room to spare and pads were pushed past the board edge.
+        """
+        from exporters.kicad_mod_parser import parse_kicad_mod
+        p = tmp_path / "DIP-4.kicad_mod"
+        p.write_text(_MOD_CORNER_ANCHORED)
+        fp = parse_kicad_mod(p)
+        xs = [o[0] for o in fp.pin_offsets.values()]
+        ys = [o[1] for o in fp.pin_offsets.values()]
+        assert (min(xs) + max(xs)) / 2 == 0.0
+        assert (min(ys) + max(ys)) / 2 == 0.0
+        # Extent is preserved — only the anchor moved.
+        assert max(xs) - min(xs) == 7.62
+        assert max(ys) - min(ys) == 2.54
+        # Y still inverted relative to KiCad: pad 2 (KiCad y=-2.54) ends up
+        # ABOVE pad 1 (KiCad y=0) in this module's Y-up convention.
+        assert fp.pin_offsets[2][1] > fp.pin_offsets[1][1]
 
     def test_missing_file_returns_none(self, tmp_path):
         from exporters.kicad_mod_parser import parse_kicad_mod

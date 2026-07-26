@@ -593,9 +593,13 @@ def run_placement(
             best_placement, best_violations = cand, v
         if v["count"] == 0:
             break
-        # A different seed can't fix pinned/out-of-bounds fixed parts.
-        if ([e for e in v["out_of_bounds"] if e["pinned"]]
-                + [o for o in v["overlaps"] if o["pinned"]]):
+        # Only give up early on parts NO seed can move: user-placed positions and
+        # mechanical keepouts. Connectors are `pinned` for optimize_placement but
+        # repair_placement relocates them freely, so a connector left overlapping
+        # is a search failure another seed can fix — breaking on it here threw
+        # away the retries that resolve it.
+        if ([e for e in v["out_of_bounds"] if e.get("hard_pinned")]
+                + [o for o in v["overlaps"] if o.get("hard_pinned")]):
             break
     placement, violations = best_placement, best_violations
 

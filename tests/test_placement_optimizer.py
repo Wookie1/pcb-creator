@@ -2,6 +2,7 @@
 
 import json
 import os
+import random
 import sys
 
 import pytest
@@ -587,3 +588,86 @@ class TestFunctionalGrouping:
         # Optimizer returns a valid placement with all components present.
         got = {p["designator"] for p in out["placements"]}
         assert got == {"U1", "C1", "J1"}
+
+
+# ---------------------------------------------------------------------------
+# Rotation heuristic (the "smart rotate" that used to score every orientation
+# identically and therefore always answered 0°)
+# ---------------------------------------------------------------------------
+
+from optimizers.placement_optimizer import (  # noqa: E402
+    _build_pin_nets, _generate_move, _rotation_pin_cost,
+)
+
+
+def test_rotation_pin_cost_distinguishes_orientations():
+    """Rotation must change the score, or the heuristic cannot choose.
+
+    U1's pin 2 is on its right at 0°; R1 sits far to the left. Turning U1 180°
+    swings pin 2 toward R1, which is strictly better. The old implementation
+    used centre-to-centre wire length, which rotation does not affect at all.
+    """
+    pin_nets = {"U1": [(2, ["R1"])]}
+    pin_offsets = {("U1", 1): (-2.0, 0.0), ("U1", 2): (2.0, 0.0)}
+    positions = {"U1": (20.0, 10.0), "R1": (5.0, 10.0)}
+
+    costs = {r: _rotation_pin_cost("U1", r, positions, pin_nets, pin_offsets)
+             for r in (0, 90, 180, 270)}
+    assert costs[180] < costs[0], "180° faces pin 2 at R1 and must score better"
+    assert len(set(costs.values())) > 1, "orientations must not all tie"
+
+
+def test_smart_rotate_proposes_the_better_orientation():
+    pin_nets = {"U1": [(2, ["R1"])]}
+    pin_offsets = {("U1", 1): (-2.0, 0.0), ("U1", 2): (2.0, 0.0)}
+    positions = {"U1": (20.0, 10.0), "R1": (5.0, 10.0)}
+    rotations = {"U1": 0, "R1": 0}
+    footprints = {"U1": (4.0, 2.0), "R1": (1.0, 1.0)}
+    layers = {"U1": "top", "R1": "top"}
+
+    rng = random.Random(0)
+    proposed = []
+    for _ in range(2000):
+        _, new_rot = _generate_move(
+            positions, rotations, ["U1", "R1"], [], footprints, layers,
+            50, 50, 50, 100, rng, pin_nets=pin_nets, pin_offsets=pin_offsets)
+        if new_rot["U1"] != rotations["U1"]:
+            proposed.append(new_rot["U1"])
+
+    assert proposed, "rotation moves must be generated"
+    # The evaluated half concentrates on 180; the random half spreads over the
+    # rest. 180 must therefore dominate — it used to be 0° that did.
+    assert proposed.count(180) > proposed.count(90) + proposed.count(270)
+
+
+def test_rotation_ties_keep_the_current_orientation():
+    """A symmetric part has no better orientation; it must not drift to 0°."""
+    pin_nets = {"U1": [(1, ["R1"])]}
+    pin_offsets = {("U1", 1): (0.0, 0.0)}  # pad on the centre: every rotation ties
+    positions = {"U1": (20.0, 10.0), "R1": (5.0, 10.0)}
+    ordered = [90, 0, 180, 270]
+    costs = [_rotation_pin_cost("U1", r, positions, pin_nets, pin_offsets)
+             for r in ordered]
+    assert len(set(costs)) == 1
+    assert min(ordered, key=lambda r: costs[ordered.index(r)]) == 90
+
+
+def test_build_pin_nets_skips_single_component_nets():
+    netlist = {"elements": [
+        {"element_type": "component", "component_id": "c1", "designator": "U1"},
+        {"element_type": "component", "component_id": "c2", "designator": "R1"},
+        {"element_type": "port", "port_id": "p1", "component_id": "c1",
+         "pin_number": 1},
+        {"element_type": "port", "port_id": "p2", "component_id": "c1",
+         "pin_number": 2},
+        {"element_type": "port", "port_id": "p3", "component_id": "c2",
+         "pin_number": 1},
+        # Net entirely inside U1 — says nothing about orientation.
+        {"element_type": "net", "net_id": "n1", "name": "INTERNAL",
+         "net_class": "signal", "connected_port_ids": ["p1", "p2"]},
+        {"element_type": "net", "net_id": "n2", "name": "REAL",
+         "net_class": "signal", "connected_port_ids": ["p2", "p3"]},
+    ]}
+    pin_nets = _build_pin_nets(netlist)
+    assert pin_nets["U1"] == [(2, ["R1"])]
+    assert pin_nets["R1"] == [(1, ["U1"])]

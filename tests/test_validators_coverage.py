@@ -1100,17 +1100,69 @@ def test_dfm_copper_to_edge_trace_and_via():
     assert any("Via copper" in x.message for x in v)
 
 
+_SILK_DFM = {"silkscreen_min_height_mm": 0.8, "silkscreen_min_width_mm": 0.15}
+
+
 def test_dfm_silkscreen_height_and_width():
-    routed = {"silkscreen": [
-        {"type": "text", "text": "X", "font_height_mm": 0.3,
-         "x_mm": 1, "y_mm": 1},
-    ]}
-    v = dfm.check_silkscreen(routed, {"silkscreen_min_height_mm": 0.8,
-                                      "silkscreen_min_width_mm": 0.15})
+    routed = {"board": {"width_mm": 20, "height_mm": 20},
+              "silkscreen": [
+                  {"type": "text", "text": "X", "font_height_mm": 0.3,
+                   "x_mm": 10, "y_mm": 10},
+              ]}
+    v = dfm.check_silkscreen(routed, {"elements": []}, _SILK_DFM)
     rules = {x.rule for x in v}
     assert "silkscreen_height" in rules
     assert "silkscreen_width" in rules
     assert all(x.severity == "warning" for x in v)
+
+
+def test_dfm_silkscreen_off_board_is_reported():
+    """The relocator's best-effort fallback used to fail silently — a label
+    past the outline is clipped by the fab and simply missing on the board."""
+    routed = {"board": {"width_mm": 20, "height_mm": 20},
+              "silkscreen": [
+                  {"type": "text", "text": "R1", "font_height_mm": 1.0,
+                   "x_mm": 19.8, "y_mm": 10},
+              ]}
+    v = dfm.check_silkscreen(routed, {"elements": []}, _SILK_DFM)
+    assert "silkscreen_off_board" in {x.rule for x in v}
+
+
+def test_dfm_silkscreen_under_component_is_reported():
+    routed = {
+        "board": {"width_mm": 20, "height_mm": 20},
+        "placements": [{"designator": "U1", "component_type": "ic",
+                        "x_mm": 10, "y_mm": 10, "rotation_deg": 0,
+                        "footprint_width_mm": 6.0, "footprint_height_mm": 6.0}],
+        "silkscreen": [{"type": "text", "text": "R1", "font_height_mm": 1.0,
+                        "x_mm": 10, "y_mm": 10}],
+    }
+    v = dfm.check_silkscreen(routed, {"elements": []}, _SILK_DFM)
+    assert "silkscreen_under_component" in {x.rule for x in v}
+
+
+def test_dfm_silkscreen_clean_label_passes():
+    routed = {
+        "board": {"width_mm": 20, "height_mm": 20},
+        "placements": [{"designator": "U1", "component_type": "ic",
+                        "x_mm": 5, "y_mm": 5, "rotation_deg": 0,
+                        "footprint_width_mm": 2.0, "footprint_height_mm": 2.0}],
+        "silkscreen": [{"type": "text", "text": "U1", "font_height_mm": 1.0,
+                        "x_mm": 15, "y_mm": 15}],
+    }
+    assert dfm.check_silkscreen(routed, {"elements": []}, _SILK_DFM) == []
+
+
+def test_dfm_silkscreen_markers_may_touch_their_pad():
+    """A pin-1 dot's whole job is to sit against its pad, so it is exempt from
+    the over-pad check that applies to designators."""
+    routed = {
+        "board": {"width_mm": 20, "height_mm": 20},
+        "placements": [],
+        "silkscreen": [{"type": "dot", "purpose": "pin1", "diameter_mm": 0.5,
+                        "x_mm": 10, "y_mm": 10}],
+    }
+    assert dfm.check_silkscreen(routed, {"elements": []}, _SILK_DFM) == []
 
 
 def test_dfm_hole_to_hole_via_via():

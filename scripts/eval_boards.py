@@ -163,10 +163,13 @@ def eval_board(req_path: Path, config, effort: str, auto_retry: bool) -> dict:
         # Write requirements next to the netlist so DFM profiles apply
         (pdir / f"{name}_requirements.json").write_text(json.dumps(req))
 
+        # No explicit seed: run_placement's seed sweep (0..4, first clean result
+        # wins) is the production path, and forcing a seed here pinned it to a
+        # single attempt — so the eval measured a placement path no real caller
+        # uses. The sweep is a fixed sequence, so this stays reproducible.
         place = run_placement(pdir, name, config,
                               board_width_mm=req.get("board", {}).get("width_mm"),
-                              board_height_mm=req.get("board", {}).get("height_mm"),
-                              seed=42)
+                              board_height_mm=req.get("board", {}).get("height_mm"))
         if not place.get("success"):
             row.update(status="place_failed", detail=place.get("error", "?"))
             return row
@@ -251,14 +254,13 @@ def main() -> int:
         rows.append(row)
 
     OUT_DIR.mkdir(exist_ok=True)
-    meta = {"engine": args.engine, "effort": args.effort,
-            "auto_retry": not args.no_retry}
+    meta = {"effort": args.effort, "auto_retry": not args.no_retry}
     (OUT_DIR / "scoreboard.json").write_text(
         json.dumps({"meta": meta, "rows": rows}, indent=2))
 
     cols = ["board", "components", "nets", "status", "completion", "vias",
             "drc_errors", "drc_warnings", "wire_mm", "route_s", "retried", "fallback_fps"]
-    lines = [f"# Board eval — engine={args.engine} effort={args.effort} "
+    lines = [f"# Board eval — effort={args.effort} "
              f"retry={'on' if not args.no_retry else 'off'}", "",
              "| " + " | ".join(cols) + " |",
              "|" + "---|" * len(cols)]

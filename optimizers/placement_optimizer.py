@@ -100,6 +100,13 @@ BOARD_EDGE_CLEARANCE_MM = 1.0
 # Component types that are pinned (never moved)
 PINNED_TYPES = {"connector", "fiducial"}
 
+# Consecutive rejected-as-invalid proposals before the SA loop gives up. This is
+# NOT the stagnation limit: it only fires when the move generator cannot produce
+# a single legal move for this many tries in a row, i.e. the board is packed
+# solid and no further search will help. The iteration budget bounds the work
+# either way, so it can be generous.
+_INVALID_STREAK_LIMIT = 5000
+
 # Packages that are mechanical keepouts — mounting holes and fiducials must
 # stay where they were placed (they line up with the enclosure/assembly).
 _KEEPOUT_PACKAGE_RE = re.compile(r"MountingHole|Fiducial", re.IGNORECASE)
@@ -211,6 +218,38 @@ def _boxes_overlap_with_clearance(
         b1[3] + clearance <= b2[1] or
         b2[3] + clearance <= b1[1]
     )
+
+
+def _clamp_centre(
+    x: float, y: float,
+    w: float, h: float, rotation: int,
+    board_w: float, board_h: float,
+    package: str = "", pin_count: int = 2,
+) -> tuple[float, float]:
+    """Nearest centre that puts the part's PAD-EXTENT box inside the edge clearance.
+
+    The single source of truth for "where may this component's centre sit". It
+    must agree with `_is_valid` / `_count_violations`, which score the pad-extent
+    box against BOARD_EDGE_CLEARANCE_MM — clamping on the body box instead (the
+    old behaviour in three separate places) let callers propose and snap to
+    positions the validator would always reject, most visibly for parts whose
+    pads reach past their body outline.
+
+    Offsets from the centre are translation-invariant, so the box is measured
+    once at the origin and solved for the centre.
+    """
+    ec = BOARD_EDGE_CLEARANCE_MM
+    if package:
+        bx = _get_pad_extent_box(0.0, 0.0, w, h, rotation, package, pin_count)
+    else:
+        bx = _get_bounding_box(0.0, 0.0, w, h, rotation)
+    lo_x, hi_x = ec - bx[0], board_w - ec - bx[2]
+    lo_y, hi_y = ec - bx[1], board_h - ec - bx[3]
+    # A part too big for the board leaves lo > hi; pin it at lo so the result is
+    # deterministic and the violation still gets counted and reported.
+    nx = max(lo_x, min(hi_x, x)) if lo_x <= hi_x else lo_x
+    ny = max(lo_y, min(hi_y, y)) if lo_y <= hi_y else lo_y
+    return nx, ny
 
 
 # ---------- Placement quality cost functions ----------
@@ -346,6 +385,98 @@ def _read_functional_groups(netlist: dict) -> dict[str, str]:
         if des and isinstance(label, str) and label.strip():
             groups[des] = label.strip()
     return groups
+
+
+def _build_pin_nets(netlist: dict) -> dict[str, list[tuple[int, list[str]]]]:
+    """designator -> [(pin_number, [other designators on that pin's net]), ...].
+
+    Feeds the rotation heuristic in `_generate_move`, which needs to know where
+    a specific PIN of a part sits relative to what it connects to. `NetInfo`
+    only records which components a net touches, which is why the old rotation
+    evaluation could not tell orientations apart.
+    """
+    components: dict[str, dict] = {}
+    ports: dict[str, dict] = {}
+    for elem in netlist.get("elements", []):
+        etype = elem.get("element_type")
+        if etype == "component":
+            components[elem["component_id"]] = elem
+        elif etype == "port":
+            ports[elem["port_id"]] = elem
+
+    port_info: dict[str, tuple[str, int]] = {}  # port_id -> (designator, pin)
+    for pid, port in ports.items():
+        comp = components.get(port.get("component_id", ""))
+        pin = port.get("pin_number")
+        if comp and isinstance(pin, int):
+            port_info[pid] = (comp["designator"], pin)
+
+    out: dict[str, list[tuple[int, list[str]]]] = {}
+    for elem in netlist.get("elements", []):
+        if elem.get("element_type") != "net":
+            continue
+        members = [port_info[pid] for pid in elem.get("connected_port_ids", [])
+                   if pid in port_info]
+        designators = {d for d, _ in members}
+        if len(designators) < 2:
+            continue  # a net inside one part tells rotation nothing
+        for des, pin in members:
+            others = sorted(designators - {des})
+            if others:
+                out.setdefault(des, []).append((pin, others))
+    return out
+
+
+def _rotation_pin_cost(
+    des: str,
+    rotation: int,
+    positions: dict[str, tuple[float, float]],
+    pin_nets: dict[str, list[tuple[int, list[str]]]],
+    pin_offsets: dict[tuple[str, int], tuple[float, float]],
+) -> float:
+    """Manhattan distance from this part's PADS to what each pad connects to.
+
+    Rotation-sensitive by construction, unlike the centre-to-centre wire length
+    the SA cost uses — that is the whole point: turning a part moves its pins,
+    not its centre, so centre-based wire length scores every orientation
+    identically.
+    """
+    origin = positions.get(des)
+    if origin is None:
+        return 0.0
+    cx, cy = origin
+    rad = math.radians(rotation)
+    ca, sa = math.cos(rad), math.sin(rad)
+    total = 0.0
+    for pin, others in pin_nets.get(des, ()):
+        off = pin_offsets.get((des, pin))
+        if off is None:
+            continue
+        px = cx + off[0] * ca - off[1] * sa
+        py = cy + off[0] * sa + off[1] * ca
+        for other in others:
+            p = positions.get(other)
+            if p is not None:
+                total += abs(px - p[0]) + abs(py - p[1])
+    return total
+
+
+def _build_pin_offsets(
+    packages: dict[str, tuple[str, int]],
+) -> dict[tuple[str, int], tuple[float, float]]:
+    """(designator, pin_number) -> unrotated pad offset from the part centre."""
+    from .pad_geometry import get_footprint_def
+    out: dict[tuple[str, int], tuple[float, float]] = {}
+    for des, (pkg, pin_count) in packages.items():
+        fp = get_footprint_def(pkg, pin_count)
+        if fp is None:
+            continue
+        for pin, off in fp.pin_offsets.items():
+            try:
+                out[(des, int(pin))] = (float(off[0]), float(off[1]))
+            except (TypeError, ValueError):  # lettered BGA pads etc.
+                continue
+    return out
 
 
 CONGESTION_CELL_MM = 5.0     # pad-density bucket size
@@ -679,6 +810,11 @@ def optimize_placement(
     # Build connectivity from netlist
     nets = build_connectivity(netlist)
 
+    # Pin-level connectivity + pad offsets for the rotation heuristic. Built
+    # once; the SA loop only does arithmetic on them.
+    pin_nets = _build_pin_nets(netlist)
+    pin_offsets = _build_pin_offsets(packages)
+
     # Build placement quality associations
     decoupling = find_decoupling_associations(netlist)
     crystal_assocs = find_crystal_associations(netlist)
@@ -781,6 +917,7 @@ def optimize_placement(
 
     T = config.initial_temperature
     since_improvement = 0
+    invalid_streak = 0
     accepted = 0
 
     # Group components by package for swap moves
@@ -812,16 +949,25 @@ def optimize_placement(
                 current_pos, current_rot, movable, swappable_groups,
                 footprints, current_layers, board_w, board_h, T,
                 config.initial_temperature, rng,
-                nets=nets,
+                nets=nets, packages=packages,
+                pin_nets=pin_nets, pin_offsets=pin_offsets,
             )
 
-        # Fast constraint check
+        # Fast constraint check. A rejected-as-invalid proposal is a move that
+        # never happened — it says nothing about whether the search has stopped
+        # improving, so it must NOT feed `since_improvement`. It used to, which
+        # made the early-stop fire soonest on exactly the boards that need the
+        # most search: on a dense board over half of all proposals are invalid,
+        # so the optimizer quit at ~76% of its iteration budget while still
+        # parked on a constraint violation. Invalid streaks get their own, much
+        # larger cap so a genuinely stuck search still exits.
         if not _is_valid(new_pos, new_rot, footprints, new_layers, board_w, board_h, packages,
                          clearance=config.min_clearance_mm):
-            since_improvement += 1
-            if since_improvement >= config.stagnation_limit:
+            invalid_streak += 1
+            if invalid_streak >= _INVALID_STREAK_LIMIT:
                 break
             continue
+        invalid_streak = 0
 
         # Incremental cost: only nets touching moved components are recomputed.
         changed = [d for d in movable if new_pos[d] != current_pos[d]]
@@ -917,6 +1063,9 @@ def _generate_move(
     initial_temperature: float,
     rng: random.Random,
     nets: list[NetInfo] | None = None,
+    packages: dict[str, tuple[str, int]] | None = None,
+    pin_nets: dict[str, list[tuple[int, list[str]]]] | None = None,
+    pin_offsets: dict[tuple[str, int], tuple[float, float]] | None = None,
 ) -> tuple[dict[str, tuple[float, float]], dict[str, int]]:
     """Generate a random perturbation.
 
@@ -936,14 +1085,16 @@ def _generate_move(
         dx = rng.gauss(0, scale)
         dy = rng.gauss(0, scale)
         ox, oy = positions[des]
-        # Clamp to board boundaries considering footprint
+        # Clamp so the pad-extent box lands inside the edge clearance — the same
+        # box and margin the validator scores. Clamping on the body box with no
+        # margin (the old behaviour) made the reachable region a superset of the
+        # legal one: SA burned proposals on positions that could never be
+        # accepted, and since the stagnation counter also ticks on rejected
+        # moves, dense boards quit early parked on a boundary violation.
         w, h = footprints[des]
-        rot = new_rot[des]
-        if rot in (90, 270):
-            w, h = h, w
-        hw, hh = w / 2, h / 2
-        nx = max(hw, min(board_w - hw, ox + dx))
-        ny = max(hh, min(board_h - hh, oy + dy))
+        pkg, pin_count = (packages or {}).get(des, ("", 2))
+        nx, ny = _clamp_centre(ox + dx, oy + dy, w, h, new_rot[des],
+                               board_w, board_h, pkg, pin_count)
         new_pos[des] = (round(nx, 2), round(ny, 2))
 
     elif r < 0.85 and swappable_groups:
@@ -953,27 +1104,25 @@ def _generate_move(
         new_pos[a], new_pos[b] = new_pos[b], new_pos[a]
 
     else:
-        # SMART ROTATE: 50% evaluate best rotation, 50% random
+        # SMART ROTATE: 50% evaluate best rotation, 50% random.
+        #
+        # The evaluation scores candidate orientations by where this part's PADS
+        # land relative to what they connect to. It used to call
+        # total_wire_length, which is centre-to-centre — rotation is not even an
+        # input to it, so all four candidates scored identically and the strict
+        # `<` comparison always kept the first, snapping every connected part to
+        # 0° and burning four MST computations to do it.
         des = rng.choice(movable)
         all_options = [0, 90, 180, 270]
         current = new_rot[des]
 
-        if rng.random() < 0.5 and nets:
-            # Evaluate: pick rotation that minimizes connected wire length
-            relevant_nets = [n for n in nets if des in n.designators]
-            if relevant_nets:
-                best_rot_val = current
-                best_wl = float('inf')
-                for rot_candidate in all_options:
-                    new_rot[des] = rot_candidate
-                    wl = total_wire_length(relevant_nets, new_pos)
-                    if wl < best_wl:
-                        best_wl = wl
-                        best_rot_val = rot_candidate
-                new_rot[des] = best_rot_val
-            else:
-                options = [rv for rv in all_options if rv != current]
-                new_rot[des] = rng.choice(options)
+        if rng.random() < 0.5 and pin_nets and pin_nets.get(des):
+            # Current rotation first, so an exact tie (a symmetric part, or one
+            # whose pads are all equidistant) leaves the orientation alone
+            # instead of drifting.
+            ordered = [current] + [rv for rv in all_options if rv != current]
+            new_rot[des] = min(ordered, key=lambda rv: _rotation_pin_cost(
+                des, rv, new_pos, pin_nets, pin_offsets or {}))
         else:
             # Random rotation (avoid current)
             options = [rv for rv in all_options if rv != current]
@@ -1108,9 +1257,17 @@ def find_placement_violations(
     """Structured constraint report for a placement (pad-extent aware).
 
     Returns {"out_of_bounds": [...], "overlaps": [...], "count": int}.
-    Each out_of_bounds entry: {designator, pinned, detail}.
+    Each out_of_bounds entry: {designator, pinned, hard_pinned, detail}.
     Each overlap entry: {a, b, layer, pinned (both pinned → unfixable
-    automatically), detail}.
+    automatically), hard_pinned, detail}.
+
+    `pinned` means `optimize_placement` will not move it (user-placed, a keepout
+    package, or a PINNED_TYPES component like a connector). `hard_pinned` is the
+    stricter set that `repair_placement` also refuses to move — user-placed and
+    keepout packages only. The distinction matters to callers deciding whether to
+    retry on a new seed: repair DOES relocate connectors, so a connector left
+    overlapping is a search failure a different seed can fix, whereas a
+    user-placed part in the way will never move on its own.
     """
     board = placement.get("board", {})
     board_w = board.get("width_mm", 0.0)
@@ -1128,7 +1285,7 @@ def find_placement_violations(
             elif elem.get("element_type") == "component":
                 des_to_comp_id[elem.get("designator", "")] = elem["component_id"]
 
-    boxes: list[tuple[str, tuple, str, bool]] = []  # (des, box, layer, pinned)
+    boxes: list[tuple[str, tuple, str, bool, bool]] = []  # +hard_pinned
     out_of_bounds: list[dict] = []
     ec = BOARD_EDGE_CLEARANCE_MM
     for item in items:
@@ -1137,9 +1294,9 @@ def find_placement_violations(
         fw, fh = item["footprint_width_mm"], item["footprint_height_mm"]
         rot = item.get("rotation_deg", 0)
         pkg = item.get("package", "")
-        pinned = (item.get("placement_source") == "user"
-                  or item.get("component_type") in PINNED_TYPES
-                  or _is_keepout_package(pkg))
+        hard_pinned = (item.get("placement_source") == "user"
+                       or _is_keepout_package(pkg))
+        pinned = hard_pinned or item.get("component_type") in PINNED_TYPES
         if pkg:
             pin_count = comp_pin_counts.get(des_to_comp_id.get(des, ""), 2)
             box = _get_pad_extent_box(x, y, fw, fh, rot, pkg, pin_count)
@@ -1147,7 +1304,7 @@ def find_placement_violations(
             box = _get_bounding_box(x, y, fw, fh, rot)
         eff_layer = _effective_layer(pkg, pin_count if pkg else 2,
                                      item.get("layer", "top"))
-        boxes.append((des, box, eff_layer, pinned))
+        boxes.append((des, box, eff_layer, pinned, hard_pinned))
 
         parts = []
         if box[0] < ec - 0.01:
@@ -1160,7 +1317,7 @@ def find_placement_violations(
             parts.append(f"{box[3] - (board_h - ec):.2f}mm past the bottom edge margin")
         if parts:
             out_of_bounds.append({
-                "designator": des, "pinned": pinned,
+                "designator": des, "pinned": pinned, "hard_pinned": hard_pinned,
                 "detail": f"{des} pads extend {', '.join(parts)} "
                           f"(board {board_w}x{board_h}mm, edge clearance {ec}mm)",
             })
@@ -1168,14 +1325,15 @@ def find_placement_violations(
     overlaps: list[dict] = []
     for i in range(len(boxes)):
         for j in range(i + 1, len(boxes)):
-            des_a, box_a, layer_a, pin_a = boxes[i]
-            des_b, box_b, layer_b, pin_b = boxes[j]
+            des_a, box_a, layer_a, pin_a, hard_a = boxes[i]
+            des_b, box_b, layer_b, pin_b, hard_b = boxes[j]
             if not _layers_conflict(layer_a, layer_b):
                 continue
             if _boxes_overlap_with_clearance(box_a, box_b, clearance):
                 overlaps.append({
                     "a": des_a, "b": des_b, "layer": layer_a,
                     "pinned": pin_a and pin_b,
+                    "hard_pinned": hard_a and hard_b,
                     "detail": f"{des_a} and {des_b} overlap (or are closer "
                               f"than {clearance}mm) on {layer_a}"
                               + (" — both are pinned; move one of them"
@@ -1266,13 +1424,9 @@ def repair_placement(
             continue
         x, y = positions[des]
         fw, fh = footprints[des]
-        rot = rotations[des]
-        if rot in (90, 270):
-            fw, fh = fh, fw
-        hw, hh = fw / 2, fh / 2
-        margin = BOARD_EDGE_CLEARANCE_MM
-        nx = max(hw + margin, min(board_w - hw - margin, x))
-        ny = max(hh + margin, min(board_h - hh - margin, y))
+        pkg2, pc2 = packages.get(des, ("", 2))
+        nx, ny = _clamp_centre(x, y, fw, fh, rotations[des],
+                               board_w, board_h, pkg2, pc2)
         within = (nx == x and ny == y)
         if is_user:
             if not within:
@@ -1291,27 +1445,24 @@ def repair_placement(
     for des in movable:
         x, y = positions[des]
         fw, fh = footprints[des]
-        rot = rotations[des]
-        if rot in (90, 270):
-            fw, fh = fh, fw
-        hw, hh = fw / 2, fh / 2
-        margin = BOARD_EDGE_CLEARANCE_MM
-        nx = max(hw + margin, min(board_w - hw - margin, x))
-        ny = max(hh + margin, min(board_h - hh - margin, y))
+        pkg2, pc2 = packages.get(des, ("", 2))
+        nx, ny = _clamp_centre(x, y, fw, fh, rotations[des],
+                               board_w, board_h, pkg2, pc2)
         if nx != x or ny != y:
             positions[des] = (round(nx, 2), round(ny, 2))
             snapped += 1
         # If component is taller than 90% of the board, rotate 90° and snap near an edge.
         # After rotation it becomes wide+short, so place it near top or bottom edge.
-        if fh > board_h * 0.9 and fw <= board_w * 0.9 and rotations[des] in (0, 180):
+        rot = rotations[des]
+        eh = fw if rot in (90, 270) else fh
+        ew = fh if rot in (90, 270) else fw
+        if eh > board_h * 0.9 and ew <= board_w * 0.9 and rot in (0, 180):
             rotations[des] = 90
-            hw2, hh2 = fh / 2, fw / 2  # swapped after 90° rotation
-            nx2 = max(hw2 + margin, min(board_w - hw2 - margin, positions[des][0]))
             # Place near bottom or top edge — whichever is further from existing snapped pos
             cy = positions[des][1]
-            near_bottom = hh2 + margin
-            near_top = board_h - hh2 - margin
-            ny2 = near_bottom if cy < board_h / 2 else near_top
+            nx2, ny2 = _clamp_centre(
+                positions[des][0], 0.0 if cy < board_h / 2 else board_h,
+                fw, fh, 90, board_w, board_h, pkg2, pc2)
             positions[des] = (round(nx2, 2), round(ny2, 2))
             snapped += 1
     if snapped:
@@ -1319,9 +1470,13 @@ def repair_placement(
 
     # Build connectivity if netlist provided
     nets = []
+    pin_nets: dict[str, list[tuple[int, list[str]]]] = {}
+    pin_offsets: dict[tuple[str, int], tuple[float, float]] = {}
     if netlist:
         from .ratsnest import build_connectivity, total_wire_length
         nets = build_connectivity(netlist)
+        pin_nets = _build_pin_nets(netlist)
+        pin_offsets = _build_pin_offsets(packages)
 
     # Repair cost: violations dominate, wire length is secondary
     VIOLATION_WEIGHT = 1000.0
@@ -1403,6 +1558,8 @@ def repair_placement(
             new_pos, new_rot = _generate_move(
                 current_pos, current_rot, movable, swappable_groups,
                 footprints, current_layers, board_w, board_h, T, 200.0, rng,
+                packages=packages,
+                pin_nets=pin_nets, pin_offsets=pin_offsets,
             )
 
         # In repair mode, we DON'T reject invalid moves — we score them

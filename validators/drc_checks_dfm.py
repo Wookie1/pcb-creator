@@ -238,8 +238,16 @@ def check_copper_to_edge(routed: dict, netlist: dict, dfm: dict) -> list[DRCViol
     return violations
 
 
-def check_silkscreen(routed: dict, dfm: dict) -> list[DRCViolation]:
-    """Silkscreen text/stroke must meet manufacturer minimums."""
+def check_silkscreen(routed: dict, netlist: dict, dfm: dict) -> list[DRCViolation]:
+    """Silkscreen legibility: manufacturer minimums, plus placement sanity.
+
+    The relocator in `_generate_silkscreen` places every label best-effort and
+    falls back to the component's default spot when nothing is clear. That
+    fallback used to be silent, so a designator printed on a pad, buried under a
+    neighbouring part, or hanging past the board edge shipped unnoticed. These
+    checks make the fallback visible — they are what tells you a label is
+    unreadable on the finished board.
+    """
     min_height = dfm.get("silkscreen_min_height_mm", 0.8)
     min_width = dfm.get("silkscreen_min_width_mm", 0.15)
     violations = []
@@ -267,6 +275,97 @@ def check_silkscreen(routed: dict, dfm: dict) -> list[DRCViolation]:
                     value=round(stroke_w, 4),
                     required=min_width,
                 ))
+
+    violations.extend(_check_silk_placement(routed, netlist))
+    return violations
+
+
+def _silk_bbox(silk: dict) -> tuple[float, float, float, float]:
+    """Bounding box of a silk item, matching what the Gerber renderer draws."""
+    from optimizers.router import _silk_text_bbox
+    x, y = silk.get("x_mm", 0), silk.get("y_mm", 0)
+    if silk.get("type") == "dot":
+        r = silk.get("diameter_mm", 0.5) / 2
+        return (x - r, y - r, x + r, y + r)
+    return _silk_text_bbox(x, y, silk.get("text", ""),
+                           silk.get("font_height_mm", 1.0),
+                           silk.get("anchor", "center"), silk.get("angle", 0))
+
+
+def _check_silk_placement(routed: dict, netlist: dict) -> list[DRCViolation]:
+    """Silk that is off the board, on a pad, or under a component body."""
+    from optimizers.pad_geometry import build_pad_map
+    from optimizers.router import _boxes_overlap
+
+    board = routed.get("board", {})
+    board_w = board.get("width_mm", 0.0)
+    board_h = board.get("height_mm", 0.0)
+    silk_items = routed.get("silkscreen", [])
+    if not silk_items:
+        return []
+
+    try:
+        pad_map = build_pad_map(routed, netlist)
+    except Exception:  # pragma: no cover - pad map needs a resolvable placement
+        pad_map = {}
+
+    pad_boxes = [(p.x_mm - p.pad_width_mm / 2, p.y_mm - p.pad_height_mm / 2,
+                  p.x_mm + p.pad_width_mm / 2, p.y_mm + p.pad_height_mm / 2)
+                 for p in pad_map.values()]
+
+    # A marker's whole job is to sit against its pad, so only designators and
+    # board text are checked for landing on copper.
+    body_boxes: list[tuple[str, tuple[float, float, float, float]]] = []
+    for plc in routed.get("placements", []):
+        if plc.get("component_type") == "fiducial":
+            continue
+        bw = plc.get("footprint_width_mm", 0) or 0
+        bh = plc.get("footprint_height_mm", 0) or 0
+        if plc.get("rotation_deg", 0) in (90, 270):
+            bw, bh = bh, bw
+        body_boxes.append((plc.get("designator", "?"),
+                           (plc["x_mm"] - bw / 2, plc["y_mm"] - bh / 2,
+                            plc["x_mm"] + bw / 2, plc["y_mm"] + bh / 2)))
+
+    violations = []
+    for silk in silk_items:
+        label = silk.get("text", silk.get("purpose", "marker"))
+        bb = _silk_bbox(silk)
+        loc = {"x_mm": silk.get("x_mm", 0), "y_mm": silk.get("y_mm", 0)}
+
+        if board_w and board_h and (bb[0] < 0 or bb[1] < 0
+                                    or bb[2] > board_w or bb[3] > board_h):
+            violations.append(DRCViolation(
+                rule="silkscreen_off_board",
+                severity="warning",
+                message=f"Silkscreen '{label}' extends past the board outline "
+                        f"(board {board_w}x{board_h}mm) — the fab will clip it, "
+                        f"so it will be missing from the finished board",
+                location=loc,
+            ))
+
+        if silk.get("purpose") in ("pin1", "anode"):
+            continue
+
+        if any(_boxes_overlap(bb, pb) for pb in pad_boxes):
+            violations.append(DRCViolation(
+                rule="silkscreen_over_pad",
+                severity="warning",
+                message=f"Silkscreen '{label}' overlaps a pad — most fabs strip "
+                        f"silk off pads, leaving the text broken or missing",
+                location=loc,
+            ))
+
+        under = next((d for d, cb in body_boxes
+                      if d != label and _boxes_overlap(bb, cb)), None)
+        if under:
+            violations.append(DRCViolation(
+                rule="silkscreen_under_component",
+                severity="warning",
+                message=f"Silkscreen '{label}' sits under {under}'s body — it "
+                        f"will be hidden once the board is assembled",
+                location=loc,
+            ))
 
     return violations
 

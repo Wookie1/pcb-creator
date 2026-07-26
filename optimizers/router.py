@@ -1296,6 +1296,40 @@ def _boxes_overlap(a: tuple, b: tuple) -> bool:
     return a[0] < b[2] and a[2] > b[0] and a[1] < b[3] and a[3] > b[1]
 
 
+# Silk must sit inside the board outline with a little to spare: fabs clip
+# everything outside it, so an "optimally relocated" designator that lands past
+# the edge is simply MISSING from the assembled board.
+SILK_EDGE_MARGIN_MM = 0.2
+
+
+def _silk_on_board(bb: tuple, board_w: float, board_h: float) -> bool:
+    """True if a silk bounding box is fully inside the board outline."""
+    m = SILK_EDGE_MARGIN_MM
+    return (bb[0] >= m and bb[1] >= m
+            and bb[2] <= board_w - m and bb[3] <= board_h - m)
+
+
+def _clamp_silk(x: float, y: float, bb: tuple,
+                board_w: float, board_h: float) -> tuple[float, float]:
+    """Shift an anchor so its bounding box lands inside the board outline.
+
+    Used for the best-effort fallbacks: a label we could not place cleanly is
+    still worth printing somewhere legible, but never off the edge where the
+    fab would silently drop it.
+    """
+    m = SILK_EDGE_MARGIN_MM
+    dx = dy = 0.0
+    if bb[0] < m:
+        dx = m - bb[0]
+    elif bb[2] > board_w - m:
+        dx = (board_w - m) - bb[2]
+    if bb[1] < m:
+        dy = m - bb[1]
+    elif bb[3] > board_h - m:
+        dy = (board_h - m) - bb[3]
+    return x + dx, y + dy
+
+
 def _generate_silkscreen(
     placement: dict,
     netlist: dict,
@@ -1309,6 +1343,9 @@ def _generate_silkscreen(
     - Anode "A" markers for LEDs and diodes near the anode pad
     """
     elements = netlist.get("elements", [])
+    board = placement.get("board", {})
+    board_w = board.get("width_mm", 50)
+    board_h = board.get("height_mm", 30)
 
     # Build port lookup: component_id -> list of ports
     comp_ports: dict[str, list[dict]] = {}
@@ -1509,12 +1546,22 @@ def _generate_silkscreen(
                 else:
                     bb = _silk_text_bbox(tx, ty, item["text"],
                                          item.get("font_height_mm", 1.0), "center")
-                if not any(_boxes_overlap(bb, z) for z in exclusion_zones):
+                if (not any(_boxes_overlap(bb, z) for z in exclusion_zones)
+                        and _silk_on_board(bb, board_w, board_h)):
                     mx, my = tx, ty
                     found = True
                     break
             if found:
                 break
+        # Fallback spot may sit past the edge on a part hard against it — pull it
+        # back on-board rather than letting the fab clip the marker away.
+        if item["type"] == "dot":
+            r = item.get("diameter_mm", 0.5) / 2
+            fb = (mx - r, my - r, mx + r, my + r)
+        else:
+            fb = _silk_text_bbox(mx, my, item["text"],
+                                 item.get("font_height_mm", 1.0), "center")
+        mx, my = _clamp_silk(mx, my, fb, board_w, board_h)
         item["x_mm"] = round(mx, 3)
         item["y_mm"] = round(my, 3)
 
@@ -1558,15 +1605,21 @@ def _generate_silkscreen(
                                (cx0 + hw + gap, cy0),    # right
                                (cx0 - hw - gap, cy0)):   # left
                     bb = _silk_text_bbox(tx, ty, txt, fh, "center", angle)
-                    if not any(_boxes_overlap(bb, z) for z in exclusion_zones):
+                    if (not any(_boxes_overlap(bb, z) for z in exclusion_zones)
+                            and _silk_on_board(bb, board_w, board_h)):
                         chosen = (tx, ty, angle, bb)
                         break
                 if chosen:
                     break
             if chosen:
                 break
-        if chosen is None:                     # nothing clear — keep default spot
+        if chosen is None:
+            # Nothing clear — fall back to the default spot, but pulled inside
+            # the outline. A designator printed over copper is ugly; one printed
+            # past the board edge does not get printed at all.
             tx, ty = cx0, cy0 + hh + 0.8
+            bb = _silk_text_bbox(tx, ty, txt, fh, "center", 0)
+            tx, ty = _clamp_silk(tx, ty, bb, board_w, board_h)
             chosen = (tx, ty, 0, _silk_text_bbox(tx, ty, txt, fh, "center", 0))
         tx, ty, angle, bb = chosen
         item["x_mm"] = round(tx, 3)
@@ -1579,15 +1632,14 @@ def _generate_silkscreen(
     silk = out_silk
 
     # Board name and revision label
-    board = placement.get("board", {})
-    board_w = board.get("width_mm", 50)
-    board_h = board.get("height_mm", 30)
     project_name = placement.get("project_name", "")
     if project_name:
-        # Truncate long names to fit on silkscreen (max 15 chars)
+        # Truncate long names to fit on silkscreen (max 15 chars). The ellipsis
+        # must be ASCII: the stroke font has no "…" glyph and renders unknown
+        # characters as ".", so "…" silently became a single dot.
         max_silk_chars = 15
         if len(project_name) > max_silk_chars:
-            project_name = project_name[:max_silk_chars - 1].rstrip() + "…"
+            project_name = project_name[:max_silk_chars - 3].rstrip() + "..."
 
         # Try candidate positions for the board label (prefer bottom-right)
         candidates = [
@@ -1602,7 +1654,9 @@ def _generate_silkscreen(
             name_bb = _silk_text_bbox(lx, ly, project_name, 1.0, anchor)
             rev_bb = _silk_text_bbox(lx, ly + 1.5, "Rev 1.0", 0.8, anchor)
             if not any(_boxes_overlap(name_bb, z) for z in exclusion_zones) and \
-               not any(_boxes_overlap(rev_bb, z) for z in exclusion_zones):
+               not any(_boxes_overlap(rev_bb, z) for z in exclusion_zones) and \
+               _silk_on_board(name_bb, board_w, board_h) and \
+               _silk_on_board(rev_bb, board_w, board_h):
                 silk.append({
                     "type": "text",
                     "text": project_name,

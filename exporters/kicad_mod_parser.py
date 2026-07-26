@@ -92,6 +92,26 @@ def parse_kicad_mod(path: str | Path) -> "FootprintDef | None":
     if not pin_offsets:
         return None
 
+    # Re-centre the pad field on the origin. KiCad anchors a footprint wherever
+    # its author chose — pin 1, a mounting hole, a mechanical datum — and 56% of
+    # the stock library is NOT centred (e.g. DIP-8_W7.62mm anchors pin 1 at the
+    # origin, so its pads sit 3.81mm right and down of it). Every consumer here
+    # treats a placement's (x_mm, y_mm) as the component CENTRE: the body box,
+    # the clearance checks, the silk relocator. Feeding them corner-anchored
+    # offsets makes _get_pad_extent_box union a centred body box with an
+    # off-centre pad box, roughly doubling the part's apparent size — which is
+    # what made parts "not fit" on boards with room to spare and pushed pads past
+    # the board edge. Centring here fixes it once, for every consumer, since the
+    # exporters synthesize pads from these offsets rather than referencing the
+    # library file.
+    xs = [o[0] for o in pin_offsets.values()]
+    ys = [o[1] for o in pin_offsets.values()]
+    cx = (min(xs) + max(xs)) / 2
+    cy = (min(ys) + max(ys)) / 2
+    if abs(cx) > 1e-6 or abs(cy) > 1e-6:
+        pin_offsets = {n: (round(x - cx, 4), round(y - cy, 4))
+                       for n, (x, y) in pin_offsets.items()}
+
     # Use median pad size (most common pad in the footprint)
     if pad_widths:
         pad_widths.sort()
@@ -109,15 +129,47 @@ def parse_kicad_mod(path: str | Path) -> "FootprintDef | None":
 # Library index
 # ---------------------------------------------------------------------------
 
-# Regex to extract the short package name from a KiCad footprint filename.
-# E.g., "SOIC-8_3.9x4.9mm_P1.27mm" → "SOIC-8"
-# E.g., "QFN-16-1EP_3x3mm_P0.5mm" → "QFN-16"
-_ALIAS_RE = re.compile(
-    r"^([A-Za-z][\w-]*?\d+)"  # base name + first number
+# Regexes to extract the short package name from a KiCad footprint filename.
+#
+# Two flavours, because the separator after the base name tells you whether the
+# rest of the filename describes the SAME part or a DIFFERENT one:
+#
+#   "_" → dimensions/variant of the same part.  "DIP-8_W7.62mm" is a DIP-8.
+#   "-" → the base name continues with another number, naming a different part
+#         or a range.  "DIP-8-16_W7.62mm_Socket" is a socket that accepts DIP-8
+#         *through DIP-16*; its body is 17.78mm long, not 7.62mm.
+#
+# Both still produce the alias (a "-" file is better than nothing when no "_"
+# file exists — see test_generated_alias_still_fills_empty_slot), but the index
+# registers them in separate passes so the "_" form always wins the key.
+_ALIAS_DIM_RE = re.compile(
+    r"^([A-Za-z][\w-]*?\d+)"   # base name + first number
     r"(?:[-_]\d+EP)?"          # optional exposed-pad suffix
-    r"[-_]"                    # separator before dimensions
-    r"\d"                      # start of dimension string
+    r"_"                       # dimension/variant suffix of the SAME part
 )
+_ALIAS_CONT_RE = re.compile(
+    r"^([A-Za-z][\w-]*?\d+)"   # base name + first number
+    r"(?:[-_]\d+EP)?"          # optional exposed-pad suffix
+    r"-\d"                     # base name continues — a different part/range
+)
+
+
+def _alias_tiers(filename_stem: str) -> tuple[str | None, str | None]:
+    """(dimension_alias, continuation_alias) for a filename stem, uppercased.
+
+    Either may be None. See the regex comments above for why they rank
+    differently.
+    """
+    stem_upper = filename_stem.upper()
+
+    def _short(rx: re.Pattern[str]) -> str | None:
+        m = rx.match(filename_stem)
+        if not m:
+            return None
+        short = m.group(1).upper()
+        return short if short != stem_upper else None
+
+    return _short(_ALIAS_DIM_RE), _short(_ALIAS_CONT_RE)
 
 
 def _generate_aliases(filename_stem: str) -> list[str]:
@@ -126,13 +178,9 @@ def _generate_aliases(filename_stem: str) -> list[str]:
     Returns a list of normalised aliases (uppercase), most specific first.
     """
     aliases = [filename_stem.upper()]
-
-    m = _ALIAS_RE.match(filename_stem)
-    if m:
-        short = m.group(1).upper()
-        if short != aliases[0]:
-            aliases.append(short)
-
+    for alias in _alias_tiers(filename_stem):
+        if alias and alias not in aliases:
+            aliases.append(alias)
     return aliases
 
 
@@ -162,16 +210,28 @@ class KiCadLibraryIndex:
             return index
 
         files = list(self._root.rglob("*.kicad_mod"))
-        # Pass 1: exact filename stems; pass 2: generated short aliases into
-        # empty slots only. A real SOT-23.kicad_mod must always win the
-        # "SOT-23" key over the alias generated from SOT-23-5_HandSoldering,
-        # regardless of scan order. Within each pass, first file wins (most
-        # specific filenames are typically in the right .pretty directory).
+        # Three passes, each filling only empty slots, so resolution is
+        # independent of scan order:
+        #   1. exact filename stems — a real SOT-23.kicad_mod always wins
+        #      "SOT-23" over any alias.
+        #   2. "_"-separated aliases — a dimension/variant suffix of the same
+        #      part (DIP-8_W7.62mm → DIP-8).
+        #   3. "-"-separated aliases — the base name continues into a different
+        #      part or range (DIP-8-16_W7.62mm_Socket → DIP-8), acceptable only
+        #      when nothing better claimed the key.
+        # Within an alias pass, the plainest stem wins: fewest "_"-separated
+        # suffix segments, then shortest. "DIP-8" should mean DIP-8_W7.62mm, not
+        # DIP-8_W8.89mm_SMDSocket_LongPads — a bare package name asks for the
+        # ordinary part, and the specific variants are still reachable by their
+        # full names.
         for mod_file in files:
             index.setdefault(mod_file.stem.upper(), mod_file)
-        for mod_file in files:
-            for alias in _generate_aliases(mod_file.stem)[1:]:
-                index.setdefault(alias, mod_file)
+        by_plainness = sorted(files, key=lambda f: (f.stem.count("_"), len(f.stem)))
+        for tier in (0, 1):
+            for mod_file in by_plainness:
+                alias = _alias_tiers(mod_file.stem)[tier]
+                if alias:
+                    index.setdefault(alias, mod_file)
 
         return index
 

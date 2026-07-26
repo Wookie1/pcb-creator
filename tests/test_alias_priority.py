@@ -51,3 +51,59 @@ def test_generated_alias_still_fills_empty_slot(tmp_path):
     idx = KiCadLibraryIndex(tmp_path)
     fp = idx.get_footprint("SOT-23", pin_count=5)
     assert fp is not None and len(fp.pin_offsets) == 5
+
+
+# A DIP-8 IC (4 pads/side, 2.54mm pitch → 7.62mm long) versus a socket that
+# accepts DIP-8 *through DIP-16* (same 8 numbered pads, but spread over a
+# 17.78mm body). Both filenames yield the alias "DIP-8"; the socket used to win,
+# and its 2.4x-too-long pad field is what made neopixel_driver unplaceable.
+_DIP8 = """(footprint "DIP-8_W7.62mm" (layer "F.Cu")
+  (pad "1" thru_hole circle (at 0 0) (size 1.6 1.6) (layers "*.Cu"))
+  (pad "2" thru_hole circle (at 0 -2.54) (size 1.6 1.6) (layers "*.Cu"))
+  (pad "3" thru_hole circle (at 0 -5.08) (size 1.6 1.6) (layers "*.Cu"))
+  (pad "4" thru_hole circle (at 0 -7.62) (size 1.6 1.6) (layers "*.Cu"))
+  (pad "5" thru_hole circle (at 7.62 -7.62) (size 1.6 1.6) (layers "*.Cu"))
+  (pad "6" thru_hole circle (at 7.62 -5.08) (size 1.6 1.6) (layers "*.Cu"))
+  (pad "7" thru_hole circle (at 7.62 -2.54) (size 1.6 1.6) (layers "*.Cu"))
+  (pad "8" thru_hole circle (at 7.62 0) (size 1.6 1.6) (layers "*.Cu"))
+)
+"""
+_DIP8_16_SOCKET = """(footprint "DIP-8-16_W7.62mm_Socket" (layer "F.Cu")
+  (pad "1" thru_hole circle (at 0 0) (size 1.6 1.6) (layers "*.Cu"))
+  (pad "2" thru_hole circle (at 0 -2.54) (size 1.6 1.6) (layers "*.Cu"))
+  (pad "3" thru_hole circle (at 0 -15.24) (size 1.6 1.6) (layers "*.Cu"))
+  (pad "4" thru_hole circle (at 0 -17.78) (size 1.6 1.6) (layers "*.Cu"))
+  (pad "5" thru_hole circle (at 7.62 -17.78) (size 1.6 1.6) (layers "*.Cu"))
+  (pad "6" thru_hole circle (at 7.62 -15.24) (size 1.6 1.6) (layers "*.Cu"))
+  (pad "7" thru_hole circle (at 7.62 -2.54) (size 1.6 1.6) (layers "*.Cu"))
+  (pad "8" thru_hole circle (at 7.62 0) (size 1.6 1.6) (layers "*.Cu"))
+)
+"""
+
+
+def test_underscore_variant_beats_hyphen_continuation(tmp_path):
+    # "AAA_" sorts first so the socket is seen first; the "_"-separated
+    # dimension variant must still win the bare "DIP-8" key.
+    (tmp_path / "AAA_first.pretty").mkdir()
+    (tmp_path / "AAA_first.pretty" / "DIP-8-16_W7.62mm_Socket.kicad_mod").write_text(
+        _DIP8_16_SOCKET)
+    (tmp_path / "ZZZ_last.pretty").mkdir()
+    (tmp_path / "ZZZ_last.pretty" / "DIP-8_W7.62mm.kicad_mod").write_text(_DIP8)
+
+    fp = KiCadLibraryIndex(tmp_path).get_footprint("DIP-8", pin_count=8)
+    assert fp is not None
+    ys = [o[1] for o in fp.pin_offsets.values()]
+    assert max(ys) - min(ys) == 7.62, "resolved the DIP-8..16 socket, not a DIP-8"
+    # The socket is still reachable by its full name.
+    sock = KiCadLibraryIndex(tmp_path).get_footprint(
+        "DIP-8-16_W7.62mm_Socket", pin_count=8)
+    sys_ = [o[1] for o in sock.pin_offsets.values()]
+    assert max(sys_) - min(sys_) == 17.78
+
+
+def test_plainest_variant_wins_the_bare_name(tmp_path):
+    # A bare package name asks for the ordinary part, not a socket variant.
+    (tmp_path / "DIP-8_W8.89mm_SMDSocket_LongPads.kicad_mod").write_text(_DIP8)
+    (tmp_path / "DIP-8_W7.62mm.kicad_mod").write_text(_DIP8)
+    idx = KiCadLibraryIndex(tmp_path)
+    assert idx._ensure_index()["DIP-8"].stem == "DIP-8_W7.62mm"

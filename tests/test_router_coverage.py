@@ -1104,5 +1104,7 @@ def test_silkscreen_board_label_truncates_long_project_name():
     silk = _generate_silkscreen(placement, {"elements": []}, {})
     label = [s for s in silk if s.get("purpose") == "board_name"]
     assert label, "board name label must be emitted"
-    assert label[0]["text"].endswith("…")
+    # ASCII "..." — the stroke font has no "…" glyph, and the renderer
+    # maps unknown characters to ".", so "…" silently became a single dot.
+    assert label[0]["text"].endswith("...")
     assert len(label[0]["text"]) <= 15

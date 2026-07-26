@@ -169,7 +169,7 @@ def _run_dfm_checks(routed: dict, netlist: dict, dfm: dict) -> list[dict]:
         ("trace_width_min", "dfm", check_trace_width_min, (routed, dfm)),
         ("via_drill_min", "dfm", check_via_drill_min, (routed, dfm)),
         ("annular_ring", "dfm", check_annular_ring, (routed, dfm)),
-        ("silkscreen", "dfm", check_silkscreen, (routed, dfm)),
+        ("silkscreen", "dfm", check_silkscreen, (routed, netlist, dfm)),
         ("clearance_min", "dfm", check_clearance_min, (routed, dfm)),
         ("hole_to_hole", "mechanical", check_hole_to_hole, (routed, netlist, dfm)),
         ("copper_to_edge", "mechanical", check_copper_to_edge, (routed, netlist, dfm)),
