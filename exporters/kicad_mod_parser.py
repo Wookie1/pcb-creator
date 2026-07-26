@@ -224,14 +224,48 @@ class KiCadLibraryIndex:
         # DIP-8_W8.89mm_SMDSocket_LongPads — a bare package name asks for the
         # ordinary part, and the specific variants are still reachable by their
         # full names.
+        #
+        # When the plainest candidates TIE, what they disagree about decides
+        # whether the alias is usable:
+        #
+        #   Same pitch, different body — SOIC-8_3.9x4.9mm_P1.27mm vs
+        #   _5.3x6.2mm_ vs _5.3x5.3mm_. Any of them is a real SOIC-8 with the
+        #   right 1.27mm pitch; the body size differs slightly. Pick one
+        #   deterministically (by name, so it never depends on directory order).
+        #
+        #   Different pitch — PinHeader_1x15_P1.00mm/_P1.27mm/_P2.54mm. These are
+        #   not variants of one part, they are different parts. Guessing turns a
+        #   0.1" header into a 0.05" one, which lands 15 pins in half the space
+        #   at half the pad size. Drop the alias so the IPC-7351 and built-in
+        #   tiers supply their sensible default, which beats a coin flip between
+        #   incompatible footprints.
+        #
+        # An alias rejected as ambiguous at one tier stays rejected: a "-N"
+        # continuation file must not rescue a name the "_" variants could not
+        # agree on (that is how SOIC-8 briefly resolved to an exposed-pad part).
+        def _plainness(f: Path) -> tuple[int, int]:
+            return (f.stem.count("_"), len(f.stem))
+
+        def _pitch(f: Path) -> str | None:
+            m = re.search(r"[_-]P(\d+(?:\.\d+)?)mm", f.stem)
+            return m.group(1) if m else None
+
         for mod_file in files:
             index.setdefault(mod_file.stem.upper(), mod_file)
-        by_plainness = sorted(files, key=lambda f: (f.stem.count("_"), len(f.stem)))
+        ambiguous: set[str] = set()
         for tier in (0, 1):
-            for mod_file in by_plainness:
+            claims: dict[str, list[Path]] = {}
+            for mod_file in files:
                 alias = _alias_tiers(mod_file.stem)[tier]
-                if alias:
-                    index.setdefault(alias, mod_file)
+                if alias and alias not in index and alias not in ambiguous:
+                    claims.setdefault(alias, []).append(mod_file)
+            for alias, candidates in claims.items():
+                rank = min(_plainness(c) for c in candidates)
+                tied = [c for c in candidates if _plainness(c) == rank]
+                if len({_pitch(c) for c in tied}) > 1:
+                    ambiguous.add(alias)     # different parts — let a lower tier decide
+                    continue
+                index.setdefault(alias, min(tied, key=lambda f: f.stem))
 
         return index
 

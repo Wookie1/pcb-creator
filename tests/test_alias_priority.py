@@ -6,7 +6,7 @@ SOT-23.kicad_mod depending on scan order. Exact filename stems are now
 registered before generated short aliases, making resolution order-independent.
 """
 
-from exporters.kicad_mod_parser import KiCadLibraryIndex
+from exporters.kicad_mod_parser import KiCadLibraryIndex, _alias_tiers
 
 _SOT23 = """(footprint "SOT-23" (layer "F.Cu")
   (pad "1" smd roundrect (at 0 0) (size 0.6 0.9))
@@ -107,3 +107,64 @@ def test_plainest_variant_wins_the_bare_name(tmp_path):
     (tmp_path / "DIP-8_W7.62mm.kicad_mod").write_text(_DIP8)
     idx = KiCadLibraryIndex(tmp_path)
     assert idx._ensure_index()["DIP-8"].stem == "DIP-8_W7.62mm"
+
+
+_HDR = """(footprint "H" (layer "F.Cu")
+  (pad "1" thru_hole circle (at 0 0) (size 1.7 1.7) (layers "*.Cu"))
+  (pad "2" thru_hole circle (at 0 -{p}) (size 1.7 1.7) (layers "*.Cu"))
+  (pad "3" thru_hole circle (at 0 -{p2}) (size 1.7 1.7) (layers "*.Cu"))
+)
+"""
+_SOIC = """(footprint "S" (layer "F.Cu")
+  (pad "1" smd rect (at 0 0) (size 1.95 0.6) (layers "F.Cu"))
+  (pad "2" smd rect (at 0 -1.27) (size 1.95 0.6) (layers "F.Cu"))
+)
+"""
+
+
+def test_pitch_ambiguous_alias_is_dropped(tmp_path):
+    """Variants differing in PITCH are different parts, not variants.
+
+    PinHeader_1x15 at 1.27mm instead of 2.54mm puts 15 pins in half the space
+    with half-size pads — silently the wrong component. Better to leave the bare
+    name unresolved and let the IPC-7351 / built-in tiers supply their default.
+    """
+    for pitch in ("1.00", "1.27", "2.54"):
+        (tmp_path / f"PinHeader_1x3_P{pitch}mm_Vertical.kicad_mod").write_text(
+            _HDR.format(p=pitch, p2=float(pitch) * 2))
+    idx = KiCadLibraryIndex(tmp_path)
+    assert idx.get_footprint("PinHeader_1x3") is None
+    # The specific variants remain reachable by their full names.
+    assert idx.get_footprint("PinHeader_1x3_P2.54mm_Vertical") is not None
+
+
+def test_same_pitch_variants_resolve_deterministically(tmp_path):
+    """Same pitch, different body size — any is a real part; pick one stably."""
+    for body in ("3.9x4.9", "5.3x6.2", "5.3x5.3"):
+        (tmp_path / f"SOIC-8_{body}mm_P1.27mm.kicad_mod").write_text(_SOIC)
+    picked = {KiCadLibraryIndex(tmp_path)._ensure_index()["SOIC-8"].stem
+              for _ in range(3)}
+    assert picked == {"SOIC-8_3.9x4.9mm_P1.27mm"}, (
+        "must not depend on directory order")
+
+
+def test_continuation_tier_cannot_rescue_an_ambiguous_alias(tmp_path):
+    """A "-N" file must not claim a name the "_" variants could not agree on.
+
+    This is how SOIC-8 briefly resolved to an exposed-pad part: the plain
+    variants were rejected, leaving the odd one as the only claimant.
+    """
+    # Two equally-plain "_" variants disagreeing on pitch -> ambiguous.
+    for pitch in ("1.00", "2.54"):
+        (tmp_path / f"PinHeader_1x3_P{pitch}mm_Vertical.kicad_mod").write_text(
+            _HDR.format(p=pitch, p2=float(pitch) * 2))
+    # A "-N" continuation file, strictly less plain, claiming only at tier 1.
+    (tmp_path / "PinHeader_1x3-4_P0.50mm_VerticalOddball.kicad_mod").write_text(
+        _HDR.format(p="0.50", p2=1.0))
+
+    idx = KiCadLibraryIndex(tmp_path)
+    dim_alias, cont_alias = _alias_tiers(
+        "PinHeader_1x3-4_P0.50mm_VerticalOddball")
+    assert cont_alias == "PINHEADER_1X3" and dim_alias != "PINHEADER_1X3", (
+        "fixture must claim PinHeader_1x3 only at the continuation tier")
+    assert idx.get_footprint("PinHeader_1x3") is None
