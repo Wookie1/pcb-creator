@@ -423,6 +423,21 @@ def route_with_freerouting(
                "-mp", str(max_passes),
                "-mt", "1"]  # -mt 1: single-thread optimization (avoids clearance bugs)
 
+        # -mp is DEAD in 2.1.0 headless: GlobalSettings parses it into
+        # RouterSettings.maxPasses, but BatchAutorouter bounds its loop with
+        # get_stop_pass_no(), a private transient field that defaults to 999 and
+        # is only ever set by the GUI (WindowWelcome / WindowAutorouteParameter).
+        # Measured: `-mp 2` ran to pass 5. That is why a board Freerouting can't
+        # finish burns the whole timeout and — since 2.1.0 writes the SES only at
+        # end-of-passes — dies with NO partial result. The env-var settings path
+        # (FREEROUTING__<field>__<field>, reflected via ReflectionUtil with
+        # setAccessible, so private/transient is reachable; "router" is
+        # routerSettings' @SerializedName) does reach it. Keep -mp too: 2.2.4+
+        # dropped stop_pass_no and made maxPasses the real bound, so the two
+        # together bound both generations. Verified in test_freerouter_max_passes.
+        env = dict(os.environ)
+        env["FREEROUTING__ROUTER__STOP_PASS_NO"] = str(max_passes)
+
         logger.info(f"  Running Freerouting (timeout={timeout_s}s, "
                     f"max_passes={max_passes}, heap={heap}MB)...")
 
@@ -471,7 +486,8 @@ def route_with_freerouting(
             pipe.close()
 
         proc = subprocess.Popen(cmd, stdout=subprocess.PIPE,
-                                stderr=subprocess.PIPE, text=True, bufsize=1)
+                                stderr=subprocess.PIPE, text=True, bufsize=1,
+                                env=env)
         # Track the JVM so a graceful shutdown of the owner kills it, and so the
         # finally below guarantees it is dead before the tmpdir is torn down (a
         # surviving child would keep writing into a directory being removed).
