@@ -1601,6 +1601,41 @@ def test_run_placement_four_layer_plane_from_requirements(tmp_path):
     assert board["layers"] == 4 and board["plane_layers"] == 1
 
 
+def test_run_placement_two_sided_from_requirements(tmp_path):
+    """The board spec is the durable, user-authored opt-in for two-sided.
+
+    Never inferred from density — putting parts on the bottom changes assembly
+    cost, so it has to be asked for. requirements is the same channel that
+    already carries plane_layers.
+    """
+    from orchestrator import stages
+    pdir = tmp_path / "ts"
+    pdir.mkdir()
+    (pdir / "ts_netlist.json").write_text(json.dumps(_two_r_netlist()))
+    (pdir / "ts_requirements.json").write_text(json.dumps(
+        {"board": {"layers": 2, "two_sided": True}}))
+    r = stages.run_placement(pdir, "ts", _cfg(), board_width_mm=30,
+                             board_height_mm=20, seed=1)
+    assert r["success"], r.get("error")
+    board = json.loads((pdir / "ts_placement.json").read_text())["board"]
+    assert board["two_sided"] is True
+
+
+def test_run_placement_two_sided_defaults_off(tmp_path):
+    """A roomy board with no opt-in stays single-sided."""
+    from orchestrator import stages
+    pdir = tmp_path / "ss"
+    pdir.mkdir()
+    (pdir / "ss_netlist.json").write_text(json.dumps(_two_r_netlist()))
+    (pdir / "ss_requirements.json").write_text(json.dumps({"board": {"layers": 2}}))
+    r = stages.run_placement(pdir, "ss", _cfg(), board_width_mm=30,
+                             board_height_mm=20, seed=1)
+    assert r["success"], r.get("error")
+    placement = json.loads((pdir / "ss_placement.json").read_text())
+    assert placement["board"]["two_sided"] is False
+    assert all(p.get("layer", "top") == "top" for p in placement["placements"])
+
+
 def test_run_placement_promotes_for_plane_layers_arg(tmp_path):
     from orchestrator import stages
     pdir, name = _placed_project(tmp_path, "promo")

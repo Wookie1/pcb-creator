@@ -217,3 +217,52 @@ class TestFourLayerPlaneConnectivity:
             result = validate_routing(rp, np_)
         conn_errors = [e for e in result["errors"] if "disconnected" in e]
         assert not conn_errors, conn_errors
+
+
+class TestUnflip:
+    def test_no_component_stays_on_the_bottom_without_needing_to(self):
+        """Repair's cost counts violations, not sides, so flipping is free to it
+        and it will leave a part on the bottom that only needed to be there
+        transiently. On a 2-layer board the bottom IS the router's escape layer,
+        so every needless flip costs routing capacity.
+
+        The invariant: after repair, no flip-eligible bottom-side part could
+        have legally stayed on top.
+        """
+        from optimizers.placement_optimizer import _is_valid
+
+        netlist = _netlist(8)
+        items = [_r(f"R{i}", 2 + (i % 3) * 2.2, 2 + (i // 3) * 1.8)
+                 for i in range(1, 9)]
+        # Roomy enough that some flips are gratuitous, unlike the 9x6 case.
+        p = _placement(items, w=22, h=14)
+
+        checked = 0
+        for seed in range(6):
+            out = repair_placement(p, netlist, seed=seed, two_sided=True)
+            if find_placement_violations(out, netlist)["count"]:
+                continue
+            positions, rotations, footprints, layers = {}, {}, {}, {}
+            packages = {}
+            for it in out["placements"]:
+                d = it["designator"]
+                positions[d] = (it["x_mm"], it["y_mm"])
+                rotations[d] = it.get("rotation_deg", 0)
+                footprints[d] = (it["footprint_width_mm"],
+                                 it["footprint_height_mm"])
+                layers[d] = it.get("layer", "top")
+                # Must match what repair validates against: the pad-extent box,
+                # which for an 0805 reaches past the body outline.
+                packages[d] = (it.get("package", ""), 2)
+
+            for des, layer in layers.items():
+                if layer != "bottom":
+                    continue
+                checked += 1
+                trial = dict(layers)
+                trial[des] = "top"
+                assert not _is_valid(positions, rotations, footprints, trial,
+                                     22, 14, packages), (
+                    f"{des} was left on the bottom but fits on top (seed {seed})")
+
+        assert checked, "expected at least one bottom-side part to verify"

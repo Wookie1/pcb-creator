@@ -1804,7 +1804,9 @@ def repair_placement(
     # Legalization: the anneal is a global placer and cannot compact a dense
     # board on its own. If it finished dirty, construct a legal layout from the
     # arrangement it reached and keep whichever is better.
-    if best_violations > 0:
+    def _relegalize() -> None:
+        """Re-run the constructive packer against the current best state."""
+        nonlocal best_pos, best_rot, best_violations
         legal = _legalize_pack(best_pos, best_rot, footprints, best_layers,
                                movable, board_w, board_h, packages,
                                clearance=clearance)
@@ -1823,6 +1825,28 @@ def repair_placement(
                 best_pos = cand_pos
                 best_rot = cand_rot
                 best_violations = v_legal
+
+    if best_violations > 0:
+        _relegalize()
+
+    # Un-flip pass. Repair's cost counts violations, not sides, so flipping is
+    # free to it and it will leave a part on the bottom that only needed to be
+    # there transiently. On a 2-layer board the bottom IS the router's escape
+    # layer — every part left there costs routing capacity — so bring back
+    # everything that fits on top, cheapest-to-return first. Only flips that
+    # actually earn their place survive.
+    if flip_eligible and best_violations == 0:
+        returned = 0
+        for des in sorted(d for d in flip_eligible if best_layers.get(d) == "bottom"):
+            trial = dict(best_layers)
+            trial[des] = "top"
+            if _is_valid(best_pos, best_rot, footprints, trial,
+                         board_w, board_h, packages, clearance=clearance):
+                best_layers = trial
+                returned += 1
+        if returned:
+            logger.info(f"  Repair un-flip: returned {returned} component(s) to "
+                        f"the top side that did not need to be on the bottom")
 
     # Build output
     result = copy.deepcopy(placement)

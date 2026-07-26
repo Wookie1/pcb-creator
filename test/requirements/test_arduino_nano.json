@@ -414,7 +414,8 @@
   "board": {
     "width_mm": 45,
     "height_mm": 18,
-    "layers": 2
+    "layers": 2,
+    "two_sided": true
   },
   "placement_hints": [
     {"ref": "J1", "edge": "top"},

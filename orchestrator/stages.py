@@ -503,10 +503,22 @@ def run_placement(
                 item["layer"] = pin.get("layer", "top")
                 item["placement_source"] = "user"
 
-    # Two-sided placement: explicit arg wins; otherwise reuse the previous
-    # placement's setting (so the routing retry loop re-places consistently).
+    # Two-sided placement. Never inferred from how full the board is — putting
+    # components on the bottom changes assembly cost and is the user's call, so
+    # it is opt-in only. Explicit arg wins; then the board spec in requirements
+    # (the durable, user-authored channel, same as plane_layers below); then the
+    # previous placement's setting, so the routing retry loop re-places
+    # consistently.
     if two_sided is None:
         two_sided = bool(placement.get("board", {}).get("two_sided", False))
+        if not two_sided:
+            req_path = _p(project_dir, project_name, "requirements")
+            if req_path.exists():
+                try:
+                    two_sided = bool(
+                        _load(req_path).get("board", {}).get("two_sided"))
+                except Exception:
+                    pass
         if placement_path.exists():
             try:
                 two_sided = two_sided or bool(
