@@ -614,18 +614,37 @@ def run_placement(
                            + [v for v in violations["overlaps"] if v["pinned"]])
         details = ([v["detail"] for v in violations["out_of_bounds"]]
                    + [v["detail"] for v in violations["overlaps"]])
+        # "Too dense, enlarge it" is not actionable. Measure how full the board
+        # actually is, so the caller knows whether to retry, use both sides, or
+        # grow the board — and by how much.
+        from optimizers.placement_optimizer import (
+            _PACKABLE_UTILIZATION, placement_density)
+        density = placement_density(placement, netlist, clearance=clearance)
+        if pinned_involved:
+            reason = (" — fixed/pinned components are involved; they are never "
+                      "moved automatically, so adjust their coordinates "
+                      "(place_component) or unpin them (unplace_component)")
+        elif density["verdict"] == "packable":
+            reason = (f" — the board is only {density['utilization_pct']}% full, "
+                      "so this is a search failure rather than a space problem; "
+                      "re-running may succeed")
+        else:
+            reason = (
+                f" — the components need {density['utilization_pct']}% of the "
+                f"usable board area once the {clearance}mm inter-component "
+                f"clearance is counted, and packing rectangles with a required "
+                f"gap around each tops out near "
+                f"{int(_PACKABLE_UTILIZATION * 100)}%. Place components on both "
+                f"sides (two_sided), or enlarge the board to about "
+                f"{density['suggested_width_mm']}x"
+                f"{density['suggested_height_mm']}mm")
         return {
             "success": False,
             "error": (f"Placement has {violations['count']} unresolved "
-                      "constraint violation(s)"
-                      + (" — fixed/pinned components are involved; they are "
-                         "never moved automatically, so adjust their "
-                         "coordinates (place_component) or unpin them "
-                         "(unplace_component)" if pinned_involved else
-                         " — the board is likely too dense; enlarge it and "
-                         "re-run") + "."),
+                      f"constraint violation(s){reason}."),
             "violations": violations,
             "violation_details": details[:15],
+            "density": density,
             "placement_path": str(placement_path),
         }
 

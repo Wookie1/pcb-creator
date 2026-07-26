@@ -107,6 +107,13 @@ PINNED_TYPES = {"connector", "fiducial"}
 # either way, so it can be generous.
 _INVALID_STREAK_LIMIT = 5000
 
+# Area demand (parts plus their mandatory clearance, over usable board area)
+# above which single-sided placement stops being a search problem. Packing
+# heterogeneous rectangles with a required gap around each tops out well short
+# of 100%; measured here, boards up to ~81% place reliably and arduino_nano at
+# 96% never does, on any seed or iteration budget.
+_PACKABLE_UTILIZATION = 0.85
+
 # Packages that are mechanical keepouts — mounting holes and fiducials must
 # stay where they were placed (they line up with the enclosure/assembly).
 _KEEPOUT_PACKAGE_RE = re.compile(r"MountingHole|Fiducial", re.IGNORECASE)
@@ -1131,6 +1138,136 @@ def _generate_move(
     return new_pos, new_rot
 
 
+def _legalize_pack(
+    positions: dict[str, tuple[float, float]],
+    rotations: dict[str, int],
+    footprints: dict[str, tuple[float, float]],
+    layers: dict[str, str],
+    movable: list[str],
+    board_w: float,
+    board_h: float,
+    packages: dict[str, tuple[str, int]] | None = None,
+    clearance: float = MIN_CLEARANCE_MM,
+) -> dict[str, tuple[float, float]] | None:
+    """Deterministically pack `movable` into a non-overlapping layout.
+
+    Annealing is a *global* placer: it finds roughly where things belong, but
+    single-component random moves can never compact a board, because tightening
+    a dense layout needs several parts to shift together. Past a certain density
+    it stalls in a local minimum no amount of iterations escapes (measured: 10k
+    and 200k iterations leave esp8266_breakout on the same violation). The
+    standard fix is to stop asking the anneal for a legal answer and construct
+    one — global placement, then legalization.
+
+    Bottom-left-fill against corner candidates: each part goes at the lowest,
+    then leftmost, spot where it fits, considering the board corner and the
+    edges of everything already down. Simple shelf packing was tried first and
+    is too wasteful — every row costs the height of its tallest member, which on
+    a board needing 81% area utilization is the difference between fitting and
+    not.
+
+    Two sweep orders are attempted: the order the anneal left things (preserves
+    its arrangement, so wire length survives) and tallest-first (packs denser).
+    Immovable parts are obstacles. Returns None if nothing fits, leaving the
+    caller its annealed best rather than a worse legal-but-scrambled layout.
+    """
+    ec = BOARD_EDGE_CLEARANCE_MM
+    movable_set = set(movable)
+    # Pack with a hair more than the required clearance. Output centres are
+    # rounded to 0.01mm, so two boxes placed at exactly `clearance` can end up
+    # a rounding step closer and fail the (zero-tolerance) overlap check.
+    pack_gap = clearance + 0.02
+
+    def _extent(des: str, rot: int) -> tuple[float, float, float, float]:
+        """Pad-extent box measured from the part's centre."""
+        w, h = footprints[des]
+        pkg, pc = (packages or {}).get(des, ("", 2))
+        if pkg:
+            return _get_pad_extent_box(0.0, 0.0, w, h, rot, pkg, pc)
+        return _get_bounding_box(0.0, 0.0, w, h, rot)
+
+    def _layer_of(des: str) -> str:
+        pkg, pc = (packages or {}).get(des, ("", 2))
+        return _effective_layer(pkg, pc, layers.get(des, "top"))
+
+    obstacles: list[tuple[tuple[float, float, float, float], str]] = []
+    for des, (x, y) in positions.items():
+        if des in movable_set:
+            continue
+        bx = _extent(des, rotations.get(des, 0))
+        obstacles.append(((x + bx[0], y + bx[1], x + bx[2], y + bx[3]),
+                          _layer_of(des)))
+
+    # Each part may also be turned a quarter turn — on a tight board that is
+    # often the difference between fitting and not, and repair is free to rotate
+    # anyway. Both orientations of the current angle are offered; the packer
+    # takes whichever seats the part lower.
+    def _options(des: str) -> list[tuple[int, tuple[float, float, float, float]]]:
+        rot = rotations.get(des, 0)
+        opts = [(rot, _extent(des, rot))]
+        alt = (rot + 90) % 360
+        alt_bx = _extent(des, alt)
+        if (round(alt_bx[2] - alt_bx[0], 3),
+                round(alt_bx[3] - alt_bx[1], 3)) != (
+                round(opts[0][1][2] - opts[0][1][0], 3),
+                round(opts[0][1][3] - opts[0][1][1], 3)):
+            opts.append((alt, alt_bx))
+        return opts
+
+    base = {d: _extent(d, rotations.get(d, 0)) for d in movable}
+    heights = {d: base[d][3] - base[d][1] for d in movable}
+    widths = {d: base[d][2] - base[d][0] for d in movable}
+
+    anneal_order = sorted(movable, key=lambda d: (round(positions[d][1], 1),
+                                                  positions[d][0], d))
+    tallest_first = sorted(movable, key=lambda d: (-heights[d], -widths[d], d))
+
+    for order in (anneal_order, tallest_first):
+        out: dict[str, tuple[float, float, int]] = {}
+        placed: list[tuple[tuple[float, float, float, float], str]] = list(obstacles)
+        ok = True
+        for des in order:
+            layer = _layer_of(des)
+            best: tuple[float, float, tuple, int, tuple] | None = None
+            for rot, bx in _options(des):
+                w_i, h_i = bx[2] - bx[0], bx[3] - bx[1]
+                # Candidate corners: the board's bottom-left, plus the right and
+                # top edges of everything already placed. An optimal
+                # bottom-left-fill position is always at one of these.
+                xs = [ec] + [b[2] + pack_gap for b, _ in placed]
+                ys = [ec] + [b[3] + pack_gap for b, _ in placed]
+                xs = sorted({round(v, 3) for v in xs
+                             if ec <= v <= board_w - ec - w_i})
+                ys = sorted({round(v, 3) for v in ys
+                             if ec <= v <= board_h - ec - h_i})
+                for y in ys:                   # lowest first, then leftmost
+                    if best is not None and y > best[1]:
+                        break                  # cannot beat the incumbent
+                    hit = False
+                    for x in xs:
+                        cand = (x, y, x + w_i, y + h_i)
+                        if any(_layers_conflict(layer, bl)
+                               and _boxes_overlap_with_clearance(cand, b, pack_gap)
+                               for b, bl in placed):
+                            continue
+                        if best is None or (y, x) < (best[1], best[0]):
+                            best = (x, y, cand, rot, bx)
+                        hit = True
+                        break
+                    if hit:
+                        break
+            if best is None:
+                ok = False
+                break
+            x, y, cand, rot, bx = best
+            out[des] = (round(x - bx[0], 2), round(y - bx[1], 2), rot)
+            placed.append((cand, layer))
+        if ok:
+            return out
+
+    return None
+
+
 def _is_valid(
     positions: dict[str, tuple[float, float]],
     rotations: dict[str, int],
@@ -1342,6 +1479,75 @@ def find_placement_violations(
 
     return {"out_of_bounds": out_of_bounds, "overlaps": overlaps,
             "count": len(out_of_bounds) + len(overlaps)}
+
+
+def placement_density(
+    placement: dict,
+    netlist: dict | None = None,
+    clearance: float = MIN_CLEARANCE_MM,
+) -> dict:
+    """How full is this board, and what would make it placeable?
+
+    "Too dense, enlarge it" is not an answer anyone can act on. This turns a
+    failed placement into a number and a concrete remedy: rectangle packing with
+    a mandatory gap around every part tops out well below 100%, so a board past
+    roughly 85% demand is not a search failure to be retried, it needs another
+    side or more room.
+
+    Returns {utilization_pct, bare_pct, usable_mm2, demand_mm2,
+             suggested_width_mm, suggested_height_mm, verdict}.
+    """
+    board = placement.get("board", {})
+    bw = board.get("width_mm", 0.0)
+    bh = board.get("height_mm", 0.0)
+
+    comp_pin_counts: dict[str, int] = {}
+    des_to_comp_id: dict[str, str] = {}
+    for elem in (netlist or {}).get("elements", []):
+        if elem.get("element_type") == "port":
+            cid = elem.get("component_id", "")
+            comp_pin_counts[cid] = comp_pin_counts.get(cid, 0) + 1
+        elif elem.get("element_type") == "component":
+            des_to_comp_id[elem.get("designator", "")] = elem["component_id"]
+
+    bare = demand = 0.0
+    for item in placement.get("placements", []):
+        w = item.get("footprint_width_mm", 0.0)
+        h = item.get("footprint_height_mm", 0.0)
+        rot = item.get("rotation_deg", 0)
+        pkg = item.get("package", "")
+        if pkg:
+            pc = comp_pin_counts.get(
+                des_to_comp_id.get(item.get("designator", ""), ""), 2)
+            bx = _get_pad_extent_box(0.0, 0.0, w, h, rot, pkg, pc)
+        else:
+            bx = _get_bounding_box(0.0, 0.0, w, h, rot)
+        pw, ph = bx[2] - bx[0], bx[3] - bx[1]
+        bare += pw * ph
+        demand += (pw + clearance) * (ph + clearance)
+
+    ec = BOARD_EDGE_CLEARANCE_MM
+    usable = max((bw - 2 * ec) * (bh - 2 * ec), 1e-6)
+    util = 100.0 * demand / usable
+
+    # Scale the board until demand sits at a comfortable packing density,
+    # keeping the aspect ratio.
+    grow = max(1.0, math.sqrt(demand / (_PACKABLE_UTILIZATION * usable)))
+    if util > 100:
+        verdict = "impossible"
+    elif util > _PACKABLE_UTILIZATION * 100:
+        verdict = "impractical"
+    else:
+        verdict = "packable"
+    return {
+        "utilization_pct": round(util, 1),
+        "bare_pct": round(100.0 * bare / usable, 1),
+        "usable_mm2": round(usable, 1),
+        "demand_mm2": round(demand, 1),
+        "suggested_width_mm": round(bw * grow, 1),
+        "suggested_height_mm": round(bh * grow, 1),
+        "verdict": verdict,
+    }
 
 
 def repair_placement(
@@ -1594,6 +1800,29 @@ def repair_placement(
         T *= cooling
         if T < 0.01:
             T = 0.01
+
+    # Legalization: the anneal is a global placer and cannot compact a dense
+    # board on its own. If it finished dirty, construct a legal layout from the
+    # arrangement it reached and keep whichever is better.
+    if best_violations > 0:
+        legal = _legalize_pack(best_pos, best_rot, footprints, best_layers,
+                               movable, board_w, board_h, packages,
+                               clearance=clearance)
+        if legal:
+            cand_pos = dict(best_pos)
+            cand_rot = dict(best_rot)
+            for des, (lx, ly, lrot) in legal.items():
+                cand_pos[des] = (lx, ly)
+                cand_rot[des] = lrot
+            v_legal, _ = _count_violations(cand_pos, cand_rot, footprints,
+                                           best_layers, board_w, board_h,
+                                           packages, clearance=clearance)
+            if v_legal < best_violations:
+                logger.info(f"  Repair legalizer: {best_violations} → {v_legal} "
+                            f"violations (packed {len(legal)} components)")
+                best_pos = cand_pos
+                best_rot = cand_rot
+                best_violations = v_legal
 
     # Build output
     result = copy.deepcopy(placement)

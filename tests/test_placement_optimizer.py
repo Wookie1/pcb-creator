@@ -671,3 +671,97 @@ def test_build_pin_nets_skips_single_component_nets():
     pin_nets = _build_pin_nets(netlist)
     assert pin_nets["U1"] == [(2, ["R1"])]
     assert pin_nets["R1"] == [(1, ["U1"])]
+
+
+# ---------------------------------------------------------------------------
+# Dense-board legalization: the anneal is a global placer and cannot compact a
+# board on its own, so repair falls back to constructing a legal layout.
+# ---------------------------------------------------------------------------
+
+from optimizers.placement_optimizer import (  # noqa: E402
+    _boxes_overlap_with_clearance, _legalize_pack, placement_density,
+    _PACKABLE_UTILIZATION,
+)
+
+
+def _pack_inputs(n, w, h, board_w, board_h, stacked_at=(5.0, 5.0)):
+    """n identical parts all dumped on the same spot — maximally illegal."""
+    des = [f"R{i}" for i in range(n)]
+    positions = {d: stacked_at for d in des}
+    rotations = {d: 0 for d in des}
+    footprints = {d: (w, h) for d in des}
+    layers = {d: "top" for d in des}
+    return positions, rotations, footprints, layers, des
+
+
+def test_legalize_pack_separates_a_fully_stacked_board():
+    pos, rot, fp, lay, des = _pack_inputs(8, 3.0, 3.0, 40, 40)
+    out = _legalize_pack(pos, rot, fp, lay, des, 40, 40, None, clearance=0.5)
+    assert out is not None and len(out) == 8
+
+    boxes = []
+    for d, (x, y, _r) in out.items():
+        w, h = fp[d]
+        boxes.append((x - w / 2, y - h / 2, x + w / 2, y + h / 2))
+    for i in range(len(boxes)):
+        assert boxes[i][0] >= 1.0 - 1e-6 and boxes[i][1] >= 1.0 - 1e-6
+        assert boxes[i][2] <= 39.0 + 1e-6 and boxes[i][3] <= 39.0 + 1e-6
+        for j in range(i + 1, len(boxes)):
+            assert not _boxes_overlap_with_clearance(boxes[i], boxes[j], 0.5)
+
+
+def test_legalize_pack_returns_none_when_it_cannot_fit():
+    """Better to hand back the annealed best than a scrambled illegal layout."""
+    pos, rot, fp, lay, des = _pack_inputs(40, 5.0, 5.0, 12, 12)
+    assert _legalize_pack(pos, rot, fp, lay, des, 12, 12, None,
+                          clearance=0.5) is None
+
+
+def test_legalize_pack_routes_around_immovable_parts():
+    pos, rot, fp, lay, des = _pack_inputs(4, 3.0, 3.0, 30, 30)
+    # A fixed part in the middle that the packer is not allowed to move.
+    pos["FIXED"] = (15.0, 15.0)
+    rot["FIXED"] = 0
+    fp["FIXED"] = (8.0, 8.0)
+    lay["FIXED"] = "top"
+
+    out = _legalize_pack(pos, rot, fp, lay, des, 30, 30, None, clearance=0.5)
+    assert out is not None and "FIXED" not in out
+    fixed_box = (11.0, 11.0, 19.0, 19.0)
+    for d, (x, y, _r) in out.items():
+        w, h = fp[d]
+        box = (x - w / 2, y - h / 2, x + w / 2, y + h / 2)
+        assert not _boxes_overlap_with_clearance(box, fixed_box, 0.5)
+
+
+def test_placement_density_flags_an_overfull_board():
+    """A board past the packing ceiling is not a retry, it needs more room."""
+    placement = {
+        "board": {"width_mm": 20.0, "height_mm": 20.0},
+        "placements": [
+            {"designator": f"U{i}", "footprint_width_mm": 5.0,
+             "footprint_height_mm": 5.0, "rotation_deg": 0, "package": "",
+             "x_mm": 5.0, "y_mm": 5.0}
+            for i in range(12)
+        ],
+    }
+    d = placement_density(placement, {"elements": []}, clearance=0.5)
+    assert d["utilization_pct"] > _PACKABLE_UTILIZATION * 100
+    assert d["verdict"] in ("impractical", "impossible")
+    # The suggestion must actually be bigger, and keep the aspect ratio.
+    assert d["suggested_width_mm"] > 20.0
+    assert d["suggested_width_mm"] == pytest.approx(d["suggested_height_mm"])
+
+
+def test_placement_density_leaves_a_roomy_board_alone():
+    placement = {
+        "board": {"width_mm": 50.0, "height_mm": 50.0},
+        "placements": [
+            {"designator": "U1", "footprint_width_mm": 5.0,
+             "footprint_height_mm": 5.0, "rotation_deg": 0, "package": "",
+             "x_mm": 10.0, "y_mm": 10.0},
+        ],
+    }
+    d = placement_density(placement, {"elements": []}, clearance=0.5)
+    assert d["verdict"] == "packable"
+    assert d["suggested_width_mm"] == 50.0
