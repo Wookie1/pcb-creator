@@ -282,9 +282,7 @@ class TestTwoSidedEvalFixture:
 
     @staticmethod
     def _place(tmp_path, two_sided: bool):
-        import json
         import sys
-        from pathlib import Path
 
         repo = Path(__file__).parent.parent
         sys.path.insert(0, str(repo / "scripts"))

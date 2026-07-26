@@ -1,14 +1,7 @@
 """The pass budget must actually bound Freerouting.
 
-Freerouting 2.1.0 accepts `-mp` and ignores it in headless mode: GlobalSettings
-parses it into RouterSettings.maxPasses, but BatchAutorouter bounds its loop
-with get_stop_pass_no() — a private transient field defaulting to 999 that only
-the GUI classes ever set. An unbounded run matters because 2.1.0 writes the SES
-only at end-of-passes, so a board it cannot finish burns the whole timeout and
-returns *nothing* rather than a partial route.
-
-route_with_freerouting therefore also sets FREEROUTING__ROUTER__STOP_PASS_NO,
-which reaches the field the loop reads.
+`-mp` is inert in 2.1.0 headless; the env override is what bounds the loop.
+Why, and why both are passed: the comment at the Popen call in freerouter.py.
 """
 
 import pytest
@@ -41,12 +34,8 @@ _NETLIST = {
 }
 
 
-def _fixture(name: str) -> dict:
-    return _PLACEMENT if name == "placement" else _NETLIST
-
-
 def test_pass_budget_reaches_the_field_freerouting_actually_reads(monkeypatch,
-                                                                 tmp_path):
+                                                                  tmp_path):
     """-mp alone is inert; the env override must go with it."""
     captured = {}
 
@@ -58,23 +47,18 @@ def test_pass_budget_reaches_the_field_freerouting_actually_reads(monkeypatch,
         captured["env"] = kwargs.get("env")
         raise _Stop
 
-    jar = tmp_path / "freerouting-2.1.0.jar"
-    jar.write_bytes(b"")
+    jar = tmp_path / "freerouting-2.1.0.jar"  # never opened; only str()'d
     monkeypatch.setattr(freerouter, "ensure_java", lambda: "java")
     monkeypatch.setattr(freerouter, "ensure_jar", lambda p=None: jar)
     monkeypatch.setattr(freerouter, "_reap_orphaned_freerouting", lambda: None)
     monkeypatch.setattr(freerouter.subprocess, "Popen", fake_popen)
 
     with pytest.raises(_Stop):
-        freerouter.route_with_freerouting(
-            _fixture("placement"), _fixture("netlist"), max_passes=7)
+        freerouter.route_with_freerouting(_PLACEMENT, _NETLIST, max_passes=7)
 
     assert "-mp" in captured["cmd"], "keep -mp: it is the real bound on 2.2.4+"
     assert captured["cmd"][captured["cmd"].index("-mp") + 1] == "7"
-    env = captured["env"]
-    assert env["FREEROUTING__ROUTER__STOP_PASS_NO"] == "7"
-    # A copy of the environment, not a bare dict — the JVM still needs PATH etc.
-    assert len(env) > 1
+    assert captured["env"]["FREEROUTING__ROUTER__STOP_PASS_NO"] == "7"
 
 
 # No live counterpart: any board small enough to belong in a test file finishes
