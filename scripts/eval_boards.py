@@ -81,6 +81,28 @@ def _provide_fallback_footprint(package: str, pin_count: int) -> bool:
     return True
 
 
+def configure_eval_lookup(config) -> None:
+    """Install the tiered footprint lookup (KiCad library + component cache),
+    exactly like the MCP server does — without it only the IPC-7351 and
+    built-in tiers resolve, which yields SMALLER synthetic footprints and makes
+    every board look far easier to place than it is. The cache is redirected to
+    a throwaway file so eval fallback footprints never pollute the user's real
+    cache. Any script measuring placement/routing must call this first.
+    """
+    from optimizers.pad_geometry import configure_lookup
+    from orchestrator.cache import ComponentCache
+    eval_cache_dir = Path(tempfile.mkdtemp(prefix="eval-cache-"))
+    cache = ComponentCache(str(eval_cache_dir / "component_cache.json"))
+    kicad_index = None
+    if config.kicad_library_path:
+        try:
+            from exporters.kicad_mod_parser import KiCadLibraryIndex
+            kicad_index = KiCadLibraryIndex(config.kicad_library_path)
+        except Exception:
+            kicad_index = None
+    configure_lookup(kicad_index=kicad_index, cache=cache)
+
+
 def _build_netlist(req: dict, project_dir: Path, name: str,
                    row: dict) -> tuple[bool, str]:
     """Compile requirements components/connections into a netlist via the
@@ -216,22 +238,7 @@ def main() -> int:
 
     config = OrchestratorConfig.from_env(base_dir=REPO)
 
-    # Install the tiered footprint lookup (KiCad library + component cache),
-    # exactly like the MCP server does — without it only the IPC-7351 and
-    # built-in tiers resolve. The cache is redirected to a throwaway file so
-    # eval fallback footprints never pollute the user's real cache.
-    from optimizers.pad_geometry import configure_lookup
-    from orchestrator.cache import ComponentCache
-    eval_cache_dir = Path(tempfile.mkdtemp(prefix="eval-cache-"))
-    cache = ComponentCache(str(eval_cache_dir / "component_cache.json"))
-    kicad_index = None
-    if config.kicad_library_path:
-        try:
-            from exporters.kicad_mod_parser import KiCadLibraryIndex
-            kicad_index = KiCadLibraryIndex(config.kicad_library_path)
-        except Exception:
-            kicad_index = None
-    configure_lookup(kicad_index=kicad_index, cache=cache)
+    configure_eval_lookup(config)
 
     req_dir = REPO / "test" / "requirements"
     paths = sorted(req_dir.glob("*.json"))
