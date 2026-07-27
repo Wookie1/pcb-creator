@@ -15,13 +15,30 @@ before building the loop:
 
 Verdict per board:
   easy            — 100% everywhere; nothing to capture
-  router-limited  — tight cluster below 100% (spread <= noise); placement is not
-                    the bottleneck (this was the dense reference board)
-  placement-bound — spread > noise; a co-optimizer has real headroom
+  router-limited  — headroom is inside the noise floor; placement is not the
+                    bottleneck (this was the dense reference board)
+  seed-flaky      — median already at the ceiling; selection buys reliability
+  placement-bound — headroom > noise; a co-optimizer has real headroom
 
 One route yields the whole pass curve: the progress callback reports unrouted
 count after every pass, so pass-1 doubles as the cheap probe a Phase 2 oracle
 would use, measured against the same run's final result (`probe_correlation`).
+
+MEASURED VERDICT (2026-07-26, 8 seeds x 5 routes, 11 boards): NO-GO, 0/11
+placement-bound. Every board's headroom sits inside its own noise floor once
+each candidate is scored on a MEDIAN of routes rather than one lucky one --
+e.g. arduino_nano 10.55 pts of headroom against an 18.4 pt floor. Scored on a
+single route the same board flips verdict run to run (ads1115 came out
+placement-bound at 27.85 pts on one sweep and router-limited at 11.1 on the
+next), which is what makes best-of-N selection worthless here: the winner is
+the lucky route, not the good placement.
+
+The cheap oracle fails independently. Pass-1 unrouted correlates only -0.47 to
+-0.51 with the final result; scoring the probe in the objective's own units
+(a 1-pass route imported to net-based completion) is *anti*-correlated, -0.46
+and -0.32 -- the seed it ranks best is mid-tier and the true winner ranks last.
+
+Reports land in eval_output/, which is gitignored -- re-run to regenerate.
 
 Usage:
     python scripts/spike_placement_sensitivity.py [--boards a,b] [--seeds 8]
@@ -114,6 +131,29 @@ def _spread(vals: list[float]) -> float:
     return round(max(vals) - min(vals), 2) if len(vals) > 1 else 0.0
 
 
+def _verdict(best: float, median: float, noise: float) -> tuple[str, float]:
+    """Classify a board by what a candidate-selector could actually win.
+
+    Best-of-N only ever moves you from the median to the best, so it is that
+    gap — not the full seed spread — that has to clear the engine's own noise.
+    """
+    headroom = round(best - median, 2)
+    if headroom <= 0:
+        return "seed-flaky", headroom
+    if headroom <= noise:
+        return "router-limited", headroom
+    return "placement-bound", headroom
+
+
+def _selftest() -> None:
+    assert _verdict(100.0, 100.0, 0.0)[0] == "seed-flaky"
+    # The real regression: gating on seed spread (33.4) instead of headroom
+    # called ads1115 placement-bound, when its 11.1 pts sit inside an 11.2 pt floor.
+    assert _verdict(44.4, 33.3, 11.2) == ("router-limited", 11.1)
+    assert _verdict(44.4, 33.3, 5.0) == ("placement-bound", 11.1)
+    print("selftest ok")
+
+
 def analyze(board: str, config, n_seeds: int, n_repeats: int) -> dict:
     req, pdir, err = _prepare(board)
     if err:
@@ -165,12 +205,25 @@ def analyze(board: str, config, n_seeds: int, n_repeats: int) -> dict:
     # 2. Seed spread at the knee.
     print(f"    knee at scale {knee} ({kw:.1f}x{kh:.1f}mm) — {n_seeds} seeds",
           flush=True)
+    # Each seed is routed n_repeats times and scored on its MEDIAN. Routing a
+    # placement once gives a single draw from a distribution ~10-25 pts wide, so
+    # a single-sample "best seed" is mostly a lucky route: the same board came
+    # out placement-bound on one run and router-limited on the next.
     seeds = []
     for k in range(n_seeds):
         r = _probe(pdir, board, config, kw, kh, seed=k)
+        if r.get("status") == "ok":
+            reps = [r] + [_probe(pdir, board, config, kw, kh, seed=k,
+                                 reuse_placement=True)
+                          for _ in range(n_repeats - 1)]
+            got = [x["completion"] for x in reps
+                   if x.get("status") == "ok" and x.get("completion") is not None]
+            r["completion_runs"] = got
+            r["completion"] = round(statistics.median(got), 2)
         seeds.append(r)
         print(f"      seed {k}: {r.get('status'):<12} "
-              f"completion={r.get('completion', '-')}%", flush=True)
+              f"completion={r.get('completion', '-')}% "
+              f"of {r.get('completion_runs', '-')}", flush=True)
     row["seeds"] = seeds
     comps = [r["completion"] for r in seeds
              if r.get("status") == "ok" and r.get("completion") is not None]
@@ -183,32 +236,34 @@ def analyze(board: str, config, n_seeds: int, n_repeats: int) -> dict:
     row["seed_best"] = max(comps)
     row["seed_median"] = round(statistics.median(comps), 2)
 
-    # 3. Noise floor — same placement, routed repeatedly.
-    print(f"    noise floor: {n_repeats} repeats of one placement", flush=True)
-    run_placement(pdir, board, config, board_width_mm=kw, board_height_mm=kh, seed=0)
-    noise = [_probe(pdir, board, config, kw, kh, seed=0, reuse_placement=True)
-             for _ in range(n_repeats)]
-    ncomps = [r["completion"] for r in noise
-              if r.get("status") == "ok" and r.get("completion") is not None]
-    row["noise_completions"] = ncomps
-    row["noise_spread"] = _spread(ncomps)
+    # 3. Noise floor — the repeats above already routed each fixed placement
+    # n_repeats times, so the within-placement spread is free. Take the median
+    # across seeds rather than one placement's: it is the typical amount the
+    # engine moves when placement is held constant.
+    within = [_spread(r["completion_runs"]) for r in seeds
+              if r.get("completion_runs")]
+    row["noise_per_seed"] = within
+    row["noise_spread"] = round(statistics.median(within), 2) if within else 0.0
 
-    # Verdict. Two gates, because "spread > noise" alone is not enough: a board
-    # where most seeds already route 100% and one dips has a real spread but
-    # NOTHING for a candidate-selector to win on quality — picking the best of N
-    # only ever moves you from the median to the best.
-    row["headroom_pts"] = round(row["seed_best"] - row["seed_median"], 2)
-    if row["seed_spread"] <= row["noise_spread"]:
-        row["verdict"] = "router-limited"
-        row["detail"] = (f"seed spread {row['seed_spread']} pts is within the "
-                         f"{row['noise_spread']} pt engine noise floor")
-    elif row["headroom_pts"] <= 0:
+    # Verdict. Gate on HEADROOM vs noise, not spread vs noise: best-of-N only
+    # ever moves you from the median to the best, so the spread below the median
+    # is not winnable and must not count towards clearing the noise floor.
+    # (Gating on spread promoted both ads1115 and arduino_nano, whose headroom
+    # is *inside* the floor — the same placement re-routed swings further than
+    # the best seed beats the median one.)
+    row["verdict"], row["headroom_pts"] = _verdict(
+        row["seed_best"], row["seed_median"], row["noise_spread"])
+    if row["verdict"] == "seed-flaky":
         # Worth selecting for RELIABILITY (dodge the occasional bad seed), not
         # for median quality. Kept distinct so it is not counted as headroom.
-        row["verdict"] = "seed-flaky"
         row["detail"] = (f"median seed already hits {row['seed_median']}% — "
                          f"spread {row['seed_spread']} pts is occasional bad "
                          "seeds, so selection buys reliability, not quality")
+    elif row["verdict"] == "router-limited":
+        row["detail"] = (f"median {row['seed_median']}% → best "
+                         f"{row['seed_best']}% is only {row['headroom_pts']} pts, "
+                         f"inside the {row['noise_spread']} pt engine noise floor "
+                         "— selecting the best seed selects a lucky route")
     else:
         row["verdict"] = "placement-bound"
         row["detail"] = (f"median {row['seed_median']}% → best "
@@ -230,11 +285,24 @@ def analyze(board: str, config, n_seeds: int, n_repeats: int) -> dict:
 
 
 def main() -> int:
+    global PROBE_PASSES
     ap = argparse.ArgumentParser()
     ap.add_argument("--boards", default="", help="comma-separated stems (default: all)")
     ap.add_argument("--seeds", type=int, default=8)
     ap.add_argument("--repeats", type=int, default=3, help="noise-floor routes")
+    ap.add_argument("--passes", type=int, default=PROBE_PASSES,
+                    help="bounded passes per probe — lower it to price a cheap "
+                         "Phase 2 oracle against the full-depth result")
+    # A partial re-run must not clobber the full sweep's record; that has
+    # already happened once (sensitivity.md left reporting 1/1 boards).
+    ap.add_argument("--out", default="sensitivity", help="output file stem")
+    ap.add_argument("--selftest", action="store_true",
+                    help="check the verdict gate and exit")
     args = ap.parse_args()
+    if args.selftest:
+        _selftest()
+        return 0
+    PROBE_PASSES = args.passes
 
     paths = sorted(REQ_DIR.glob("*.json"))
     if args.boards:
@@ -260,7 +328,7 @@ def main() -> int:
         rows.append(row)
 
     OUT_DIR.mkdir(exist_ok=True)
-    (OUT_DIR / "sensitivity.json").write_text(
+    (OUT_DIR / f"{args.out}.json").write_text(
         json.dumps({"passes": PROBE_PASSES, "scales": SCALES,
                     "seeds": args.seeds, "rows": rows}, indent=2))
 
@@ -298,10 +366,10 @@ def main() -> int:
     else:
         lines.append("Go/no-go on Phase 2: NO-GO — no board shows placement "
                      "headroom above the engine noise floor.")
-    (OUT_DIR / "sensitivity.md").write_text("\n".join(lines) + "\n")
+    (OUT_DIR / f"{args.out}.md").write_text("\n".join(lines) + "\n")
 
     print(f"\n{len(bound)}/{len(rows)} placement-bound — "
-          f"report at {OUT_DIR}/sensitivity.md")
+          f"report at {OUT_DIR}/{args.out}.md")
     return 0
 
 
