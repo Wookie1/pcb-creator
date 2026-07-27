@@ -28,10 +28,12 @@ def render_board_png(
     bom: dict | None = None,
     width: int = 2048,
 ) -> bytes:
-    """Render the routed board to PNG bytes via SVG -> cairosvg.
+    """Render the board to PNG bytes via SVG -> cairosvg.
 
     Args:
-        routed: Routed board dict (placement + traces + vias + fills).
+        routed: Routed board dict (placement + traces + vias + fills), or a
+            plain placement dict — a placement carries no "routing" key, so it
+            simply renders as components/pads with no traces.
         netlist: Optional netlist for per-net coloring.
         bom: Optional BOM for component tooltips.
         width: Output image width in pixels.

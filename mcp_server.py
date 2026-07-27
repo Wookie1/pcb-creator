@@ -44,8 +44,9 @@ mcp = FastMCP(
     "pcb-creator",
     instructions=(
         "PCB design tools. Call get_workflow_guide() FIRST to see the exact tool "
-        "order for the three workflows: (a) build a circuit from scratch with "
-        "create_circuit/add_component/connect_pins, (b) import an existing KiCad "
+        "order for the three workflows: (a) build a circuit from scratch — "
+        "build_circuit in one call, or create_circuit/add_component/connect_pins "
+        "step by step, (b) import an existing KiCad "
         "netlist with import_kicad_netlist, or (c) one-shot autonomous design_pcb. "
         "Every tool response includes 'next_step' (the call to make next) and, on "
         "failure, 'remediation' (concrete recovery options). Long operations "
@@ -307,6 +308,29 @@ def _read_project_json(project_name: str, suffix: str) -> dict | None:
     return None
 
 
+# Placement and routing overwrite in place, and the autorouter is
+# nondeterministic — a re-run can land WORSE than what it replaced. Both files
+# are snapshotted together so a revert always restores a coherent pair.
+_SNAPSHOT_SUFFIXES = ("_placement.json", "_routed.json")
+
+
+def _snapshot_board(project_name: str) -> None:
+    """Save the current placement+routed pair into the single revert slot.
+
+    ponytail: one slot, overwritten by every mutating run — no history stack.
+    """
+    pdir = _project_dir(project_name)
+    for suffix in _SNAPSHOT_SUFFIXES:
+        src = pdir / f"{project_name}{suffix}"
+        dst = pdir / f"{project_name}{suffix}.prev"
+        if src.exists():
+            dst.write_bytes(src.read_bytes())
+        elif dst.exists():
+            # The file does not exist NOW, so the slot must not claim it did —
+            # otherwise a revert resurrects a board from two runs ago.
+            dst.unlink()
+
+
 def _poll_interval(elapsed_s: float | None) -> int:
     """Adaptive poll cadence for a background job, in seconds.
 
@@ -480,29 +504,16 @@ def design_pcb(  # pragma: no cover - spawns the background LLM design pipeline 
     Poll get_project_status until 'design_state' is 'complete' or 'failed'.
     Calling again while running returns the in-progress job (no duplicates).
 
-    Prefer requirements_json (schema from get_requirements_schema) over plain
-    description — it skips LLM translation. Minimal example:
+    Prefer requirements_json (full schema from get_requirements_schema) over a
+    plain description — it skips LLM translation. Shape:
 
-        design_pcb(
-            description="LED blinker",
-            project_name="led_blinker",
-            requirements_json={
-                "project_name": "led_blinker",
-                "description": "One red LED with resistor on 5V",
-                "power": {"voltage": "5V", "source": "external_dc"},
-                "board": {"width_mm": 30, "height_mm": 20, "layers": 2},
-                "components": [
-                    {"ref": "D1", "type": "led", "value": "red", "package": "0805"},
-                    {"ref": "R1", "type": "resistor", "value": "330ohm", "package": "0805"},
-                    {"ref": "J1", "type": "connector", "value": "2-pin header", "package": "PinHeader-1x2"}
-                ],
-                "connections": [
-                    {"net_name": "VCC", "net_class": "power", "pins": ["J1.1", "R1.1"]},
-                    {"net_name": "LED_DRIVE", "pins": ["R1.2", "D1.anode"]},
-                    {"net_name": "GND", "net_class": "ground", "pins": ["D1.cathode", "J1.2"]}
-                ]
-            },
-        )
+        {"project_name": ..., "description": ...,
+         "power": {"voltage": "5V", "source": "external_dc"},
+         "board": {"width_mm": 30, "height_mm": 20, "layers": 2},
+         "components": [{"ref": "R1", "type": "resistor", "value": "330ohm",
+                         "package": "0805"}, ...],
+         "connections": [{"net_name": "VCC", "net_class": "power",
+                          "pins": ["J1.1", "R1.1"]}, ...]}
 
     settings overrides: {"model", "max_rework_attempts",
     "skip_qa"}. attachments: list of {"filename", "content_base64", "type",
@@ -937,6 +948,24 @@ def get_workflow_guide() -> dict:
             "build_from_scratch": {
                 "when": "You are designing a new circuit and can describe its "
                         "components and connections.",
+                "shortcut": {
+                    "tool": "build_circuit",
+                    "note": "If you already know the whole circuit, build_circuit "
+                            "does steps 1-4 in ONE call (draft + every component "
+                            "+ every net + compile) and reports per-item "
+                            "failures. Steps 1-4 below remain the way to edit an "
+                            "existing draft.",
+                    "args_template": {
+                        "project_name": "my_board", "description": "...",
+                        "board_width_mm": 50, "board_height_mm": 40,
+                        "components": [{"designator": "U1",
+                                        "component_type": "ic",
+                                        "value": "NE555", "package": "DIP-8",
+                                        "pinout": "1:GND 2:TRIG 3:OUT 4:RESET "
+                                                  "5:CTRL 6:THRES 7:DISCH 8:VCC"}],
+                        "nets": [{"net_name": "GND", "pins": ["U1.1", "C1.2"]}],
+                    },
+                },
                 "steps": [
                     {"order": 1, "tool": "create_circuit",
                      "args_template": {"project_name": "my_board",
@@ -979,15 +1008,23 @@ def get_workflow_guide() -> dict:
                                    "adjust them with place_component / "
                                    "unplace_component; otherwise enlarge the "
                                    "board and re-run."},
-                    {"order": 7, "tool": "route_board",
+                    {"order": 7, "tool": "get_board_image",
+                     "args_template": {"project_name": "my_board"},
+                     "note": "LOOK at the placement before routing it — routing "
+                             "is the slow step, and a connector facing the wrong "
+                             "way or a crammed corner is obvious in the image "
+                             "and cheap to fix now with place_component."},
+                    {"order": 8, "tool": "route_board",
                      "args_template": {"project_name": "my_board"}, **poll_routing},
-                    {"order": 8, "tool": "run_drc",
+                    {"order": 9, "tool": "run_drc",
                      "args_template": {"project_name": "my_board"},
                      "on_failure": "Review violations; re-place on a larger "
-                                   "board or re-route, then re-run."},
-                    {"order": 9, "tool": "export_outputs",
+                                   "board or re-route, then re-run. If the "
+                                   "re-route lands worse, revert_board restores "
+                                   "the previous board."},
+                    {"order": 10, "tool": "export_outputs",
                      "args_template": {"project_name": "my_board"}},
-                    {"order": 10, "tool": "get_fab_quote",
+                    {"order": 11, "tool": "get_fab_quote",
                      "args_template": {"project_name": "my_board", "quantity": 5},
                      "optional": True,
                      "note": "Fab cost estimate + BOM part availability. Record "
@@ -1044,7 +1081,46 @@ def get_workflow_guide() -> dict:
             "'status_hint' always reports forward progress.",
             "Never use external CAD tools or CLIs; every fix is possible "
             "through these tools.",
+            "Look at the board with get_board_image — after placement (before "
+            "paying for a route) and after routing.",
+            "A placement or route that came back worse than the last one is "
+            "undone with revert_board (one step of history).",
         ],
+        "reference": {
+            "routing_capacity": (
+                "Route finished <100%, or DRC reports disconnected nets. In "
+                "order: (1) route_board(keep_existing=True) — the autorouter is "
+                "nondeterministic, so finishing the residual nets while "
+                "protecting the routed majority usually closes them; (2) add "
+                "routing CAPACITY via the stackup (see 'stackup'); (3) only then "
+                "a larger board — enlarging rarely helps a dense / fine-pitch "
+                "board, and its size is often fixed by the enclosure, so ask the "
+                "user. A handful of fine-pitch fanout nets may finish best by "
+                "hand. Advanced: PCB_ESCAPE_FANOUT=true pre-generates dog-bone "
+                "escapes for single-row fine-pitch parts as protected wiring "
+                "before routing."),
+            "stackup": (
+                "optimize_placement(layers=, plane_layers=). 2 layers is the "
+                "default and cheapest; going to 4 changes cost and stackup, so "
+                "ASK THE USER first (the tool enforces approved=True). On 4 "
+                "layers, plane_layers trades power integrity for signal "
+                "capacity: 2 = GND + power planes (best integrity), 1 = GND "
+                "plane and a 3rd SIGNAL layer (power routed as traces), 0 = all "
+                "inner layers signal. Escalate 2 → 1 → 0 for a dense board with "
+                "many signals, e.g. a fine-pitch connector with lots of GPIO."),
+            "export_refusal": (
+                "export_outputs refuses anything that cannot be built, with no "
+                "override. Open/disconnected nets → route_board("
+                "keep_existing=True). DRC errors → read 'reroute_cleanable': "
+                "True means every error is clearance/short/mask geometry that a "
+                "keep_existing re-route rips up and clears on its own (do not "
+                "hand-edit or re-pour), False means at least one is structural "
+                "(annular ring, hole spacing, edge clearance, trace width) and "
+                "must be fixed at its source — placement, via or board rules — "
+                "first. DRC not certifiable → install/locate kicad-cli "
+                "(PCB_KICAD_CLI). To inspect an imperfect board instead, use "
+                "export_kicad or get_board_image."),
+        },
     }
 
 
@@ -1420,22 +1496,32 @@ def export_kicad(project_name: str) -> dict:
 
 
 @mcp.tool()
-def get_board_image(project_name: str, width: int = 2048) -> dict:
-    """Render the routed PCB board as a PNG image.
+def get_board_image(project_name: str, width: int = 1024):
+    """Look at the board as a PNG image — the routed board, or the PLACEMENT
+    if it is not routed yet.
 
-    Args:
-        project_name: The project slug/name.
-        width: Output image width in pixels (default 2048).
+    Returns a real image you can see, so review placement BEFORE paying for a
+    route (components off-board, connectors facing inward, a crammed corner)
+    and review traces/fills after. 'stage' in the accompanying text says which
+    one you got.
 
-    Returns:
-        Dict with base64-encoded PNG image data.
+    width is the pixel width (default 1024, capped at 2048). Bigger is not
+    better — a wider image costs proportionally more to look at and is
+    downsampled anyway; raise it only to inspect fine-pitch detail.
     """
-    routed = _read_project_json(project_name, "_routed.json")
-    if not routed:
+    width = max(256, min(int(width), 2048))
+    board = _read_project_json(project_name, "_routed.json")
+    stage = "routed"
+    if not board:
+        board = _read_project_json(project_name, "_placement.json")
+        stage = "placement"
+    if not board:
         return fail(
-            f"No routed board found for project '{project_name}'.",
-            remediation=[option("Route the board first", "route_board",
-                                {"project_name": project_name})],
+            f"No routed board or placement found for project '{project_name}'.",
+            remediation=[option("Place the components first", "optimize_placement",
+                                {"project_name": project_name,
+                                 "board_width_mm": "<width>",
+                                 "board_height_mm": "<height>"})],
         )
 
     netlist = _read_project_json(project_name, "_netlist.json")
@@ -1445,18 +1531,26 @@ def get_board_image(project_name: str, width: int = 2048) -> dict:
     _activate_project_lookup(project_name)
 
     from orchestrator.vision_review import render_board_png
+    from fastmcp.utilities.types import Image
 
     try:
-        png_bytes = render_board_png(routed, netlist, bom, width=width)
-        b64 = base64.b64encode(png_bytes).decode("utf-8")
-        return ok({
-            "image_base64": b64,
-            "width": width,
-            "size_bytes": len(png_bytes),
-            "mime_type": "image/png",
-        })
+        png_bytes = render_board_png(board, netlist, bom, width=width)
     except Exception as e:
         return fail(f"Failed to render board image: {e}")
+
+    if stage == "placement":
+        step = next_step("route_board", {"project_name": project_name},
+                         "This is the unrouted placement — route it once the "
+                         "layout looks right.")
+    else:
+        step = next_step("run_drc", {"project_name": project_name},
+                         "Routed board — check design rules next.")
+    # The Image content block is what the agent can actually SEE; the dict
+    # rides alongside as text. Returning base64 in the dict instead would cost
+    # ~47k tokens at width=2048 and still be unreadable.
+    return [Image(data=png_bytes, format="png"),
+            ok({"project_name": project_name, "stage": stage, "width": width,
+                "size_bytes": len(png_bytes)}, step)]
 
 
 # ---------------------------------------------------------------------------
@@ -2049,6 +2143,107 @@ def finalize_circuit(project_name: str) -> dict:
     ))
 
 
+_COMPONENT_KEYS = {"designator", "component_type", "value", "package",
+                   "pinout", "pin_count", "functional_group"}
+_NET_KEYS = {"net_name", "pins", "net_class"}
+
+
+@mcp.tool()
+def build_circuit(project_name: str, description: str,
+                  board_width_mm: float, board_height_mm: float,
+                  components: list[dict], nets: list[dict],
+                  no_connect: list[str] | None = None,
+                  layers: int = 2, overwrite: bool = False) -> dict:
+    """Build a whole circuit in ONE call: draft + all components + all nets +
+    compile. The bulk form of create_circuit → add_component → connect_pins →
+    finalize_circuit (which stay available for incremental edits).
+
+    Use this whenever you already know the full circuit — a 40-part board is
+    one call here instead of ~60.
+
+    components: list of add_component arg dicts —
+        {"designator": "U1", "component_type": "ic", "value": "NE555",
+         "package": "DIP-8", "pinout": "1:GND 2:TRIG ...",   # optional
+         "pin_count": 8, "functional_group": "timer"}        # optional
+    nets: list of connect_pins arg dicts —
+        {"net_name": "VCC", "pins": ["U1.8", "C1.1"], "net_class": "power"}
+        (net_class optional — inferred from the name.)
+    no_connect: pins that are intentionally unused, e.g. ["U1.5"].
+
+    EVERY item is attempted; the draft keeps whatever succeeded. On failure the
+    response lists 'failed' per item (each with its own error and remediation)
+    plus 'added'/'connected' counts — fix just the failures with add_component /
+    connect_pins and call finalize_circuit, no need to rebuild from scratch.
+
+    Example: build_circuit("blinker", "555 blinker", 40, 30,
+        components=[{"designator": "U1", "component_type": "ic",
+                     "value": "NE555", "package": "DIP-8",
+                     "pinout": "1:GND 2:TRIG 3:OUT 4:RESET 5:CTRL 6:THRES "
+                               "7:DISCH 8:VCC"}],
+        nets=[{"net_name": "GND", "pins": ["U1.1"]}])
+    """
+    created = create_circuit(project_name, description, board_width_mm,
+                             board_height_mm, layers=layers, overwrite=overwrite)
+    if not created.get("success"):
+        return created
+
+    failed: list[dict] = []
+
+    def _record(item: dict | str, result: dict) -> bool:
+        if result.get("success"):
+            return True
+        entry = {"item": item, "error": result.get("error", "failed")}
+        if result.get("remediation"):
+            entry["remediation"] = result["remediation"]
+        failed.append(entry)
+        return False
+
+    added = 0
+    for comp in components:
+        bad_keys = set(comp) - _COMPONENT_KEYS
+        if bad_keys:
+            failed.append({"item": comp,
+                           "error": f"Unknown key(s) {sorted(bad_keys)}; valid "
+                                    f"keys are {sorted(_COMPONENT_KEYS)}."})
+            continue
+        try:
+            r = add_component(project_name, **comp)
+        except TypeError as exc:  # missing required key
+            failed.append({"item": comp, "error": str(exc)})
+            continue
+        added += _record(comp, r)
+
+    connected = 0
+    for net in nets:
+        bad_keys = set(net) - _NET_KEYS
+        if bad_keys:
+            failed.append({"item": net,
+                           "error": f"Unknown key(s) {sorted(bad_keys)}; valid "
+                                    f"keys are {sorted(_NET_KEYS)}."})
+            continue
+        try:
+            r = connect_pins(project_name, **net)
+        except TypeError as exc:
+            failed.append({"item": net, "error": str(exc)})
+            continue
+        connected += _record(net, r)
+
+    if no_connect:
+        _record(no_connect, mark_no_connect(project_name, no_connect))
+
+    if failed:
+        return fail(
+            f"{len(failed)} of {len(components) + len(nets)} item(s) failed; "
+            f"{added} component(s) and {connected} net(s) were applied and are "
+            "kept in the draft. Fix only the failures, then finalize_circuit.",
+            data={"failed": failed, "added": added, "connected": connected},
+            remediation=[option("Review the draft and what is still unconnected",
+                                "list_circuit", {"project_name": project_name})],
+        )
+
+    return finalize_circuit(project_name)
+
+
 @mcp.tool()
 def place_component(project_name: str, designator: str, x_mm: float,
                     y_mm: float, rotation_deg: int = 0,
@@ -2189,30 +2384,17 @@ def optimize_placement(
     netlist carries no board outline. On a re-run, dimensions are reused from the
     existing placement if omitted.
 
-    two_sided=True lets the optimizer move small SMD passives (resistors,
-    capacitors, diodes) to the BOTTOM of the board. Use it when components
-    do not FIT on top (placement fails with overlap violations) — it extends
-    how small a board can be. CAUTION: on 2-layer boards the bottom is the
-    router's escape layer, so bottom-side parts can REDUCE routing
-    completion; prefer a larger board when routing (not fit) is the problem.
-    Connectors, ICs, LEDs, and through-hole parts always stay on top.
+    two_sided=True lets the optimizer move small SMD passives to the BOTTOM —
+    use it when parts do not FIT on top, not when routing is the problem (on
+    2-layer boards the bottom is the router's escape layer, so it can REDUCE
+    completion). Connectors, ICs, LEDs and through-hole parts stay on top.
 
-    layers sets the copper layer count: 2 (default) or 4. Use 4 for dense /
-    fine-pitch boards (e.g. a connector with many GPIO) that cannot route on
-    2 layers — a 4-layer board adds inner copper for power/ground planes and/or
-    extra signal routing. Persists for re-placements; routing and export follow
-    the placement's layer count.
-
-    plane_layers (4-layer boards only) sets how many inner layers are solid
-    PLANES: 2 (default) = In1 GND + In2 power planes, 2 signal layers (best
-    power integrity); 1 = In1 GND plane only, In2 becomes a 3rd SIGNAL layer
-    (power routed as traces) — use for dense / many-signal boards (e.g. a
-    fine-pitch connector with lots of GPIO) that won't route on 2 signal
-    layers; 0 = all inner layers signal. Persists for re-placements.
-    NOTE: passing plane_layers implies a 4-layer board — if the board is
-    currently 2-layer it is automatically promoted to 4 layers (plane_layers
-    has no meaning on 2 layers, and silently ignoring it is how a board that
-    needed 4 layers ends up over-crammed onto 2).
+    layers: 2 (default) or 4 copper layers. plane_layers (4-layer only): how
+    many inner layers are solid planes — 2 (default) = GND + power planes,
+    1 = GND plane + a 3rd signal layer, 0 = all inner layers signal. Both
+    persist for re-placements; passing plane_layers promotes a 2-layer board to
+    4 layers. See get_workflow_guide()['reference']['stackup'] for which to
+    pick when a board won't route.
 
     approved: two changes the user likely constrained are ENFORCED to need
     their explicit approval once a placement exists — promoting a 2-layer
@@ -2271,6 +2453,7 @@ def optimize_placement(
             )
 
     _activate_project_lookup(project_name)
+    _snapshot_board(project_name)
 
     try:
         result = stages.run_placement(
@@ -2369,16 +2552,10 @@ def route_board(project_name: str, effort: str = "normal",
     prior incomplete route) instead of redoing it. Placement is not changed
     (so existing traces stay valid) and auto_retry is ignored.
 
-    IF A ROUTE FINISHES <100% (or DRC reports disconnected nets): the autorouter
-    is nondeterministic, so first call route_board(keep_existing=True) to finish
-    the residual nets while protecting the routed majority — this reliably
-    closes the last few. If it still won't complete on a 4-layer board, the
-    bottleneck is usually routing CAPACITY, not placement: re-run
-    optimize_placement with plane_layers=1 (3rd signal layer) or plane_layers=0
-    (all inner layers signal) and route again. Enlarging the board rarely helps
-    a dense / fine-pitch board. (Advanced: set PCB_ESCAPE_FANOUT=true to
-    pre-generate dog-bone escapes for single-row fine-pitch parts as protected
-    wiring before routing.)
+    If a route lands <100% (or worse than the last one), get_project_status'
+    next_step carries the recovery ladder; revert_board restores the previous
+    board. get_workflow_guide()['reference']['routing_capacity'] has the full
+    escalation.
 
     Requires a placement — call optimize_placement first.
 
@@ -2455,6 +2632,10 @@ def route_board(project_name: str, effort: str = "normal",
         netlist = _read_project_json(project_name, "_netlist.json")
         fixed_routing = stages.build_incremental_fixed_routing(existing, netlist)
 
+    # Snapshot before the worker overwrites the board: a re-route can come back
+    # worse than the one it replaced (revert_board restores this).
+    _snapshot_board(project_name)
+
     def _worker() -> None:
         try:
             if keep_existing:
@@ -2513,6 +2694,78 @@ def route_board(project_name: str, effort: str = "normal",
             "gap with no pass progress is normal); wait for 'routing_state' to "
             "reach 'complete'. Do not run other tools or external CLIs for this "
             "project while routing is active."
+        ),
+    )
+
+
+@mcp.tool()
+def revert_board(project_name: str) -> dict:
+    """Undo the last optimize_placement or route_board, restoring the previous
+    placement + routed board.
+
+    Routing is nondeterministic: a re-route (or a stackup/board-size change you
+    hoped would help) can come back WORSE than the one it replaced. Call this to
+    get the better board back instead of re-routing hopefully.
+
+    Exactly ONE step of history is kept, taken at the start of each placement or
+    routing run — reverting twice does not go back two steps. The stale DRC
+    report is dropped, so re-run run_drc after reverting.
+    """
+    pdir = _project_dir(project_name)
+    if not pdir.exists():
+        return fail(
+            f"Project '{project_name}' not found.",
+            remediation=[option("List existing projects", "list_projects", {})],
+        )
+
+    with _ROUTE_LOCK:
+        job = _ROUTE_JOBS.get(project_name)
+    if job and job["state"] == "running":
+        return working(
+            data={"project_name": project_name},
+            poll_again_in_s=15,
+            status_hint=("Routing is still running — it would overwrite the "
+                         "restored board. Poll get_project_status until "
+                         "'routing_state' is 'complete' or 'failed', then "
+                         "revert_board."),
+        )
+
+    snapshots = {s: pdir / f"{project_name}{s}.prev" for s in _SNAPSHOT_SUFFIXES}
+    if not any(p.exists() for p in snapshots.values()):
+        return fail(
+            f"Nothing to revert for '{project_name}' — no previous placement or "
+            "routed board was saved (only optimize_placement and route_board "
+            "create a revert point, and only for their own last run).",
+            remediation=[option("Check the current state", "get_project_status",
+                                {"project_name": project_name})],
+        )
+
+    restored = []
+    for suffix, snap in snapshots.items():
+        live = pdir / f"{project_name}{suffix}"
+        if snap.exists():
+            live.write_bytes(snap.read_bytes())
+            restored.append(live.name)
+        elif live.exists():
+            live.unlink()  # the snapshot predates this file — remove it too
+
+    drc = pdir / f"{project_name}_drc_report.json"
+    if drc.exists():
+        drc.unlink()
+
+    routed = _read_project_json(project_name, "_routed.json")
+    stats = routing_stats(routed) if routed else {}
+    completion = stats.get("completion_pct")
+    return ok(
+        {"project_name": project_name, "restored": restored,
+         "completion_pct": completion},
+        next_step(
+            "run_drc" if routed else "route_board", {"project_name": project_name},
+            (f"Restored the previous board ({completion}% routed). The DRC "
+             "report was dropped — re-run DRC on the restored board."
+             if routed else
+             "Restored the previous placement; there is no routed board in this "
+             "snapshot, so route it again."),
         ),
     )
 
@@ -2596,28 +2849,15 @@ def export_outputs(project_name: str) -> dict:
 
     Requires a routed board that passes DRC. **Refuses to export otherwise** —
     there is no override, because manufacturing files are only ever wanted for a
-    board that can actually be built:
-      - open/disconnected nets       -> finish with route_board(keep_existing=True)
-      - geometry DRC errors          -> a failed DRC returns the offending
-                                        violations (top_violations: rule /
-                                        message / location) and a
-                                        reroute_cleanable flag. When True, EVERY
-                                        error is clearance/short/mask geometry
-                                        that route_board(keep_existing=True)
-                                        rips up and re-routes clear on its own
-                                        (it runs the same kicad-cli DRC) — do
-                                        not hand-edit or re-pour, just re-route
-                                        and export. When False, some errors are
-                                        structural (annular ring, hole spacing,
-                                        edge clearance, trace width) and must be
-                                        fixed at the source (placement / via /
-                                        board rules) first.
-      - DRC can't be certified       -> install/locate kicad-cli (PCB_KICAD_CLI)
+    board that can actually be built. A refusal names the blocking violations
+    and carries a 'reroute_cleanable' flag: True means every error is
+    clearance/short/mask geometry that route_board(keep_existing=True) clears on
+    its own, False means at least one is structural (annular ring, hole spacing,
+    edge clearance, trace width) and must be fixed at the source first. See
+    get_workflow_guide()['reference']['export_refusal'].
+
     To inspect an imperfect board instead of manufacturing it, use export_kicad
     (writes the .kicad_pcb) or get_board_image.
-
-    Args:
-        project_name: Project slug.
 
     Returns:
         {success, output_dir, files: [...], package: <zip path>}  or  {success: False, error}
@@ -2866,14 +3106,11 @@ def set_part_number(project_name: str, designator: str,
     different part. Set lcsc= only when you have actually looked it up (a live
     get_fab_quote back-fills the MPN from a correct LCSC id for you).
 
-    The value lands in <project>_bom.json (synthesized from the netlist first
-    if absent), flows into the exported BOM CSV's 'MPN' / 'LCSC Part #'
-    columns, and is cached by type:value:package so the same part resolves
-    automatically in future projects.
-
-    Grouped BOM lines are matched by membership: designator "D2" updates the
-    "D1, D2, D3, D4" line (they are the same part by construction). Provided
-    fields overwrite existing values; omitted fields are left unchanged.
+    The value lands in <project>_bom.json, flows into the exported BOM CSV's
+    'MPN' / 'LCSC Part #' columns, and is cached by type:value:package so the
+    same part resolves automatically in future projects. Grouped lines match by
+    membership ("D2" updates the "D1, D2, D3, D4" line); provided fields
+    overwrite, omitted fields are left unchanged.
 
     Args:
         project_name: The project slug/name.
@@ -3164,30 +3401,17 @@ def check_footprint_coverage(
       4. built-in approximations
 
     Args:
-        components:   List of component dicts, each with:
-                        "reference"  (str, required) — designator, e.g. "U1"
-                        "package"    (str, required) — package name, e.g. "QFN-32"
-                        "pin_count"  (int, required) — number of pins
-                        "value"      (str, optional) — component value / part number
+        components:   List of component dicts, each with "reference" (e.g. "U1"),
+                      "package" (e.g. "QFN-32"), "pin_count", and optionally
+                      "value".
         project_name: Optional project slug.  When given, project-local custom
                       footprints registered via register_custom_footprint are
                       checked as tier 0.
 
     Returns:
-        {
-          "coverage": {"total": int, "resolved": int, "custom_needed": int},
-          "resolved": [
-            {"reference": "R1", "package": "0402", "pin_count": 2, "tier": "kicad_library"},
-            ...
-          ],
-          "custom_needed": [
-            {"reference": "U1", "package": "QFN-48", "pin_count": 48,
-             "value": "STM32F4",
-             "notes": "Not found in KiCad library, IPC-7351B, cache, or built-ins. "
-                      "Create a .kicad_mod and register via register_custom_footprint."},
-            ...
-          ],
-        }
+        {"coverage": {total, resolved, custom_needed},
+         "resolved": [{reference, package, pin_count, tier}, ...],
+         "custom_needed": [{reference, package, pin_count, value, notes}, ...]}
     """
     from optimizers.pad_geometry import check_footprint_tier
 
