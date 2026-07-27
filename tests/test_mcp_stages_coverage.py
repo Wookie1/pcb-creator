@@ -2229,3 +2229,49 @@ def test_run_export_best_effort_skips(tmp_path, monkeypatch):
     # Gerbers/drill/BOM still produced despite the skipped best-effort artifacts.
     assert any(f.endswith(".zip") for f in [r["package"]])
     assert not any("step" in f.lower() for f in r["files"])
+
+
+# --- two_sided must be tri-state at the tool surface -----------------------
+
+def _forwarded_two_sided(server, monkeypatch, tmp_path, **kwargs):
+    """Capture what optimize_placement actually hands run_placement."""
+    name = _build_led(server, "cov_ts_" + str(len(kwargs)))
+    from orchestrator import stages
+    seen = {}
+
+    def fake(*a, **kw):
+        seen.update(kw)
+        return {"success": True, "placements": [], "wire_length_mm": 0.0}
+
+    monkeypatch.setattr(stages, "run_placement", fake)
+    call(server, "optimize_placement",
+         {"project_name": name, "board_width_mm": 30, "board_height_mm": 20,
+          **kwargs})
+    return seen
+
+
+def test_optimize_placement_forwards_explicit_two_sided_false(
+        server, tmp_path, monkeypatch):
+    """False must reach run_placement as False, not None.
+
+    run_placement treats None (inherit what the project specified) and False
+    (force single-sided) as different answers — that distinction is the whole
+    point of the one-way-latch fix. The tool used to collapse them with
+    `two_sided or None`, so an agent passing two_sided=False silently got
+    'inherit', and a project whose requirements said true could never be
+    turned back off through the tool at all.
+    """
+    assert _forwarded_two_sided(
+        server, monkeypatch, tmp_path, two_sided=False)["two_sided"] is False
+
+
+def test_optimize_placement_forwards_omitted_two_sided_as_none(
+        server, tmp_path, monkeypatch):
+    assert _forwarded_two_sided(
+        server, monkeypatch, tmp_path)["two_sided"] is None
+
+
+def test_optimize_placement_forwards_two_sided_true(
+        server, tmp_path, monkeypatch):
+    assert _forwarded_two_sided(
+        server, monkeypatch, tmp_path, two_sided=True)["two_sided"] is True

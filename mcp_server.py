@@ -1583,9 +1583,13 @@ def import_kicad_netlist(
 
     Args:
         project_name: Slug for the project (lowercase, underscores).
-                      Must be unique — a new project directory is created.
+                      A new project directory is created; an existing project
+                      is refused unless overwrite=True.
         file_path:    Absolute path to the .net or .kicad_sch file.
         description:  Optional human-readable description written into the netlist.
+        overwrite:    Default False. True replaces an existing project of this
+                      name with a clean import — its placement and routing are
+                      discarded, so re-place and re-route afterwards.
 
     Returns:
         On success:
@@ -1949,6 +1953,9 @@ def create_circuit(project_name: str, description: str,
     replaces the existing project with a fresh draft). Do not switch to
     design_pcb to dodge the conflict — use a new project_name or overwrite=True.
 
+    layers: 2 (default) or 4 copper layers. A 4-layer board can also be
+    promoted later by passing plane_layers to optimize_placement.
+
     Example: create_circuit("led_blinker", "555 LED blinker at 1Hz",
                             board_width_mm=40, board_height_mm=30)
     """
@@ -2169,6 +2176,8 @@ def build_circuit(project_name: str, description: str,
         {"net_name": "VCC", "pins": ["U1.8", "C1.1"], "net_class": "power"}
         (net_class optional — inferred from the name.)
     no_connect: pins that are intentionally unused, e.g. ["U1.5"].
+    layers: 2 (default) or 4 copper layers, as in create_circuit.
+    overwrite: default False; True replaces an existing project of this name.
 
     EVERY item is attempted; the draft keeps whatever succeeded. On failure the
     response lists 'failed' per item (each with its own error and remediation)
@@ -2260,6 +2269,10 @@ def place_component(project_name: str, designator: str, x_mm: float,
     optimize_placement; everything else is placed around them. Coordinates are
     mm from the top-left board corner (x right, y down). Re-calling replaces
     the pin; undo with unplace_component.
+
+    layer: "top" (default) or "bottom" — anything else is rejected. This is the
+    side the part is pinned to, and it holds regardless of two_sided (which only
+    governs which parts the optimizer may move by itself).
 
     Example: place_component("my_board", "J1", x_mm=2.5, y_mm=20,
                              rotation_deg=90)
@@ -2368,7 +2381,7 @@ def optimize_placement(
     board_width_mm: float | None = None,
     board_height_mm: float | None = None,
     seed: int | None = None,
-    two_sided: bool = False,
+    two_sided: bool | None = None,
     plane_layers: int | None = None,
     layers: int | None = None,
     approved: bool = False,
@@ -2384,10 +2397,18 @@ def optimize_placement(
     netlist carries no board outline. On a re-run, dimensions are reused from the
     existing placement if omitted.
 
+    seed: fixes the annealing RNG so a placement is reproducible; omit for a
+    fresh layout each run. Different seeds do give genuinely different layouts,
+    but do not seed-hunt for routability: re-routing one unchanged placement
+    varies by more completion points than most seeds differ by, so a "better"
+    seed is usually a luckier route.
+
     two_sided=True lets the optimizer move small SMD passives to the BOTTOM —
     use it when parts do not FIT on top, not when routing is the problem (on
     2-layer boards the bottom is the router's escape layer, so it can REDUCE
-    completion). Connectors, ICs, LEDs and through-hole parts stay on top.
+    completion). Connectors, ICs, LEDs, through-hole and pinned parts stay put.
+    Omit it to inherit whatever the project already specified; pass False to
+    force single-sided, which moves everything back to the top.
 
     layers: 2 (default) or 4 copper layers. plane_layers (4-layer only): how
     many inner layers are solid planes — 2 (default) = GND + power planes,
@@ -2439,7 +2460,7 @@ def optimize_placement(
                 "project_name": project_name,
                 "board_width_mm": board_width_mm,
                 "board_height_mm": board_height_mm,
-                "seed": seed, "two_sided": two_sided or None,
+                "seed": seed, "two_sided": two_sided,
                 "plane_layers": plane_layers, "layers": layers,
             }.items() if v is not None}
             args["approved"] = True
@@ -2461,7 +2482,7 @@ def optimize_placement(
             board_width_mm=board_width_mm,
             board_height_mm=board_height_mm,
             seed=seed,
-            two_sided=two_sided or None,
+            two_sided=two_sided,
             plane_layers=plane_layers,
             layers=layers,
         )
