@@ -687,7 +687,15 @@ def build_kicad_pro(routed: dict, project_name: str) -> dict:
     cfg = routed.get("routing", {}).get("config", {})
     clearance = float(cfg.get("trace_clearance_mm", 0.2))
     track_w = float(cfg.get("trace_width_signal_mm", 0.2))
-    via_dia, via_drill = board_via_minima(routed)
+    # min_via_diameter / min_through_hole_diameter must enforce the FAB's floor,
+    # not the board's own smallest via — deriving the rule from the vias present
+    # is circular (a stray under-size via just lowers the rule to fit itself, so
+    # DRC never flags it). Use the profile's minimum when known; otherwise fall
+    # back to the smallest via on the board (no false positives when the fab is
+    # unknown).
+    board_via_dia, board_via_drill = board_via_minima(routed)
+    via_dia = float(cfg.get("via_diameter_min_mm") or board_via_dia)
+    via_drill = float(cfg.get("via_drill_min_mm") or board_via_drill)
 
     rules = {
         "min_clearance": round(clearance, 4),

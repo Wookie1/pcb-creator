@@ -55,6 +55,11 @@ class RouterConfig:
     via_diameter_mm: float = VIA_DIAMETER_MM
     copper_weight_oz: float = COPPER_WEIGHT_DEFAULT_OZ
     board_edge_clearance_mm: float = 0.3   # copper-to-board-edge keepout
+    # Fab's MINIMUM manufacturable via (None → unknown; DRC then floors the rule
+    # at the smallest via actually on the board). Distinct from via_diameter_mm/
+    # via_drill_mm, which are the sizes this board USES.
+    via_diameter_min_mm: float | None = None
+    via_drill_min_mm: float | None = None
     # Copper fill parameters
     fill_net_name: str = "GND"  # net name to use for fill (resolved at runtime)
     fill_clearance_mm: float = FILL_CLEARANCE_MM

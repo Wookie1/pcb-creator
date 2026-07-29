@@ -793,8 +793,13 @@ def _build_router_kwargs(project_dir: Path, project_name: str, log=None) -> dict
             kwargs["clearance_mm"] = max(cl_floor, mfg_rules["clearance_min_mm"])
         if "via_drill_min_mm" in mfg_rules:
             kwargs["via_drill_mm"] = max(via_d_floor, mfg_rules["via_drill_min_mm"])
+            # Raw fab floor for the DRC rule (see build_kicad_pro). The board USES
+            # via_drill_mm; the rule must enforce the fab's real minimum so a via
+            # that slips below it is flagged, not silently accommodated.
+            kwargs["via_drill_min_mm"] = mfg_rules["via_drill_min_mm"]
         if "via_diameter_min_mm" in mfg_rules:
             kwargs["via_diameter_mm"] = max(via_dia_floor, mfg_rules["via_diameter_min_mm"])
+            kwargs["via_diameter_min_mm"] = mfg_rules["via_diameter_min_mm"]
         if "board_edge_clearance_mm" in mfg_rules:
             # Carry the fab's real copper-to-edge spec so DRC checks against it
             # rather than KiCad's conservative 0.5mm default (which the .kicad_pro
@@ -882,8 +887,10 @@ def _short_cleanup(routed, placement_data, netlist_data, exclude_nets,  # pragma
             "via_diameter_mm": router_kwargs.get("via_diameter_mm", 0.6),
             "via_drill_mm": router_kwargs.get("via_drill_mm", 0.3),
         })
-        if "board_edge_clearance_mm" in router_kwargs:
-            cfg["board_edge_clearance_mm"] = router_kwargs["board_edge_clearance_mm"]
+        for _k in ("board_edge_clearance_mm", "via_diameter_min_mm",
+                   "via_drill_min_mm"):
+            if _k in router_kwargs:
+                cfg[_k] = router_kwargs[_k]
         return rt
 
     def _route_fn(fixed):
@@ -1247,9 +1254,9 @@ def run_routing(project_dir: Path, project_name: str, config,
         "via_diameter_mm": router_kwargs.get("via_diameter_mm", 0.6),
         "via_drill_mm": router_kwargs.get("via_drill_mm", 0.3),
     })
-    if "board_edge_clearance_mm" in router_kwargs:
-        routed["routing"]["config"]["board_edge_clearance_mm"] = \
-            router_kwargs["board_edge_clearance_mm"]
+    for _k in ("board_edge_clearance_mm", "via_diameter_min_mm", "via_drill_min_mm"):
+        if _k in router_kwargs:
+            routed["routing"]["config"][_k] = router_kwargs[_k]
 
     # FINAL inner-plane re-cut, UNCONDITIONAL, right before persisting. Short
     # cleanup and the protected-wiring union both move/add vias after the planes

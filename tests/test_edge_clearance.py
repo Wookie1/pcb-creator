@@ -44,3 +44,36 @@ def test_kicad_pro_omits_edge_rule_when_unknown():
     """No profile → leave KiCad's stricter default rather than inventing one."""
     pro = build_kicad_pro(_routed_with_edge(None), "p")
     assert "min_copper_edge_clearance" not in pro["board"]["design_settings"]["rules"]
+
+
+# --- via-diameter rule must enforce the FAB floor, not the board's own vias ---
+# Deriving min_via_diameter from the vias present is circular: a stray under-size
+# via just lowers the rule to accommodate itself, so DRC never flags it. When the
+# fab profile is known the rule is its minimum, independent of what's on the board.
+
+def _routed_with_via(via_min, drill_min, board_via_dia):
+    cfg = {"trace_clearance_mm": 0.127, "trace_width_signal_mm": 0.127,
+           "via_diameter_mm": 0.6, "via_drill_mm": 0.3}
+    if via_min is not None:
+        cfg["via_diameter_min_mm"] = via_min
+        cfg["via_drill_min_mm"] = drill_min
+    return {"routing": {"config": cfg,
+                        "vias": [{"x_mm": 1, "y_mm": 1, "diameter_mm": board_via_dia,
+                                  "drill_mm": 0.2}]},
+            "board": {"width_mm": 30, "height_mm": 30, "layers": 4}}
+
+
+def test_via_rule_uses_fab_minimum_not_board_via():
+    # A stray 0.45mm via is on the board, but the fab floor is 0.6 — the rule
+    # stays 0.6 so kicad-cli flags the under-size via instead of accommodating it.
+    pro = build_kicad_pro(_routed_with_via(0.6, 0.3, 0.45), "p")
+    rules = pro["board"]["design_settings"]["rules"]
+    assert rules["min_via_diameter"] == 0.6
+    assert rules["min_through_hole_diameter"] == 0.3
+
+
+def test_via_rule_falls_back_to_board_when_fab_unknown():
+    # No profile → floor at the smallest via present (current behaviour, no
+    # false positives when the fab minimum is unknown).
+    pro = build_kicad_pro(_routed_with_via(None, None, 0.45), "p")
+    assert pro["board"]["design_settings"]["rules"]["min_via_diameter"] == 0.45
