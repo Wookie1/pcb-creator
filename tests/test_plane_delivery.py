@@ -111,3 +111,47 @@ def test_stitch_sites_respect_drill_hole_spacing():
     for i, a in enumerate(kept):
         for b in kept[i + 1:]:
             assert math.hypot(a["x_mm"] - b["x_mm"], a["y_mm"] - b["y_mm"]) >= min_center
+
+
+def test_stub_clearance_detects_a_crossing():
+    """A pad->via stub must not cross foreign copper.
+
+    Only the VIA site was checked against traces; the stub carrying the pad to
+    it was not, so a VCC3V3 stub (U1.24 -> via) crossed a routed BOOT0 track and
+    kicad-cli reported "Tracks crossing" — the board's last DRC error.
+
+    The intersection case is the point: for two segments meeting in an X, all
+    four endpoint-to-segment distances are non-zero, so a min-of-four gap
+    function reports a comfortable clearance straight across a crossing.
+    """
+    import math
+    from validators.validate_routing import _point_to_segment_distance as p2s
+
+    def seg_seg_gap(p1x, p1y, p2x, p2y, q1x, q1y, q2x, q2y):
+        d = (p2x - p1x) * (q2y - q1y) - (p2y - p1y) * (q2x - q1x)
+        if abs(d) > 1e-12:
+            t = ((q1x - p1x) * (q2y - q1y) - (q1y - p1y) * (q2x - q1x)) / d
+            u = ((q1x - p1x) * (p2y - p1y) - (q1y - p1y) * (p2x - p1x)) / d
+            if 0.0 <= t <= 1.0 and 0.0 <= u <= 1.0:
+                return 0.0
+        return min(p2s(p1x, p1y, q1x, q1y, q2x, q2y),
+                   p2s(p2x, p2y, q1x, q1y, q2x, q2y),
+                   p2s(q1x, q1y, p1x, p1y, p2x, p2y),
+                   p2s(q2x, q2y, p1x, p1y, p2x, p2y))
+
+    # The real geometry from the board: stub U1.24 -> via, and the BOOT0 track
+    # it crossed at (8.189, 11.473).
+    stub = (8.640, 11.2125, 7.687, 11.7625)
+    boot0 = (8.189, 10.428, 8.189, 12.400)
+    assert seg_seg_gap(*stub, *boot0) == 0.0, "a crossing must read as zero gap"
+
+    # min-of-four alone would have passed it — this is why the test exists.
+    naive = min(p2s(stub[0], stub[1], *boot0), p2s(stub[2], stub[3], *boot0),
+                p2s(boot0[0], boot0[1], *stub), p2s(boot0[2], boot0[3], *stub))
+    assert naive > 0.127, (
+        f"endpoint-only distance reads {naive:.3f}mm across a crossing — "
+        "which is exactly the false pass the intersection test prevents")
+
+    # A stub that genuinely clears the same track is still accepted.
+    clear_stub = (8.640, 11.2125, 9.500, 11.7625)
+    assert seg_seg_gap(*clear_stub, *boot0) > 0.127

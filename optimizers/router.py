@@ -2155,17 +2155,43 @@ def apply_copper_fills(
                     lo = m1
             return min(_pt_gap(0.0), _pt_gap(1.0), _pt_gap((lo + hi) / 2))
 
+        def _seg_seg_gap(p1x, p1y, p2x, p2y, q1x, q1y, q2x, q2y) -> float:
+            """Distance between two segments; 0 when they intersect.
+
+            The intersection test is not optional here: for two segments meeting
+            in an X, all four endpoint-to-segment distances are non-zero, so the
+            usual min-of-four would report a comfortable gap across a crossing —
+            exactly the case this guards.
+            """
+            d = (p2x - p1x) * (q2y - q1y) - (p2y - p1y) * (q2x - q1x)
+            if abs(d) > 1e-12:
+                t = ((q1x - p1x) * (q2y - q1y) - (q1y - p1y) * (q2x - q1x)) / d
+                u = ((q1x - p1x) * (p2y - p1y) - (q1y - p1y) * (p2x - p1x)) / d
+                if 0.0 <= t <= 1.0 and 0.0 <= u <= 1.0:
+                    return 0.0
+            return min(
+                _pt_seg_dist(p1x, p1y, q1x, q1y, q2x, q2y),
+                _pt_seg_dist(p2x, p2y, q1x, q1y, q2x, q2y),
+                _pt_seg_dist(q1x, q1y, p1x, p1y, p2x, p2y),
+                _pt_seg_dist(q2x, q2y, p1x, p1y, p2x, p2y),
+            )
+
         def _stub_clear(px, py, vx, vy) -> bool:
             """The pad->via stub must not run into foreign copper.
 
             Only the VIA site was ever checked, so the stub that carries the pad
-            to it crossed whatever lay between — on an LQFP that is the adjacent
-            pin, giving 'Items shorting two nets (nets VCC3V3 and )' against the
-            unused neighbour once no-connect pads became real copper.
+            to it crossed whatever lay between: the adjacent pin on an LQFP
+            ("Items shorting two nets (nets VCC3V3 and )" once no-connect pads
+            became real copper), and — since trace_obstacles was consulted for
+            the via but not the stub — routed signal traces too, leaving a
+            VCC3V3 stub crossing BOOT0 as the board's last DRC error.
             """
             half_w = router_trace_w / 2
             for cx, cy, hw, hh in pad_rects:
                 if _seg_rect_gap(px, py, vx, vy, cx, cy, hw, hh) < half_w + clearance:
+                    return False
+            for ax, ay, bx, by, th in trace_obstacles:
+                if _seg_seg_gap(px, py, vx, vy, ax, ay, bx, by) < half_w + th + clearance:
                     return False
             return True
 
