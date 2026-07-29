@@ -797,6 +797,13 @@ def _build_router_kwargs(project_dir: Path, project_name: str, log=None) -> dict
         # (5 mil / 5 mil, common to every modern fab) so escape is feasible.
         kwargs["trace_width_signal_mm"] = 0.127
         kwargs["clearance_mm"] = 0.127
+        # Tighten the via too, to the escape router's default (0.45/0.2). Leaving
+        # it at the coarse 0.6mm default makes the post-route power-plane stitcher
+        # unable to place a via-in-pad on a small power pad near dense routing
+        # (a 0.6mm via needs 0.49mm to an adjacent 0.127mm trace; a 0.45mm one
+        # needs 0.415mm) — and mismatched with the 0.45mm escape vias.
+        kwargs["via_diameter_mm"] = 0.45
+        kwargs["via_drill_mm"] = 0.2
 
     if fine_pitch:
         _log(f"  Fine-pitch board (min pad pitch {min_pitch:.2f}mm): using "
@@ -812,6 +819,27 @@ ROUTING_EFFORT = {
     "normal": {"max_passes": 20, "timeout_s": 300, "retry_on_timeout": False},
     "best":   {"max_passes": 40, "timeout_s": 900, "retry_on_timeout": True},
 }
+
+
+def _premerge_excluded_escapes(routed, escape_wiring, exclude_nets):
+    """Merge the EXCLUDED-net (plane) escape stubs/vias into `routed` before a
+    copper fill/stitch pass. Those nets are absent from the DSN, so Freerouting
+    never echoes their escapes in the SES — and the plane stitcher, not seeing
+    them, re-stitches pads the escape already delivered: a redundant via where
+    there is room, and a false "no clear via site" where the escape via itself
+    blocks the ring (a quad pack's edge-facing power pin). Idempotent: the caller
+    is expected to run a deduping safety-net merge afterwards. Non-excluded
+    escapes (GND, signal) DO come back in the SES, so they are left out here to
+    avoid duplication."""
+    if not (routed and escape_wiring and escape_wiring.get("traces")):
+        return
+    excl = set(exclude_nets)
+    keep = lambda o: o.get("net_name") in excl or o.get("net_id") in excl
+    rt = routed.setdefault("routing", {})
+    rt.setdefault("traces", []).extend(
+        t for t in escape_wiring["traces"] if keep(t))
+    rt.setdefault("vias", []).extend(
+        v for v in escape_wiring.get("vias", []) if keep(v))
 
 
 def _short_cleanup(routed, placement_data, netlist_data, exclude_nets,  # pragma: no cover - drives kicad-cli DRC + Freerouting re-route; called only from the live-route path
@@ -854,6 +882,10 @@ def _short_cleanup(routed, placement_data, netlist_data, exclude_nets,  # pragma
                                        **base_kwargs)
         except Exception:
             return None
+        # Same escape-visibility fix as the fresh route: the plane net is absent
+        # from the DSN, so its escapes must be re-merged before the stitch pass
+        # or the stitcher falsely re-stitches the escaped plane pads.
+        _premerge_excluded_escapes(r, escape_wiring, exclude_nets)
         return _set_rules(apply_copper_fills(r, netlist_data,
                                              RouterConfig(**router_kwargs)))
 
@@ -1035,6 +1067,11 @@ def run_routing(project_dir: Path, project_name: str, config,
             unrouted = routed.get("routing", {}).get("unrouted_nets", [])
             _log(f"  Freerouting incomplete ({completion:.0f}%): {len(unrouted)} nets unrouted")
             _log("  Continuing with partial result (no fallback when Freerouting is the engine)")
+        # Make the excluded-net (plane) escapes visible to the stitch pass — see
+        # _premerge_excluded_escapes. The fixed_routing safety-net merge below
+        # dedupes it to a no-op. Fresh routes only.
+        if _fresh_route:
+            _premerge_excluded_escapes(routed, escape_wiring, exclude_nets)
         from optimizers.router import apply_copper_fills, RouterConfig
         routed = apply_copper_fills(routed, netlist_data, RouterConfig(**router_kwargs))
 

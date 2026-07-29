@@ -2195,9 +2195,27 @@ def apply_copper_fills(
                     return False
             return True
 
+        # Pads the escape fanout already dropped to the plane. Re-stitching them
+        # is at best a redundant via and at worst a false "no clear via site" —
+        # the escape via itself blocks every ring candidate around a crowded pad
+        # (e.g. a quad pack's edge-facing power pin), so the pad is reported
+        # unrouted though it is in fact connected. The power plane net is
+        # EXCLUDED from Freerouting, so the only traces it can carry are the
+        # protected escape stubs/fanouts — any such trace endpoint on a pad is an
+        # escape delivery. (Can't key off escape_role: the Freerouting SES round-
+        # trip strips it, and it is only re-attached after this stitch pass.)
+        escaped_pad_keys: set[tuple[float, float]] = set()
+        for t in routing.get("traces", []):
+            if t.get("net_id") != pwr_net_id:
+                continue
+            escaped_pad_keys.add((round(t["start_x_mm"], 2), round(t["start_y_mm"], 2)))
+            escaped_pad_keys.add((round(t["end_x_mm"], 2), round(t["end_y_mm"], 2)))
+
         for ref, pi in (pad_map.items() if pl >= 2 else []):
             if pi.net_id != pwr_net_id:
                 continue
+            if (round(pi.x_mm, 2), round(pi.y_mm, 2)) in escaped_pad_keys:
+                continue  # already delivered to the plane by the escape fanout
             if pi.layer == "all":
                 continue  # through-hole: already penetrates inner2
             placed = False

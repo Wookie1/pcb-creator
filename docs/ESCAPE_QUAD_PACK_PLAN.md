@@ -1,7 +1,7 @@
 # Plan: escape fanout for quad packs (LQFP/TQFP/QFN)
 
-Status: **not started**. Branch `electrical-checks-and-pad-geometry`, 2 commits in
-(`6f7b575`, `a62fb5c`). Suite: 1696 passed, 3 skipped.
+Status: **DONE** (see "What shipped" at the bottom). Branch
+`electrical-checks-and-pad-geometry`. Suite: 1700 passed, 3 skipped.
 
 ## Why
 
@@ -106,3 +106,63 @@ cd /Users/James/ai-sandbox/Productizr/pcb-creator
 Needs `_init_lookup()` (or `configure_lookup`) before any footprint call —
 without it the KiCad library tier is silently off and every footprint misses.
 The script now does this itself; ad-hoc diagnostic scripts must do it too.
+
+---
+
+## What shipped
+
+Quad-pack escape works end to end. On the STM32 fixture all five of U1's VCC3V3
+pins now fan out to the inner power plane deterministically (they never appear in
+the "no clear via site" list across ~15 runs), and the board reaches 100% routed
+/ DRC-pass on cooperative Freerouting runs — which the baseline (always 1 error
+on U1.9/24/36) never did.
+
+Four changes, plus three integration bugs found and fixed along the way:
+
+1. **`escape_router.py` — side decomposition.** `_side_groups()` splits a part
+   into L/R/B/T runs (a real quad pack needs all four sides ≥3 pads, else it
+   falls through to the old single-row path). Each side escapes *outward from the
+   part centre* with its own per-side pitch. The row body was extracted into
+   `_escape_row()`, shared by both paths. Two new guards a lone connector never
+   needed: `_overshoots()` (copper must clear the board edge by
+   `edge_clearance_mm`, new field, default 0.5) and `_clears_foreign_pads()` (a
+   dense pack escapes into a neighbour's pads).
+
+2. **Plane escapes are through-vias.** Was dropping every plane pin to
+   `plane_names[0]` (In1=GND); a power net lives on the In2 plane, so the via
+   never reached it. Now `top→bottom`, passing every inner plane and connecting
+   to whichever carries the net — matches the power stitch vias.
+
+3. **Stitcher skips escaped pads (`router.py`).** The post-route plane stitcher
+   iterated *all* power pads and re-stitched ones the escape already delivered —
+   redundant vias where there was room, a false "no clear via site" where the
+   escape via itself blocked the ring. Now skips any pad with an escape trace
+   endpoint on it (keyed by net, since the plane net is excluded from Freerouting
+   and can carry no other trace — `escape_role` is stripped by the SES round-trip).
+
+4. **Escapes made visible to the stitch pass (`stages.py`).** The excluded
+   plane net is absent from the DSN, so Freerouting never echoes its escapes;
+   they were only re-merged *after* the fill/stitch pass. `_premerge_excluded_escapes()`
+   now merges them in first, in both the fresh-route and short-cleanup paths
+   (the later safety-net merge dedupes to a no-op). Also tightened the fine-pitch
+   via to 0.45/0.2 (was left at the coarse 0.6mm default, mismatched with the
+   escape vias and too big for the stitcher to place on a small power pad near
+   dense routing).
+
+Tests: `TestQuadPack` in `tests/test_escape_router.py` (four sides escape,
+opposite sides collision-free, plane pins reach the plane, a corner-packed part
+skips its off-board side).
+
+## Known remaining issue (pre-existing, NOT quad packs)
+
+On ~half the Freerouting runs a *non-fine-pitch* power pad (C2.1, R1.1, U2.2 —
+0402 caps / SOT-223 regulator) still fails to stitch: Freerouting nondeterministically
+routes signal traces densely around it, and the post-route ring search finds no
+clear via site. This is the post-route stitcher's architecture (it runs *after*
+Freerouting, which has no reason to leave room near a power pad) surfacing under
+tighter via density, not a quad-pack regression — those pads were never escaped.
+
+The clean fix is deterministic **pre-route** plane stitching: pre-place a
+protected via-in-pad on every plane pad (not just fine-pitch quad packs) before
+Freerouting, so it routes around them and the post-route stitch pass has nothing
+to do. That is a separate feature — scope beyond this plan.
