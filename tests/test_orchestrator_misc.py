@@ -426,7 +426,7 @@ class TestListAndFinalize:
         self._good_circuit(tmp_path)
         monkeypatch.setattr(
             "validators.validate_netlist.validate_netlist",
-            lambda path: {"valid": False, "errors": ["boom"], "warnings": []})
+            lambda path, **kw: {"valid": False, "errors": ["boom"], "warnings": []})
         r = cb.finalize(tmp_path, "p")
         assert not r["ok"] and r["code"] == "validation_failed"
         assert r["errors"] == ["boom"]

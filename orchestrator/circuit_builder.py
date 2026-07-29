@@ -632,8 +632,15 @@ def finalize(project_dir: Path, project_name: str) -> dict:
     netlist_path.write_text(json.dumps(netlist, indent=2), encoding="utf-8")
 
     # Full validation: schema + referential integrity + electrical DRC.
+    # Pass requirements when the project has them: the current/power/rail-voltage
+    # checks need a supply voltage, and without one they all return early — so
+    # omitting this silently downgrades finalize to structural checks only.
     from validators.validate_netlist import validate_netlist
-    result = validate_netlist(str(netlist_path))
+    reqs_path = project_dir / f"{project_name}_requirements.json"
+    result = validate_netlist(
+        str(netlist_path),
+        requirements_path=str(reqs_path) if reqs_path.exists() else None,
+    )
 
     # Footprint gate (should be clean — add_component gates — but re-check).
     from validators.verify_footprints import verify_footprints

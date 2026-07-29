@@ -297,21 +297,65 @@ Validation runs in order — each layer gates the next:
 | 7 | Resistor power near rating | | X | X |
 | 8 | Cap below voltage derating | X | | X |
 | 9 | Power budget report | | X | X |
+| 10 | LED forward current over rating | X | | X |
+| 10 | LED current under 5% of rating (too dim) | | X | X |
+| 11 | Supply pin above part's `vcc_max` | X | | X |
+| 11 | Supply pin below part's `vcc_min` | | X | X |
+| 12 | Pin on two or more nets (shorted nets) | X | | |
+| 12 | Component with both pins on one net | X | | |
+| 12 | Net with no DC path to supply or ground | X | | |
+| 12 | `electrical_type` outside the schema enum | | X | |
+| 13 | I2C-style net with no pull-up | | X | |
 
-Checks 7-9 require `V_supply` from the requirements JSON (`--requirements` flag).
+Checks 7-11 require `V_supply` from the requirements JSON (`--requirements` flag).
+Check 12's structural half runs without one.
 
-### Resistor Power Calculation
+### The DC Solve (`validators/circuit_graph.py`)
 
-For resistors in series with LEDs, the DRC computes actual operating current rather than using the LED's maximum rated current:
+Checks 7 and 9-11 read branch currents from a solved DC operating point rather
+than inferring them from adjacency. The netlist becomes a conduction graph —
+nets are nodes, two-terminal parts are edges:
 
-```
-I_actual = (V_supply - V_forward) / R
-P = I_actual² × R
-```
+| `component_type` | Edge model |
+|---|---|
+| `resistor` | R from `parse_resistance(value)` |
+| `inductor`, `fuse`, closed `switch` | 1 mΩ |
+| `led`, `diode` | Piecewise-linear: forward = Vf + 10 Ω, reverse = open |
+| `capacitor`, `crystal` | Open (DC) |
+| `ic`, `transistor_*`, `relay`, `connector` | **Boundary** — terminates analysis |
+| >2-terminal passive (e.g. a potentiometer) | **Boundary** — wiper position is unknowable |
 
-LED detection: trace nets from resistor ports, skip power/ground nets, verify the connected LED pin is the anode (not cathode).
+Every source is an ideal ground-referenced rail, so known nodes fold into the
+right-hand side and no MNA augmentation is needed: write KCL for the unknowns
+and `numpy.linalg.solve` the reduced system. Diodes converge by fixed point —
+assume conducting, solve, open any branch carrying reverse current, repeat
+(capped at 5 iterations). Unreachable nets are found by connected-component
+analysis *before* the solve, so an isolated section is reported by name rather
+than surfacing as a singular matrix.
 
-For resistors NOT in series with LEDs, worst-case: `P = V_supply² / R`.
+This replaced an adjacency heuristic that looked for an LED next to each
+resistor and otherwise assumed `P = V_supply² / R` — the full supply across
+every resistor. Measured differences on real topologies: two LEDs in series
+reported 30 mA against an actual 8.33 mA; a 10k/10k divider reported 2.5 mW
+against an actual 0.625 mW; a pull-up into an IC pin reported 2.5 mW against an
+actual 0 mW.
+
+### Boundary Parts and Taint
+
+The suite has no device models and no supply-current figure for any IC, so
+unmodeled parts are **dropped, never stubbed**. Every stub value (open, 0 Ω, a
+guessed Icc) biases the result toward "no issue found", and a confident wrong
+PASS is worse than no verdict.
+
+Taint marks what the solve cannot know. It seeds from nets touching a boundary
+pin and **propagates along branches**, because an LED one resistor downstream of
+an MCU pin is as unknowable as the pin itself — and reads a plausible-looking
+0 mA if treated as trustworthy. A declared rail blocks the spread: an ideal rail
+holds its voltage regardless of what an IC hanging off it does, which is what
+keeps the rest of a board checkable even though nearly every IC touches VCC.
+
+A finding whose inputs are tainted is reported as a warning marked
+`[indeterminate: depends on an unmodeled part]`, never as an error.
 
 ### Shared Engineering Constants
 
@@ -322,8 +366,31 @@ For resistors NOT in series with LEDs, worst-case: `P = V_supply² / R`.
 - Voltage derating factors (ceramic: 1.5×, electrolytic: 2×)
 - Resistor power derating (2× safety margin)
 - Value parsing functions: `parse_voltage()`, `parse_current()`, `parse_resistance()`, `parse_capacitance()`
+- `parse_supply_voltage()` — for a requirements `power.voltage` string
 
 The LLM-facing `engineering_rules.md` contains the same rules as prose. The Python enforces them — the LLM prompt is guidance, not the gate.
+
+`parse_voltage()` returns the *first* number it finds, so `"adjustable (1.23V-37V
+output)"` becomes `1.23` and `"5V logic / 7-35V motor"` becomes `5`. Seeding the
+DC solve with either produces confidently wrong currents, so
+`parse_supply_voltage()` rejects any string naming more than one voltage instead
+of guessing. Use it for anything that picks a rail; `parse_voltage()` remains
+correct for a single-value field like a capacitor's `voltage_rating`.
+
+### Electrical Gating
+
+Electrical errors block the expensive steps, because routing a board whose MISO
+is shorted to a USB data line only produces a wrong board more slowly:
+
+| Gate | Where | Blocks on |
+|---|---|---|
+| `finalize_circuit` | `orchestrator/circuit_builder.py::finalize` | Any `validate_netlist` error. Passes the project's `_requirements.json` when present — without it `V_supply` is `None` and every solve-based check silently returns early. |
+| `optimize_placement` | `mcp_server.py::_electrical_gate` | Errors only |
+| `route_board` | `mcp_server.py::_electrical_gate` | Errors only |
+
+Only errors block. Warnings and anything indeterminate pass through, so an
+unmodeled IC never stops the pipeline — the common case (an MCU board) would
+otherwise be permanently blocked on a blind spot rather than a defect.
 
 ## LLM Integration
 
@@ -997,7 +1064,7 @@ The server supports **three workflows**:
 
 **2. Granular (agent-driven, recommended when the *caller* is already an agent).** When an external agent already does circuit design and its own critic/QA, running `design_pcb` nests two autonomous loops — an opaque inner LLM + vision-critic rework loop that can blow the MCP timeout. The granular tools avoid this: each is **deterministic (no LLM, no vision critic)**, returns quickly, and never hides a rework loop, so the calling agent owns the loop. Backed by `orchestrator/stages.py` (`run_placement` / `run_routing` / `run_drc` / `run_export`), the single deterministic implementation of those stages.
 
-Flow: `import_kicad_netlist` → (`verify_footprints` / `provide_footprint` until clear) → `optimize_placement` → `route_board` → poll `get_project_status` → `run_drc` → `export_outputs`. The agent evaluates DRC violations itself and decides on rework; it reviews the board with `get_board_image` instead of an internal vision critic. The footprint gate between import and placement guarantees no board is ever placed with 3 mm placeholder footprints — the deterministic equivalent of the LLM-flow's gather-time footprint verification.
+Flow: `import_kicad_netlist` → (`verify_footprints` / `provide_footprint` until clear) → `check_circuit` → `optimize_placement` → `route_board` → poll `get_project_status` → `run_drc` → `export_outputs`. `check_circuit` is cheap and runs before the two steps that cost minutes; electrical *errors* block both (see Electrical Gating above), so a shorted net is caught before it is routed rather than after. The agent evaluates DRC violations itself and decides on rework; it reviews the board with `get_board_image` instead of an internal vision critic. The footprint gate between import and placement guarantees no board is ever placed with 3 mm placeholder footprints — the deterministic equivalent of the LLM-flow's gather-time footprint verification.
 
 **Tools:**
 
@@ -1018,6 +1085,7 @@ Flow: `import_kicad_netlist` → (`verify_footprints` / `provide_footprint` unti
 | `register_custom_footprint(project_name, package_name, kicad_mod_content)` | **Granular.** Write a `.kicad_mod` into the project's `custom-footprints.pretty/` (tier 0 — searched before the system KiCad library); found automatically thereafter. |
 | `optimize_placement(project_name, board_width_mm?, board_height_mm?, seed?, two_sided?, plane_layers?)` | **Granular.** Deterministic grid placement → repair → SA (wirelength + crossings + congestion + escape halos). Synchronous. **Blocks with `unresolved_footprints` if any footprint is unresolved**, and **fails with a structured `violations` report** if pinned components overlap or overhang the edge. `two_sided=True` lets small SMD passives flip to the bottom (reluctant on 2-layer, free on 4-layer). `plane_layers` (4-layer) sets inner planes vs signal layers (2/1/0) — lower it to add routing capacity on dense boards. Board dims required on first placement; `seed` makes it reproducible. **Once a placement exists, 2→4 layer promotion and board enlargement require `approved=True`** (code-enforced user-approval gate). |
 | `route_board(project_name, effort?, max_seconds?, auto_retry?, allow_grow?, keep_existing?)` | **Granular.** Starts routing on a background thread and **returns immediately** (`state: "running"`). `effort` = fast/normal/best (Freerouting passes + timeout); `auto_retry` (default on) — if the result is **near-complete (≥85%)** it finishes the residual nets *incrementally* (fast, protects the routed wiring), otherwise it re-places with extra clearance and re-routes once; keeps the better attempt either way. `keep_existing=True` does **incremental** routing (protect current wiring, route only unrouted nets) — use it to finish a partly-routed board. |
+| `check_circuit(project_name, supply_voltage?, models?, rails?)` | **Granular.** Checks the circuit ELECTRICALLY before layout — the schematic counterpart to `run_drc`'s board checks. Solves the DC operating point and reports over-current LEDs, over-dissipating resistors, parts fed a rail outside their datasheet range, shorted pins, and isolated sections, each with a concrete fix. Does **not** model ICs/transistors/regulators; those terminate analysis and land in `not_checked`. `verdict` is `issues_found` / `not_enough_information` / `no_issues_found` — **no value means the circuit works**. `models={"U1": {"vcc_min": "3.0V"}}` injects what the agent knows, tagged with its own provenance in `inputs_used`; `rails={"VCC": "5V"}` disambiguates a multi-rail board. |
 | `run_drc(project_name)` | **Granular.** The 14 deterministic routing/DFM design-rule checks; returns a severity-ranked summary (`top_violations`, `failing_rules` each with a `remediation_hint`). |
 | `export_outputs(project_name)` | **Granular.** Gerbers/drill/BOM-CSV/CPL/STEP/ZIP into the project `output/` dir. BOM part numbers are auto-resolved (curated + cache) so the CSV's `LCSC Part #` column matches at JLCPCB assembly. |
 | `get_fab_quote(project_name, quantity?, live?)` | **Granular.** Order-readiness report: deterministic board price estimate (marked `estimate: true`; `PCB_PRICE_TABLE` overrides the table) + per-BOM-line part numbers, and with `live=True` LCSC stock / USD price per unique part id with an MPN cross-check that flags lines needing review. When lines are `unresolved`, `next_step` points at `set_part_number` so the agent closes the loop itself. |

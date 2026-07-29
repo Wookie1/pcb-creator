@@ -36,7 +36,7 @@
       "ref": "Y1",
       "type": "crystal",
       "value": "8MHz",
-      "package": "HC49",
+      "package": "Crystal_SMD_3225-4Pin_3.2x2.5mm",
       "purpose": "Main system clock crystal",
       "specs": {
         "frequency": "8MHz",
@@ -47,7 +47,7 @@
       "ref": "Y2",
       "type": "crystal",
       "value": "32.768kHz",
-      "package": "MC-306",
+      "package": "Crystal_SMD_2016-4Pin_2.0x1.6mm",
       "purpose": "RTC crystal",
       "specs": {
         "frequency": "32.768kHz",
@@ -58,7 +58,7 @@
       "ref": "J1",
       "type": "connector",
       "value": "USB-B-Micro",
-      "package": "USB_Micro-B",
+      "package": "USB_Micro-B_Molex-105017-0001",
       "purpose": "USB 2.0 full-speed device connector",
       "specs": { "pin_count": 5, "pinout": "1:VBUS 2:D- 3:D+ 4:ID 5:GND" }
     },
@@ -183,6 +183,7 @@
         "U2.GND",
         "C1.2", "C2.2", "C3.2", "C4.2", "C5.2", "C6.2",
         "C7.2", "C8.2", "C9.2", "C10.2",
+        "Y1.2", "Y1.4", "Y2.2", "Y2.4",
         "R2.2",
         "SW1.2"
       ]
@@ -245,7 +246,7 @@
     {
       "net_name": "OSC_OUT",
       "net_class": "signal",
-      "pins": [ "U1.PD1", "Y1.2", "C8.1" ]
+      "pins": [ "U1.PD1", "Y1.3", "C8.1" ]
     },
     {
       "net_name": "OSC32_IN",
@@ -255,7 +256,7 @@
     {
       "net_name": "OSC32_OUT",
       "net_class": "signal",
-      "pins": [ "U1.PC15", "Y2.2", "C10.1" ]
+      "pins": [ "U1.PC15", "Y2.3", "C10.1" ]
     }
   ],
   "board": {

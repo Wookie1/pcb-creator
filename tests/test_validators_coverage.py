@@ -796,14 +796,20 @@ def test_drc_capacitor_value_unparseable_warns():
 
 
 def test_drc_resistor_power_overload_with_fix_hint():
-    # 5V directly across a tiny 1ohm 0402 resistor → far exceeds rating.
+    # 5V directly across a tiny 1ohm 0402 resistor → 25W, far exceeds rating.
+    # The resistor must actually bridge the rail to ground: power now comes
+    # from the solved branch current rather than an assumed V^2/R.
     elements = [
         {"element_type": "component", "component_id": "c1", "designator": "R1",
          "component_type": "resistor", "value": "1ohm", "package": "0402"},
         {"element_type": "port", "port_id": "p1", "component_id": "c1",
          "pin_number": 1, "name": "1", "electrical_type": "passive"},
-        {"element_type": "net", "net_id": "n1", "name": "SIG",
-         "net_class": "signal", "connected_port_ids": ["p1"]},
+        {"element_type": "port", "port_id": "p2", "component_id": "c1",
+         "pin_number": 2, "name": "2", "electrical_type": "passive"},
+        {"element_type": "net", "net_id": "n1", "name": "VCC",
+         "net_class": "power", "connected_port_ids": ["p1"]},
+        {"element_type": "net", "net_id": "n2", "name": "GND",
+         "net_class": "ground", "connected_port_ids": ["p2"]},
     ]
     c, p, n = dc.build_lookups(elements)
     errors, _ = dc.check_resistor_power(c, p, n, v_supply=5.0)
@@ -828,14 +834,32 @@ def test_drc_capacitor_voltage_rating_too_low_and_unparseable():
 
 
 def test_drc_power_budget_led_current():
+    # Budget is summed from current actually leaving the rail, so the LED needs
+    # a real path: VCC -> R1 -> D1 -> GND.
     elements = [
         {"element_type": "component", "component_id": "c1", "designator": "D1",
          "component_type": "led", "value": "red", "package": "0805",
          "properties": {"if": "20mA"}},
+        {"element_type": "component", "component_id": "r1", "designator": "R1",
+         "component_type": "resistor", "value": "150ohm", "package": "0805"},
+        {"element_type": "port", "port_id": "rp1", "component_id": "r1",
+         "pin_number": 1, "name": "1", "electrical_type": "passive"},
+        {"element_type": "port", "port_id": "rp2", "component_id": "r1",
+         "pin_number": 2, "name": "2", "electrical_type": "passive"},
+        {"element_type": "port", "port_id": "da", "component_id": "c1",
+         "pin_number": 1, "name": "anode", "electrical_type": "passive"},
+        {"element_type": "port", "port_id": "dk", "component_id": "c1",
+         "pin_number": 2, "name": "cathode", "electrical_type": "passive"},
+        {"element_type": "net", "net_id": "n1", "name": "VCC",
+         "net_class": "power", "connected_port_ids": ["rp1"]},
+        {"element_type": "net", "net_id": "n2", "name": "MID",
+         "net_class": "signal", "connected_port_ids": ["rp2", "da"]},
+        {"element_type": "net", "net_id": "n3", "name": "GND",
+         "net_class": "ground", "connected_port_ids": ["dk"]},
     ]
     c, p, n = dc.build_lookups(elements)
     _, warnings = dc.check_power_budget(c, p, n, v_supply=5.0)
-    assert any("power budget" in w for w in warnings)
+    assert any("power budget" in w.lower() for w in warnings)
 
 
 def test_drc_pinout_compliance_out_of_range_pin():
@@ -866,8 +890,12 @@ def test_drc_run_all_with_requirements_parses_voltage():
          "component_type": "resistor", "value": "1ohm", "package": "0402"},
         {"element_type": "port", "port_id": "p1", "component_id": "c1",
          "pin_number": 1, "name": "1", "electrical_type": "passive"},
-        {"element_type": "net", "net_id": "n1", "name": "SIG",
-         "net_class": "signal", "connected_port_ids": ["p1"]},
+        {"element_type": "port", "port_id": "p2", "component_id": "c1",
+         "pin_number": 2, "name": "2", "electrical_type": "passive"},
+        {"element_type": "net", "net_id": "n1", "name": "VCC",
+         "net_class": "power", "connected_port_ids": ["p1"]},
+        {"element_type": "net", "net_id": "n2", "name": "GND",
+         "net_class": "ground", "connected_port_ids": ["p2"]},
     ]
     errors, _ = dc.run_all_drc_checks(elements, requirements={"power": {"voltage": "5V"}})
     assert any("R1" in e for e in errors)
@@ -911,37 +939,57 @@ def test_drc_resistor_power_unparseable_value_skipped():
     assert errors == []
 
 
-def test_drc_resistor_power_led_cathode_side_not_series():
-    # Resistor wired to the LED's CATHODE → treated as not-in-series (line 362),
-    # so worst-case full-supply dissipation is used.
+def test_drc_resistor_power_led_cathode_side_is_series():
+    """A resistor below the LED is in series just as much as one above it.
+
+    The previous heuristic explicitly skipped cathode-side resistors as
+    "not series" and fell back to full-supply V^2/R, reporting 250mW here.
+    The real answer is I = (5 - 2.0) / (100 + 10) = 27.3mA, so
+    P = I^2 * 100 = 74mW - still over the 0402's 63mW rating, but for the
+    right reason and by the right amount.
+    """
     elements = [
         {"element_type": "component", "component_id": "r1", "designator": "R1",
          "component_type": "resistor", "value": "100ohm", "package": "0402"},
         {"element_type": "component", "component_id": "d1", "designator": "D1",
          "component_type": "led", "value": "red", "package": "0805"},
-        {"element_type": "port", "port_id": "rp", "component_id": "r1",
-         "pin_number": 1, "name": "1", "electrical_type": "passive"},
+        {"element_type": "port", "port_id": "da", "component_id": "d1",
+         "pin_number": 1, "name": "anode", "electrical_type": "passive"},
         {"element_type": "port", "port_id": "dk", "component_id": "d1",
          "pin_number": 2, "name": "cathode", "electrical_type": "passive"},
+        {"element_type": "port", "port_id": "rp", "component_id": "r1",
+         "pin_number": 1, "name": "1", "electrical_type": "passive"},
+        {"element_type": "port", "port_id": "rp2", "component_id": "r1",
+         "pin_number": 2, "name": "2", "electrical_type": "passive"},
+        {"element_type": "net", "net_id": "n0", "name": "VCC",
+         "net_class": "power", "connected_port_ids": ["da"]},
         {"element_type": "net", "net_id": "n1", "name": "SIG",
          "net_class": "signal", "connected_port_ids": ["rp", "dk"]},
+        {"element_type": "net", "net_id": "n2", "name": "GND",
+         "net_class": "ground", "connected_port_ids": ["rp2"]},
     ]
     c, p, n = dc.build_lookups(elements)
-    errors, _ = dc.check_resistor_power(c, p, n, v_supply=5.0)
-    # 5V across 100ohm 0402 = 250mW >> 63mW rating → error (full-supply path)
+    sol = dc.solve_circuit(c, p, n, 5.0)
+    r1 = next(b for b in sol.branches if b.designator == "R1")
+    assert abs(r1.current - 0.02727) < 1e-4
+    errors, _ = dc.check_resistor_power(c, p, n, v_supply=5.0, solution=sol)
     assert any("R1" in e for e in errors)
 
 
 def test_drc_resistor_power_derated_warning_and_error_with_fix():
-    # 0805 (0.125W) resistor with 5V across ~150ohm → ~167mW > rating → error
-    # with a package-upgrade fix suggestion (lines 388-403).
+    # 0805 (0.125W) resistor with 5V across 150ohm → 167mW > rating → error
+    # with a package-upgrade fix suggestion.
     elements = [
         {"element_type": "component", "component_id": "r1", "designator": "R1",
          "component_type": "resistor", "value": "150ohm", "package": "0805"},
         {"element_type": "port", "port_id": "rp", "component_id": "r1",
          "pin_number": 1, "name": "1", "electrical_type": "passive"},
-        {"element_type": "net", "net_id": "n1", "name": "SIG",
-         "net_class": "signal", "connected_port_ids": ["rp"]},
+        {"element_type": "port", "port_id": "rp2", "component_id": "r1",
+         "pin_number": 2, "name": "2", "electrical_type": "passive"},
+        {"element_type": "net", "net_id": "n1", "name": "VCC",
+         "net_class": "power", "connected_port_ids": ["rp"]},
+        {"element_type": "net", "net_id": "n2", "name": "GND",
+         "net_class": "ground", "connected_port_ids": ["rp2"]},
     ]
     c, p, n = dc.build_lookups(elements)
     errors, warnings = dc.check_resistor_power(c, p, n, v_supply=5.0)
@@ -949,15 +997,37 @@ def test_drc_resistor_power_derated_warning_and_error_with_fix():
     assert "R1" in blob
 
 
-def test_drc_power_budget_led_if_unparseable_uses_default():
+def test_drc_led_current_if_unparseable_uses_default():
+    """An unparseable `if` falls back to LED_IF_DEFAULT (20mA).
+
+    The rating fallback now lives in check_led_current; check_power_budget no
+    longer estimates per-LED current at all, it sums the solved rail current.
+    A 10ohm series resistor pushes ~103mA, well over the 20mA default.
+    """
     elements = [
         {"element_type": "component", "component_id": "c1", "designator": "D1",
          "component_type": "led", "value": "red", "package": "0805",
-         "properties": {"if": "garbage"}},  # unparseable → LED_IF_DEFAULT (491)
+         "properties": {"if": "garbage"}},
+        {"element_type": "component", "component_id": "r1", "designator": "R1",
+         "component_type": "resistor", "value": "10ohm", "package": "0805"},
+        {"element_type": "port", "port_id": "rp1", "component_id": "r1",
+         "pin_number": 1, "name": "1", "electrical_type": "passive"},
+        {"element_type": "port", "port_id": "rp2", "component_id": "r1",
+         "pin_number": 2, "name": "2", "electrical_type": "passive"},
+        {"element_type": "port", "port_id": "da", "component_id": "c1",
+         "pin_number": 1, "name": "anode", "electrical_type": "passive"},
+        {"element_type": "port", "port_id": "dk", "component_id": "c1",
+         "pin_number": 2, "name": "cathode", "electrical_type": "passive"},
+        {"element_type": "net", "net_id": "n1", "name": "VCC",
+         "net_class": "power", "connected_port_ids": ["rp1"]},
+        {"element_type": "net", "net_id": "n2", "name": "MID",
+         "net_class": "signal", "connected_port_ids": ["rp2", "da"]},
+        {"element_type": "net", "net_id": "n3", "name": "GND",
+         "net_class": "ground", "connected_port_ids": ["dk"]},
     ]
     c, p, n = dc.build_lookups(elements)
-    _, warnings = dc.check_power_budget(c, p, n, v_supply=5.0)
-    assert any("power budget" in w for w in warnings)
+    errors, _ = dc.check_led_current(c, p, n, v_supply=5.0)
+    assert any("20mA rating" in e for e in errors)
 
 
 def test_drc_pinout_compliance_component_not_in_netlist():
@@ -997,15 +1067,19 @@ def test_drc_resistor_power_zero_ohms_skipped():
 
 
 def test_drc_resistor_power_derated_limit_error_branch():
-    # 250ohm 0805: 5V²/250 = 100mW. rating=125mW, derated=62.5mW.
-    # 100mW <= rating but > derated → the "derated limit" error (line 403).
+    # 250ohm 0805 straight across a 5V rail: 5^2/250 = 100mW. rating=125mW,
+    # derated=62.5mW. 100mW <= rating but > derated → "derated limit" error.
     elements = [
         {"element_type": "component", "component_id": "r1", "designator": "R1",
          "component_type": "resistor", "value": "250ohm", "package": "0805"},
         {"element_type": "port", "port_id": "rp", "component_id": "r1",
          "pin_number": 1, "name": "1", "electrical_type": "passive"},
-        {"element_type": "net", "net_id": "n1", "name": "SIG",
-         "net_class": "signal", "connected_port_ids": ["rp"]},
+        {"element_type": "port", "port_id": "rp2", "component_id": "r1",
+         "pin_number": 2, "name": "2", "electrical_type": "passive"},
+        {"element_type": "net", "net_id": "n1", "name": "VCC",
+         "net_class": "power", "connected_port_ids": ["rp"]},
+        {"element_type": "net", "net_id": "n2", "name": "GND",
+         "net_class": "ground", "connected_port_ids": ["rp2"]},
     ]
     c, p, n = dc.build_lookups(elements)
     errors, _ = dc.check_resistor_power(c, p, n, v_supply=5.0)

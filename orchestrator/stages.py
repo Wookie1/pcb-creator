@@ -1618,6 +1618,64 @@ def _bom_from_netlist(netlist: dict) -> dict:
     return {"bom": bom}
 
 
+def export_blocked(project_dir: Path, project_name: str, routed: dict) -> dict | None:
+    """Why manufacturing files must not be produced, or None if the board is shippable.
+
+    FAIL CLOSED. Gerbers from an uncertified board are worse than no gerbers —
+    they look shippable. Three refusals, mirroring the ones mcp_server's
+    export_outputs raises with richer remediation:
+
+      1. open nets            — the board physically cannot work
+      2. missing or non-authoritative DRC report — we cannot certify it
+      3. DRC found errors     — it is not fabricable
+
+    Case 2 reads the persisted <project>_drc_report.json rather than re-running
+    kicad-cli, so gating costs a file read: every real caller (CLI runner step 5,
+    mcp_server.export_outputs, scripts) runs DRC immediately before exporting.
+    A missing report means DRC never ran, which is exactly when a bad board slips
+    out — so absence blocks rather than passes.
+    """
+    open_nets = list((routed or {}).get("routing", {}).get("unrouted_nets") or [])
+    if open_nets:
+        shown = ", ".join(open_nets[:6]) + ("…" if len(open_nets) > 6 else "")
+        return {"error": f"Refusing to export: {len(open_nets)} net(s) are not "
+                         f"connected ({shown}). A board with missing connections "
+                         "is not manufacturable. Finish routing first.",
+                "gate": "connectivity", "unrouted_nets": open_nets}
+
+    drc_path = _p(project_dir, project_name, "drc_report")
+    if not drc_path.exists():
+        return {"error": "Refusing to export: no DRC report — the board has not "
+                         "been checked. Run DRC before exporting.",
+                "gate": "drc_missing"}
+    try:
+        drc = _load(drc_path)
+    except Exception as exc:
+        return {"error": f"Refusing to export: DRC report unreadable ({exc}).",
+                "gate": "drc_unreadable"}
+
+    if not drc.get("authoritative"):
+        return {"error": "Refusing to export: DRC was not verified "
+                         "authoritatively (kicad-cli unavailable). The internal "
+                         "heuristic check is not a manufacturability guarantee — "
+                         "it misses through-hole shorts, mask bridges and starved "
+                         "thermals. Install/locate kicad-cli (PCB_KICAD_CLI).",
+                "gate": "drc_not_authoritative",
+                "drc_engine": drc.get("drc_engine", "internal")}
+
+    if not drc.get("passed", True):
+        n = drc.get("statistics", {}).get("errors", 0)
+        failing = sorted({c["rule"] for c in drc.get("checks", [])
+                          if not c.get("passed")})
+        return {"error": f"Refusing to export: the board has {n} DRC error(s) "
+                         f"({', '.join(failing)}). Manufacturing files from a "
+                         "board with shorts, disconnected nets or clearance "
+                         "errors are not fabricable — do not ship or commit them.",
+                "gate": "drc_failed", "drc_errors": n, "failing_rules": failing}
+
+    return None
+
+
 def run_export(project_dir: Path, project_name: str, config, log=None) -> dict:
     """Generate manufacturing outputs from the routed board.
 
@@ -1643,6 +1701,17 @@ def run_export(project_dir: Path, project_name: str, config, log=None) -> dict:
         return {"success": False, "error": "No routed board found — run routing first"}
 
     routed = _load(routed_path)
+
+    # Manufacturing gate. This lives here rather than only in
+    # mcp_server.export_outputs because the CLI runner and scripts/ call
+    # run_export directly and bypassed that gate entirely — scripts/
+    # test_stm32_4layer.py shipped a full Gerber set from a board with 140 DRC
+    # errors and 11 unrouted nets. The MCP tool still pre-checks so it can
+    # return richer remediation; this is the backstop no caller can skip.
+    blocked = export_blocked(project_dir, project_name, routed)
+    if blocked:
+        _log(f"  REFUSED: {blocked['error']}")
+        return {"success": False, **blocked}
     netlist_path = _p(project_dir, project_name, "netlist")
     netlist_data = _load(netlist_path) if netlist_path.exists() else {}
     bom_path = _p(project_dir, project_name, "bom")

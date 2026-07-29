@@ -75,13 +75,25 @@ class FootprintDef:
     """Pad layout for a package, relative to component center at rotation=0.
 
     pin_offsets maps pin_number -> (dx_mm, dy_mm) offset from center.
-    pad_size is (width_mm, height_mm) of each pad.
+    pad_size is (width_mm, height_mm) — the footprint's representative pad.
+    pin_pad_sizes, when present, gives the EXACT size of individual pins that
+    differ from it. A quad pack rotates its pads 90° between sides (an LQFP-48
+    is 24 pads at 0.3×1.475 and 24 at 1.475×0.3), so no single pad_size can
+    describe it: consumers that care about real copper — the DSN padstacks and
+    the pad map — must prefer this. Absent for footprints whose pads are uniform.
     is_through_hole: True/False when the generator knows; None defers to the
     package-name prefix heuristic in build_pad_map.
     """
     pin_offsets: dict[int, tuple[float, float]]
     pad_size: tuple[float, float]
     is_through_hole: bool | None = None
+    pin_pad_sizes: dict[int, tuple[float, float]] | None = None
+
+    def pad_size_for(self, pin_number: int) -> tuple[float, float]:
+        """Exact pad size for one pin, falling back to the representative size."""
+        if self.pin_pad_sizes:
+            return self.pin_pad_sizes.get(pin_number, self.pad_size)
+        return self.pad_size
 
 
 # ---------------------------------------------------------------------------
@@ -694,8 +706,10 @@ def build_pad_map(
         abs_x = plc["x_mm"] + dx_rot
         abs_y = plc["y_mm"] + dy_rot
 
-        # Rotate pad dimensions if needed
-        pw, ph = fp.pad_size
+        # Rotate pad dimensions if needed. Per-pin, because a quad pack's pads
+        # are rotated 90° between sides — one size for all of them inflates the
+        # narrow axis to the long one and overlaps neighbouring pads.
+        pw, ph = fp.pad_size_for(pin_number)
         if rotation in (90, 270):
             pw, ph = ph, pw
 

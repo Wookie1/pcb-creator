@@ -183,6 +183,22 @@ def _dsn_structure(board: dict, config: dict) -> str:
             lines.append(
                 f'    (keepout "esc_ko_{i}" (circle "{lname}" '
                 f'{_fmt(ko["diameter_mm"])} {_fmt(ko["x_mm"])} {_fmt(ko["y_mm"])}))')
+
+    # Pads on NO net (no-connect pins, mounting pads) are real copper, but they
+    # appear only inside a component image and belong to no net, so Freerouting
+    # treats them as free space and routes straight over them — kicad-cli then
+    # reports "Track [BOOT0] ... × Pad 43 [<no net>] of U1". A rectangular
+    # keepout is what actually stops it (single-pin nets do not: with nothing to
+    # connect, the router discards them). Rect, not circle: these are 0.3x1.475mm
+    # LQFP pads and a circle enclosing one would swallow its neighbours.
+    for i, (px, py, hw, hh, players) in enumerate(
+            config.get("netless_pad_rects") or []):
+        for lname in routing_layers:
+            if players and lname not in players:
+                continue
+            lines.append(
+                f'    (keepout "nc_ko_{i}" (rect "{lname}" '
+                f'{_fmt(px - hw)} {_fmt(py - hh)} {_fmt(px + hw)} {_fmt(py + hh)}))')
     lines.append("  )")
     return "\n".join(lines) + "\n"
 
@@ -261,6 +277,13 @@ def _dsn_library(
     # SMD padstacks: one per unique pad size per layer side
     padstack_ids: dict[str, str] = {}  # key -> padstack_id
 
+    def _distinct_pad_sizes(fp_def, pw, ph) -> list[tuple[float, float]]:
+        """Every distinct (w, h) the footprint uses, representative included."""
+        sizes = {(pw, ph)}
+        if getattr(fp_def, "pin_pad_sizes", None):
+            sizes |= set(fp_def.pin_pad_sizes.values())
+        return sorted(sizes)
+
     for image_id, (fp_def, is_th, pw, ph) in image_defs.items():
         if is_th:
             # Through-hole padstack — shape on every routing layer (see above).
@@ -276,17 +299,21 @@ def _dsn_library(
                 lines.append(f'      (attach off)')
                 lines.append(f'    )')
         else:
-            # SMD padstack (front and back variants)
-            for layer_name in ("F.Cu", "B.Cu"):
-                key = f"smd_{_fmt(pw)}_{_fmt(ph)}_{layer_name}"
-                if key not in padstack_ids:
-                    ps_id = f"SMD_{_fmt(pw)}x{_fmt(ph)}_{layer_name.replace('.', '_')}".replace(".", "p")
-                    padstack_ids[key] = ps_id
-                    hx, hy = pw / 2, ph / 2
-                    lines.append(f'    (padstack {ps_id}')
-                    lines.append(f'      (shape (rect "{layer_name}" {_fmt(-hx)} {_fmt(-hy)} {_fmt(hx)} {_fmt(hy)}))')
-                    lines.append(f'      (attach off)')
-                    lines.append(f'    )')
+            # SMD padstack (front and back variants), one per DISTINCT pad size
+            # in the footprint. A quad pack has two — its pads rotate 90°
+            # between sides — and emitting only the representative size gave
+            # every pin the long axis on both axes, overlapping neighbours.
+            for sw, sh in _distinct_pad_sizes(fp_def, pw, ph):
+                for layer_name in ("F.Cu", "B.Cu"):
+                    key = f"smd_{_fmt(sw)}_{_fmt(sh)}_{layer_name}"
+                    if key not in padstack_ids:
+                        ps_id = f"SMD_{_fmt(sw)}x{_fmt(sh)}_{layer_name.replace('.', '_')}".replace(".", "p")
+                        padstack_ids[key] = ps_id
+                        hx, hy = sw / 2, sh / 2
+                        lines.append(f'    (padstack {ps_id}')
+                        lines.append(f'      (shape (rect "{layer_name}" {_fmt(-hx)} {_fmt(-hy)} {_fmt(hx)} {_fmt(hy)}))')
+                        lines.append(f'      (attach off)')
+                        lines.append(f'    )')
 
     # Via padstack — shapes ONLY for the routing layers computed above. Inner
     # PLANE layers are excluded (they are absent from the structure section, so
@@ -316,8 +343,10 @@ def _dsn_library(
                 key = f"th_{_fmt(pad_dia)}_{_fmt(drill)}"
             else:
                 # Use front-layer padstack by default; placement side
-                # determines actual layer at component level
-                key = f"smd_{_fmt(pw)}_{_fmt(ph)}_F.Cu"
+                # determines actual layer at component level. Per-pin size so a
+                # quad pack's rotated sides each get their real pad.
+                sw, sh = fp_def.pad_size_for(pin_num)
+                key = f"smd_{_fmt(sw)}_{_fmt(sh)}_F.Cu"
 
             ps_id = padstack_ids.get(key, "Via_Default")
             lines.append(f'      (pin {ps_id} {pin_num} {_fmt(dx)} {_fmt(dy)})')
@@ -444,6 +473,12 @@ def _dsn_network(
         else:
             signal_nets.append(net_name)
 
+    # NOTE: pins on no net are protected by keepouts in the structure section,
+    # not here. Declaring them as single-pin nets (what KiCad's own DSN export
+    # does) is semantically right but has no effect — a net with one pin has
+    # nothing to connect, so Freerouting discards it and still routes across the
+    # pad.
+
     # One DSN class per distinct required width, so a high-current SIGNAL net
     # (e.g. a buck converter's SW node) gets its IPC-2221 width instead of
     # the signal default, and power nets don't inherit each other's widths.
@@ -508,6 +543,24 @@ def export_dsn(
 
     # Determine which nets to exclude (typically GND for copper fill)
     exclude_nets = cfg.get("exclude_nets", [])
+
+    # Keepouts over pads that belong to no net, so the router cannot cross them.
+    if "netless_pad_rects" not in cfg:
+        try:
+            from optimizers.pad_geometry import build_pad_map
+            clr = cfg.get("clearance_mm", TRACE_CLEARANCE_MM)
+            rects = []
+            for pad in build_pad_map(placement, netlist).values():
+                if pad.net_id:
+                    continue
+                layers = (("F.Cu", "B.Cu") if pad.layer == "all"
+                          else (("F.Cu",) if pad.layer == "top" else ("B.Cu",)))
+                rects.append((pad.x_mm, pad.y_mm,
+                              pad.pad_width_mm / 2 + clr,
+                              pad.pad_height_mm / 2 + clr, layers))
+            cfg["netless_pad_rects"] = rects
+        except Exception:  # pragma: no cover - defensive: a pad-map failure must not block DSN export
+            cfg["netless_pad_rects"] = []
 
     library_text, des_image_map = _dsn_library(placements, netlist, cfg)
 

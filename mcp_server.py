@@ -308,6 +308,56 @@ def _read_project_json(project_name: str, suffix: str) -> dict | None:
     return None
 
 
+def _electrical_gate(project_name: str, next_tool: str) -> dict | None:
+    """Refuse expensive work on a circuit with known electrical errors.
+
+    Placement and routing cost minutes; routing a board whose MISO is shorted
+    to a USB data line only produces a wrong board more slowly. Returns a fail
+    envelope to short-circuit on, or None when it is safe to proceed.
+
+    Only *errors* block. Warnings and anything indeterminate (see
+    validators/circuit_report.py) pass through, so an unmodeled IC never
+    stops the pipeline.
+    """
+    netlist = _read_project_json(project_name, "_netlist.json")
+    if netlist is None:
+        return None  # nothing to check yet; the caller has its own guard
+
+    sys.path.insert(0, str(_repo_root / "validators"))
+    from validators.circuit_report import build_report
+    from validators.engineering_constants import parse_supply_voltage
+
+    reqs = _read_project_json(project_name, "_requirements.json") or {}
+    raw = (reqs.get("power") or {}).get("voltage")
+    volts = parse_supply_voltage(raw) if raw else None
+
+    try:
+        report = build_report(
+            netlist.get("elements") or [], supply_voltage=volts,
+            supply_source="requirements_file",
+        )
+    except Exception:  # pragma: no cover - a checker bug must not block the pipeline
+        logger.exception("check_circuit gate failed; continuing")
+        return None
+
+    errors = [i for i in report["issues"] if i["severity"] == "error"]
+    if not errors:
+        return None
+
+    return fail(
+        f"{len(errors)} electrical error(s) in the circuit — fix these before "
+        f"{next_tool}, which takes minutes and would only produce a wrong "
+        f"board more slowly. " + errors[0]["detail"],
+        remediation=[
+            option("See every finding with the fix for each", "check_circuit",
+                   {"project_name": project_name}),
+            option(errors[0]["detail"], "connect_pins",
+                   {"project_name": project_name}),
+        ],
+        data={"electrical_errors": [e["detail"] for e in errors]},
+    )
+
+
 # Placement and routing overwrite in place, and the autorouter is
 # nondeterministic — a re-run can land WORSE than what it replaced. Both files
 # are snapshotted together so a revert always restores a coherent pair.
@@ -992,6 +1042,20 @@ def get_workflow_guide() -> dict:
                      "args_template": {"project_name": "my_board"},
                      "on_failure": "Fix the reported issues with "
                                    "connect_pins/remove_component, then re-run."},
+                    {"order": 4.5, "tool": "check_circuit",
+                     "args_template": {"project_name": "my_board",
+                                       "supply_voltage": "5V"},
+                     "note": "Checks the circuit ELECTRICALLY before you spend "
+                             "time laying it out: solves the DC operating point "
+                             "and reports over-current LEDs, over-dissipating "
+                             "resistors, parts fed the wrong rail voltage, "
+                             "shorted pins, and isolated sections. Read "
+                             "'verdict' — 'no_issues_found' means no check "
+                             "failed, NOT that the circuit works, and anything "
+                             "in 'not_checked' was not verified at all.",
+                     "on_failure": "Each error carries a concrete fix; apply it "
+                                   "with connect_pins/add_component, then "
+                                   "re-run."},
                     {"order": 5, "tool": "place_component",
                      "args_template": {"project_name": "my_board",
                                        "designator": "J1", "x_mm": 2.5,
@@ -2450,6 +2514,10 @@ def optimize_placement(
             ],
         )
 
+    blocked = _electrical_gate(project_name, "placement")
+    if blocked:
+        return blocked
+
     # Activate project-local custom footprints (tier 0) before placement so
     # agent-registered .kicad_mod files are visible to the placement engine.
     if not approved:
@@ -2607,6 +2675,10 @@ def route_board(project_name: str, effort: str = "normal",
                  "board_height_mm": "<height>"},
             )],
         )
+
+    blocked = _electrical_gate(project_name, "routing")
+    if blocked:
+        return blocked
 
     # Routing (and its escape/fill/cleanup passes) is driven entirely by pad
     # geometry — activate the project's footprint lookup before the worker
@@ -2859,6 +2931,115 @@ def run_drc(project_name: str) -> dict:
             + (first.get("remediation_hint", "") if first else ""),
         )
     return ok(summary, step)
+
+
+@mcp.tool()
+def check_circuit(
+    project_name: str,
+    supply_voltage: str | None = None,
+    models: dict | None = None,
+    rails: dict | None = None,
+) -> dict:
+    """Check whether a circuit is electrically sound, before it is laid out (no LLM).
+
+    Solves the DC operating point of the netlist and reports what is actually
+    wrong: resistors over their package power rating, LEDs over their forward
+    current, parts fed a supply outside their datasheet range, shorted pins,
+    and isolated sections with no path to ground. Currents come from a real
+    nodal solve, so shared, series, and divider topologies are handled
+    correctly rather than guessed from what sits next to what.
+
+    Run this after finalize_circuit and before optimize_placement — it checks
+    the schematic, while run_drc checks the manufactured board.
+
+    This is NOT a simulation and it does not model ICs, transistors, or
+    regulators: the suite has no device models for them. Those parts terminate
+    analysis, and every net whose behavior depends on one is listed in
+    `not_checked` rather than being silently assumed. Read `verdict`:
+
+      issues_found            — real defects; each has a concrete fix
+      not_enough_information  — some of the circuit could not be evaluated
+      no_issues_found         — no check failed; NOT proof the circuit works
+
+    Args:
+        project_name: Project to check. Reads <project>_netlist.json.
+        supply_voltage: Input rail, e.g. "5V". Defaults to power.voltage from
+            the project's requirements. Required if that is absent or names
+            more than one voltage.
+        models: Per-part data the agent knows, e.g.
+            {"U1": {"vcc_min": "3.0V", "vcc_max": "3.6V"}}. Supported keys:
+            vcc_min, vcc_max, vf, if, voltage_rating.
+        rails: Explicit net voltages when the input rail is ambiguous, e.g.
+            {"VCC": "5V"}. Keyed by net name.
+    """
+    sys.path.insert(0, str(_repo_root / "validators"))
+    from validators.circuit_report import build_report
+    from validators.engineering_constants import parse_supply_voltage
+
+    netlist = _read_project_json(project_name, "_netlist.json")
+    if netlist is None:
+        pdir = _project_dir(project_name)
+        if not pdir.exists():
+            return fail(
+                f"Project '{project_name}' not found.",
+                remediation=[option("List existing projects", "list_projects", {})],
+            )
+        return fail(
+            f"No netlist found for '{project_name}'.",
+            remediation=[
+                option("Finish the circuit first", "finalize_circuit",
+                       {"project_name": project_name}),
+                option("Check what stage this project is at", "get_project_status",
+                       {"project_name": project_name}),
+            ],
+        )
+
+    # Supply: explicit argument wins, else the requirements file. Either way a
+    # value naming more than one voltage ("adjustable (1.23V-37V output)") is
+    # refused rather than silently read as its first number, which would seed
+    # the solve with a wrong rail and produce confident wrong currents.
+    source = "argument"
+    volts = parse_supply_voltage(supply_voltage) if supply_voltage else None
+    if volts is None and supply_voltage:
+        return fail(
+            f"supply_voltage {supply_voltage!r} does not name a single voltage.",
+            remediation=[
+                option("Pass one scalar voltage", "check_circuit",
+                       {"project_name": project_name, "supply_voltage": "5V"}),
+            ],
+        )
+    if volts is None:
+        reqs = _read_project_json(project_name, "_requirements.json") or {}
+        raw = (reqs.get("power") or {}).get("voltage")
+        volts = parse_supply_voltage(raw) if raw else None
+        source = "requirements_file"
+
+    report = build_report(
+        netlist.get("elements") or [],
+        supply_voltage=volts,
+        supply_source=source,
+        models=models,
+        rails=rails,
+    )
+
+    if report["verdict"] == "issues_found" and report["counts"]["errors"]:
+        return fail(
+            report["headline"],
+            remediation=[
+                option(i["detail"], "check_circuit", {"project_name": project_name})
+                for i in report["issues"][:5]
+                if i["severity"] == "error"
+            ],
+            data=report,
+        )
+
+    step = next_step(
+        "optimize_placement",
+        {"project_name": project_name},
+        "Circuit checks are clean enough to lay out. Anything in not_checked "
+        "was not verified either way.",
+    )
+    return ok(report, step)
 
 
 @mcp.tool()

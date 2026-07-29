@@ -280,6 +280,31 @@ def test_resistor_power_exceeds_rating():
     """A resistor dissipating more than package rating should error."""
     # 10ohm resistor, LED at 20mA → P = 0.02² × 10 = 4mW — fine for 0805
     # But a 10ohm on a 5V power net: P = 25/10 = 2.5W — way over 0805 125mW
+    # R1 must actually bridge VCC to GND to dissipate anything. Power now comes
+    # from the solved branch current, so a resistor with a dangling pin
+    # correctly dissipates nothing rather than the old V^2/R guess.
+    elements = [
+        _comp("comp_r1", "R1", "resistor", "10ohm", "0805"),
+        _port("port_r1_1", "comp_r1", 1, "1", "passive"),
+        _port("port_r1_2", "comp_r1", 2, "2", "passive"),
+        _comp("comp_j1", "J1", "connector", "2-pin"),
+        _port("port_j1_1", "comp_j1", 1, "1", "power_in"),
+        _port("port_j1_2", "comp_j1", 2, "2", "ground"),
+        _net("net_vcc", "VCC", ["port_r1_1", "port_j1_1"], "power"),
+        _net("net_gnd", "GND", ["port_r1_2", "port_j1_2"], "ground"),
+    ]
+    c, p, n = build_lookups(elements)
+    errors, _ = check_resistor_power(c, p, n, v_supply=5.0)
+    # 5V across 10ohm = 500mA, 2.5W — far over the 0805 125mW rating
+    assert any("power dissipation" in e.lower() for e in errors)
+
+
+def test_resistor_power_dangling_pin_dissipates_nothing():
+    """A resistor with one end unconnected carries no current, so no power.
+
+    The previous heuristic assumed the full supply across every resistor it
+    could not otherwise explain, and reported 2.5W here.
+    """
     elements = [
         _comp("comp_r1", "R1", "resistor", "10ohm", "0805"),
         _port("port_r1_1", "comp_r1", 1, "1", "passive"),
@@ -290,7 +315,7 @@ def test_resistor_power_exceeds_rating():
     ]
     c, p, n = build_lookups(elements)
     errors, _ = check_resistor_power(c, p, n, v_supply=5.0)
-    assert any("power dissipation" in e.lower() for e in errors)
+    assert errors == []
 
 
 def test_resistor_power_led_series_uses_vf():
@@ -361,16 +386,35 @@ def test_cap_above_derating():
 # Test 9: Power budget
 # ---------------------------------------------------------------------------
 
-def test_power_budget_with_leds():
-    """Power budget should sum LED current draws."""
+def test_power_budget_sums_solved_rail_current():
+    """Power budget sums what actually leaves the rail, not a per-LED estimate.
+
+    Two red LEDs, each with its own 150ohm series resistor on 5V:
+    I = (5 - 2.0) / (150 + 10) = 18.75mA each, so ~38mA total. The previous
+    version counted LED_IF_DEFAULT x 2 = 40mA regardless of the resistors,
+    the rail, or whether the LEDs were connected at all.
+    """
     elements = [
-        _comp("comp_d1", "D1", "led", "red"),
-        _comp("comp_d2", "D2", "led", "blue"),
+        _comp("comp_j1", "J1", "connector", "2-pin"),
+        _port("port_j1_1", "comp_j1", 1, "1", "power_in"),
+        _port("port_j1_2", "comp_j1", 2, "2", "ground"),
+        _net("net_vcc", "VCC", ["port_j1_1", "port_r1_1", "port_r2_1"], "power"),
+        _net("net_gnd", "GND", ["port_j1_2", "port_d1_k", "port_d2_k"], "ground"),
     ]
+    for i in (1, 2):
+        elements += [
+            _comp(f"comp_r{i}", f"R{i}", "resistor", "150ohm", "0805"),
+            _port(f"port_r{i}_1", f"comp_r{i}", 1, "1", "passive"),
+            _port(f"port_r{i}_2", f"comp_r{i}", 2, "2", "passive"),
+            _comp(f"comp_d{i}", f"D{i}", "led", "red", "0805"),
+            _port(f"port_d{i}_a", f"comp_d{i}", 1, "anode", "passive"),
+            _port(f"port_d{i}_k", f"comp_d{i}", 2, "cathode", "passive"),
+            _net(f"net_led{i}", f"LED{i}", [f"port_r{i}_2", f"port_d{i}_a"], "signal"),
+        ]
     c, p, n = build_lookups(elements)
     _, warnings = check_power_budget(c, p, n, v_supply=5.0)
     assert any("power budget" in w.lower() for w in warnings)
-    assert any("40mA" in w for w in warnings)  # 20mA × 2
+    assert any("38mA" in w for w in warnings)
 
 
 def test_power_budget_no_supply():
