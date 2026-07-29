@@ -748,16 +748,19 @@ def _build_router_kwargs(project_dir: Path, project_name: str, log=None) -> dict
             req_data = _load(req_path)
             copper_oz = req_data.get("board", {}).get("copper_weight_oz", 0.5)
             mfg = req_data.get("manufacturing", {})
-            if mfg:
-                manufacturer = mfg.get("manufacturer", "")
-                if manufacturer:
-                    from validators.engineering_constants import get_dfm_profile
-                    mfg_rules = get_dfm_profile(manufacturer)
-                    _log(f"  DFM profile: {mfg_rules.get('description', manufacturer)}")
-                for key in ("trace_width_min_mm", "clearance_min_mm",
-                            "via_drill_min_mm", "via_diameter_min_mm"):
-                    if key in mfg:
-                        mfg_rules[key] = mfg[key]
+            # Nested manufacturing.manufacturer (LLM reqs) OR top-level
+            # manufacturer (hand-written test reqs) — same lookup drc_report.py
+            # uses, so the router derives rules from the same profile the DRC
+            # will judge the board against.
+            manufacturer = mfg.get("manufacturer", "") or req_data.get("manufacturer", "")
+            if manufacturer:
+                from validators.engineering_constants import get_dfm_profile
+                mfg_rules = get_dfm_profile(manufacturer)
+                _log(f"  DFM profile: {mfg_rules.get('description', manufacturer)}")
+            for key in ("trace_width_min_mm", "clearance_min_mm",
+                        "via_drill_min_mm", "via_diameter_min_mm"):
+                if key in mfg:
+                    mfg_rules[key] = mfg[key]
         except Exception:
             pass
 
@@ -792,6 +795,11 @@ def _build_router_kwargs(project_dir: Path, project_name: str, log=None) -> dict
             kwargs["via_drill_mm"] = max(via_d_floor, mfg_rules["via_drill_min_mm"])
         if "via_diameter_min_mm" in mfg_rules:
             kwargs["via_diameter_mm"] = max(via_dia_floor, mfg_rules["via_diameter_min_mm"])
+        if "board_edge_clearance_mm" in mfg_rules:
+            # Carry the fab's real copper-to-edge spec so DRC checks against it
+            # rather than KiCad's conservative 0.5mm default (which the .kicad_pro
+            # otherwise falls back to, false-flagging copper the fab accepts).
+            kwargs["board_edge_clearance_mm"] = mfg_rules["board_edge_clearance_mm"]
     elif fine_pitch:
         # No DFM profile but the board is fine-pitch — use a safe fine ruleset
         # (5 mil / 5 mil, common to every modern fab) so escape is feasible.
@@ -867,12 +875,15 @@ def _short_cleanup(routed, placement_data, netlist_data, exclude_nets,  # pragma
     cl_timeout = min(timeout_s, 600)
 
     def _set_rules(rt):
-        rt.setdefault("routing", {}).setdefault("config", {}).update({
+        cfg = rt.setdefault("routing", {}).setdefault("config", {})
+        cfg.update({
             "trace_clearance_mm": router_kwargs.get("clearance_mm", 0.2),
             "trace_width_signal_mm": router_kwargs.get("trace_width_signal_mm", 0.25),
             "via_diameter_mm": router_kwargs.get("via_diameter_mm", 0.6),
             "via_drill_mm": router_kwargs.get("via_drill_mm", 0.3),
         })
+        if "board_edge_clearance_mm" in router_kwargs:
+            cfg["board_edge_clearance_mm"] = router_kwargs["board_edge_clearance_mm"]
         return rt
 
     def _route_fn(fixed):
@@ -981,6 +992,11 @@ def run_routing(project_dir: Path, project_name: str, config,
             "num_layers": num_layers,
             "plane_layers": plane_layers,
         }
+        if "board_edge_clearance_mm" in router_kwargs:
+            # Inset the routable boundary so Freerouting keeps copper this far
+            # from the board edge (it otherwise only honours trace clearance to
+            # the boundary and routes right up to the rim → copper_to_edge DRC).
+            dsn_config["edge_clearance_mm"] = router_kwargs["board_edge_clearance_mm"]
         if num_layers > 2:
             _log(f"  Layer count: {num_layers}, inner plane layers: {plane_layers} "
                  f"({2 - plane_layers if num_layers >= 4 else 0} inner signal layer(s))")
@@ -1231,6 +1247,9 @@ def run_routing(project_dir: Path, project_name: str, config,
         "via_diameter_mm": router_kwargs.get("via_diameter_mm", 0.6),
         "via_drill_mm": router_kwargs.get("via_drill_mm", 0.3),
     })
+    if "board_edge_clearance_mm" in router_kwargs:
+        routed["routing"]["config"]["board_edge_clearance_mm"] = \
+            router_kwargs["board_edge_clearance_mm"]
 
     # FINAL inner-plane re-cut, UNCONDITIONAL, right before persisting. Short
     # cleanup and the protected-wiring union both move/add vias after the planes

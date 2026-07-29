@@ -689,6 +689,22 @@ def build_kicad_pro(routed: dict, project_name: str) -> dict:
     track_w = float(cfg.get("trace_width_signal_mm", 0.2))
     via_dia, via_drill = board_via_minima(routed)
 
+    rules = {
+        "min_clearance": round(clearance, 4),
+        "min_track_width": round(track_w, 4),
+        "min_via_diameter": round(via_dia, 4),
+        "min_through_hole_diameter": round(via_drill, 4),
+        "min_hole_clearance": 0.2,
+        "min_hole_to_hole": 0.25,
+    }
+    # Copper-to-edge: same reason as the rules above. Without this KiCad's DRC
+    # uses its conservative 0.5mm default, false-flagging traces the routed
+    # board's fab (JLCPCB 4-layer: 0.3mm) actually accepts. Emit the real spec
+    # from the routing config when known; else leave KiCad's stricter default.
+    edge_clr = cfg.get("board_edge_clearance_mm")
+    if edge_clr is not None:
+        rules["min_copper_edge_clearance"] = round(float(edge_clr), 4)
+
     return {
         "meta": {"filename": f"{project_name}.kicad_pro", "version": 3},
         "board": {
@@ -700,14 +716,7 @@ def build_kicad_pro(routed: dict, project_name: str) -> dict:
                 # "footprint library 'pcb-creator' not configured" check is a
                 # false positive here. Silence it so DRC reflects real issues.
                 "rule_severities": {"lib_footprint_issues": "ignore"},
-                "rules": {
-                    "min_clearance": round(clearance, 4),
-                    "min_track_width": round(track_w, 4),
-                    "min_via_diameter": round(via_dia, 4),
-                    "min_through_hole_diameter": round(via_drill, 4),
-                    "min_hole_clearance": 0.2,
-                    "min_hole_to_hole": 0.25,
-                },
+                "rules": rules,
                 "meta": {"version": 2},
             }
         },

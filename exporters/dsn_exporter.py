@@ -149,6 +149,17 @@ def _dsn_structure(board: dict, config: dict) -> str:
     via_dia = config.get("via_diameter_mm", VIA_DIAMETER_MM)
     via_drill = config.get("via_drill_mm", VIA_DRILL_MM)
 
+    # Inset the routable boundary by the board-edge clearance so Freerouting
+    # keeps copper that far from the rim (it otherwise routes right up to the
+    # boundary → copper_to_edge DRC failures). Inset by edge + trace_half so the
+    # wire's EDGE, not its centreline, clears the board edge.
+    # ponytail: unconditional inset — a pad within `edge` of the board edge (an
+    # edge connector) would fall outside the boundary. None exist on normal
+    # boards; if edge-connector support is needed, clamp the inset to the
+    # nearest pad's distance (needs pad positions plumbed into this function).
+    edge = config.get("edge_clearance_mm", 0.0)
+    ei = round(edge + trace_w / 2.0, 4) if edge > 0 else 0.0
+
     copper_layers = _COPPER_LAYERS_BY_COUNT.get(num_layers, _COPPER_LAYERS_BY_COUNT[2])
 
     # Inner PLANE layers are omitted from the routable set (Freerouting routes
@@ -166,7 +177,9 @@ def _dsn_structure(board: dict, config: dict) -> str:
     lines += [
         "    (boundary",
         "      (path pcb 0",
-        f"        0 0 {_fmt(w)} 0 {_fmt(w)} {_fmt(h)} 0 {_fmt(h)} 0 0",
+        f"        {_fmt(ei)} {_fmt(ei)} {_fmt(w - ei)} {_fmt(ei)} "
+        f"{_fmt(w - ei)} {_fmt(h - ei)} {_fmt(ei)} {_fmt(h - ei)} "
+        f"{_fmt(ei)} {_fmt(ei)}",
         "      )",
         "    )",
         "    (via Via_Default)",

@@ -54,6 +54,7 @@ class RouterConfig:
     via_drill_mm: float = VIA_DRILL_MM
     via_diameter_mm: float = VIA_DIAMETER_MM
     copper_weight_oz: float = COPPER_WEIGHT_DEFAULT_OZ
+    board_edge_clearance_mm: float = 0.3   # copper-to-board-edge keepout
     # Copper fill parameters
     fill_net_name: str = "GND"  # net name to use for fill (resolved at runtime)
     fill_clearance_mm: float = FILL_CLEARANCE_MM

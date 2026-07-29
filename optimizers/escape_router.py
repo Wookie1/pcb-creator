@@ -315,7 +315,11 @@ def generate_escape_routing(
             # The escape must land on the board: a part packed into a corner has
             # no room on its outward sides, and an off-board via is worse than
             # leaving the pin to the autorouter.
-            if _overshoots(vx, vy, edir, via_r + cfg.clearance_mm):
+            # The via COPPER (radius via_r) must clear the board edge by
+            # edge_clearance — _overshoots adds edge_clearance itself, so pass the
+            # bare radius. (Adding trace clearance here too double-counts it: with
+            # a 0.6mm via that spuriously rejected an edge-adjacent plane pin.)
+            if _overshoots(vx, vy, edir, via_r):
                 continue
             if not is_plane and _overshoots(rx, ry, edir, trace_half):
                 continue
