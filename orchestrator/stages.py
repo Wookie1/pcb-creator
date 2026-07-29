@@ -988,6 +988,7 @@ def run_routing(project_dir: Path, project_name: str, config,
         # The power net is excluded ONLY when In2 is a plane (plane_layers>=2);
         # with an inner signal layer it is routed as traces instead.
         exclude_nets = ["GND"]
+        power_plane_net = ""   # the In2 plane net (GND is In1, delivered by fill)
         if plane_layers >= 2:
             best_pwr: tuple[int, str] = (0, "")
             for elem in netlist_data.get("elements", []):
@@ -999,6 +1000,7 @@ def run_routing(project_dir: Path, project_name: str, config,
                         best_pwr = (pin_count, elem.get("name", elem.get("net_id", "")))
             if best_pwr[1]:
                 exclude_nets.append(best_pwr[1])
+                power_plane_net = best_pwr[1]
                 _log(f"  Excluding power plane net from routing: {best_pwr[1]} ({best_pwr[0]} pins)")
         # Fine-pitch escape fanout: pre-route dog-bone escapes for single-row
         # fine-pitch parts and hand them to Freerouting as protected wiring,
@@ -1033,10 +1035,39 @@ def run_routing(project_dir: Path, project_name: str, config,
                 if escapes["traces"]:
                     _log(f"  Fine-pitch escape fanout: pre-routed "
                          f"{len(escapes['vias'])} pin escape(s) as protected wiring")
-                    fixed_routing = escapes
                     escape_wiring = escapes
             except Exception as exc:
                 _log(f"  Escape fanout skipped: {exc}")
+
+        # Power-plane via-in-pad reservation: keep Freerouting clear of the spot
+        # the post-route plane stitcher drops a via into on each coarse power pad,
+        # so via-in-pad lands deterministically instead of losing the race to
+        # whatever Freerouting routed there first. In2 POWER pads only — GND (In1)
+        # is delivered by the copper fill's thermal relief, not this stitcher, so
+        # reserving its pads would just over-constrain the router. Fine-pitch
+        # parts are handled by the escape fanout above.
+        if _fresh_route and power_plane_net:
+            try:
+                from optimizers.escape_router import (
+                    generate_plane_stitch_keepouts, EscapeConfig,
+                )
+                kcfg = EscapeConfig(
+                    clearance_mm=router_kwargs.get("clearance_mm", 0.127),
+                    via_diameter_mm=router_kwargs.get("via_diameter_mm", 0.45),
+                )
+                pkos = generate_plane_stitch_keepouts(
+                    placement_data, netlist_data, kcfg,
+                    exclude_nets=(power_plane_net,))["keepouts"]
+                if pkos:
+                    escape_wiring.setdefault("keepouts", []).extend(pkos)
+                    _log(f"  Power-plane stitch: reserved {len(pkos)} "
+                         f"via-in-pad site(s) as keepouts")
+            except Exception as exc:
+                _log(f"  Power-plane stitch reservation skipped: {exc}")
+
+        if _fresh_route and any(escape_wiring.get(k) for k in
+                                ("traces", "vias", "keepouts")):
+            fixed_routing = escape_wiring
         eff = ROUTING_EFFORT.get(effort, ROUTING_EFFORT["normal"])
         timeout_s = max_seconds or eff["timeout_s"] or config.freerouting_timeout_s
         fr_kwargs = dict(

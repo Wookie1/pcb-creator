@@ -419,3 +419,70 @@ def generate_escape_routing(
         placed_via_centers.extend(part_vias)
 
     return {"traces": traces, "vias": vias, "keepouts": keepouts}
+
+
+def _is_escape_candidate(smd: list[PadInfo], cfg: EscapeConfig) -> bool:
+    """A part the fanout router already breaks out (fine pitch + enough pins).
+    Its plane pads are handled there and must NOT be reserved again here."""
+    if len(smd) < cfg.min_pins:
+        return False
+    pitch = _min_adjacent_pitch(smd)
+    return pitch is not None and pitch < cfg.pitch_threshold_mm
+
+
+def generate_plane_stitch_keepouts(
+    placement: dict,
+    netlist: dict,
+    config: EscapeConfig | None = None,
+    exclude_nets: tuple[str, ...] = (),
+    pad_map: dict | None = None,
+) -> dict:
+    """Reserve the via-in-pad spot on every COARSE plane pad, pre-route.
+
+    The post-route power-plane stitcher (``router.py``) drops a via into each
+    power-plane SMD pad to reach the inner plane, trying the pad centre first.
+    But it runs AFTER Freerouting, which by then has filled the space around the
+    pad — so on a congested board the centre (and the whole ring) is blocked and
+    the pad is left unconnected, nondeterministically. Freerouting cannot see the
+    excluded plane net to leave room on its own.
+
+    The fix is to hand Freerouting a small keepout at each such pad centre as
+    protected wiring, so it routes its traces AND vias clear of the spot the
+    stitcher will use. The centre is then deterministically free and via-in-pad
+    always lands. Fine-pitch parts are skipped — the escape fanout already breaks
+    their plane pins out (with an offset via, not via-in-pad). Returns
+    ``{"keepouts": [...]}`` to union into the escape wiring.
+    """
+    cfg = config or EscapeConfig()
+    if pad_map is None:
+        pad_map = build_pad_map(placement, netlist)
+
+    net_names: dict[str, str] = {}
+    for e in netlist.get("elements", []):
+        if e.get("element_type") == "net":
+            net_names[e["net_id"]] = e.get("name", e["net_id"])
+    exclude = set(exclude_nets)
+
+    def _is_plane_net(net_id: str | None) -> bool:
+        return bool(net_id) and (net_id in exclude or
+                                 net_names.get(net_id, net_id) in exclude)
+
+    by_part: dict[str, list[PadInfo]] = {}
+    for pad in pad_map.values():
+        by_part.setdefault(pad.designator, []).append(pad)
+
+    # Reserve a circle big enough that a via (radius via_r) landing at the pad
+    # centre still clears any trace Freerouting keeps outside it: keepout radius
+    # >= via_r + clearance.
+    ko_d = round(cfg.via_diameter_mm + 2 * cfg.clearance_mm, 3)
+    keepouts: list[dict] = []
+    for des, pads in by_part.items():
+        smd = [p for p in pads if p.layer in ("top", "bottom")]
+        if _is_escape_candidate(smd, cfg):
+            continue                 # fanout router already broke this part out
+        for pad in smd:
+            if _is_plane_net(pad.net_id):
+                keepouts.append({"x_mm": round(pad.x_mm, 3),
+                                 "y_mm": round(pad.y_mm, 3),
+                                 "diameter_mm": ko_d})
+    return {"keepouts": keepouts}

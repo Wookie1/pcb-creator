@@ -322,3 +322,64 @@ class TestQuadPack:
         out = generate_escape_routing(_placement(), _netlist_for(pm), pad_map=pm)
         assert all(v["x_mm"] > 0 for v in out["vias"])
         assert out["vias"], "the other three sides still escape"
+
+
+# --- coarse power-pad via-in-pad reservation --------------------------------
+# The post-route plane stitcher drops a via into each power-plane SMD pad, trying
+# the pad centre first. It runs AFTER Freerouting, which by then has filled the
+# space, so on a congested board the centre is blocked and the pad is left
+# unrouted — nondeterministically. Reserving each pad centre with a keepout
+# pre-route makes Freerouting route around it, so via-in-pad always lands.
+
+from optimizers.escape_router import generate_plane_stitch_keepouts
+
+
+def _mixed_padmap():
+    """One fine-pitch quad pack (escaped) + coarse power pads (reserved)."""
+    pads = _quad_padmap(plane_net="VCC")            # 8 of its pads on VCC
+    for i, (x, y) in enumerate([(30, 5), (32, 5), (30, 20)], start=1):
+        pid = f"c{i}_1"
+        pads[pid] = PadInfo(port_id=pid, designator=f"C{i}", pin_number=1,
+                            net_id="VCC", x_mm=x, y_mm=y,
+                            pad_width_mm=0.5, pad_height_mm=0.5, layer="top")
+    # a GND coarse pad — must NOT be reserved (GND is delivered by the fill)
+    pads["c9_2"] = PadInfo(port_id="c9_2", designator="C1", pin_number=2,
+                           net_id="GND", x_mm=30, y_mm=6,
+                           pad_width_mm=0.5, pad_height_mm=0.5, layer="top")
+    return pads
+
+
+class TestPlaneStitchKeepouts:
+    def test_reserves_coarse_power_pads_only(self):
+        pm = _mixed_padmap()
+        out = generate_plane_stitch_keepouts(
+            _placement(), _netlist_for(pm), exclude_nets=("VCC",), pad_map=pm)
+        # The three coarse caps are reserved; the escaped quad pack is not (the
+        # fanout breaks its plane pins out with an offset via, not via-in-pad).
+        kos = out["keepouts"]
+        assert len(kos) == 3, f"expected 3 coarse-pad reservations, got {len(kos)}"
+        centres = {(round(k["x_mm"]), round(k["y_mm"])) for k in kos}
+        assert centres == {(30, 5), (32, 5), (30, 20)}
+
+    def test_excludes_gnd_and_through_hole(self):
+        """GND connects via the fill; through-hole pads already cross the plane."""
+        pm = _mixed_padmap()
+        pm["j_th"] = PadInfo(port_id="j_th", designator="J9", pin_number=1,
+                             net_id="VCC", x_mm=5, y_mm=5,
+                             pad_width_mm=1.5, pad_height_mm=1.5, layer="all")
+        out = generate_plane_stitch_keepouts(
+            _placement(), _netlist_for(pm), exclude_nets=("VCC",), pad_map=pm)
+        centres = {(round(k["x_mm"]), round(k["y_mm"])) for k in out["keepouts"]}
+        assert (5, 5) not in centres, "through-hole VCC pad must not be reserved"
+        assert (30, 6) not in centres, "GND pad must not be reserved"
+
+    def test_keepout_big_enough_for_via_clearance(self):
+        """Radius must be >= via_r + clearance so a centred via clears any trace
+        Freerouting keeps outside the reserved circle."""
+        pm = _mixed_padmap()
+        cfg = EscapeConfig(via_diameter_mm=0.45, clearance_mm=0.127)
+        out = generate_plane_stitch_keepouts(
+            _placement(), _netlist_for(pm), config=cfg,
+            exclude_nets=("VCC",), pad_map=pm)
+        for k in out["keepouts"]:
+            assert k["diameter_mm"] / 2 >= cfg.via_diameter_mm / 2 + cfg.clearance_mm - 1e-9
