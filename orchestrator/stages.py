@@ -1834,6 +1834,22 @@ def run_export(project_dir: Path, project_name: str, config, log=None) -> dict:
     except Exception as exc:
         _log(f"  Assembly drawing: skipped ({exc})")
 
+    # Keep a hand-off .kicad_pcb in sync with these gerbers. A prior export_kicad
+    # may have written one from an EARLIER routed board; regenerating it (only
+    # when present) stops a stale board revision from sitting silently beside
+    # fresh gerbers (#14). Not created if the agent never used the KiCad path.
+    kicad_pcb = output_dir / f"{project_name}.kicad_pcb"
+    if kicad_pcb.exists():
+        try:
+            import copy as _copy
+            from exporters.kicad_exporter import export_kicad_pcb
+            # deepcopy: export_kicad_pcb mutates routed (harvests stitch vias).
+            export_kicad_pcb(_copy.deepcopy(routed), netlist_data, kicad_pcb)
+            produced.append(str(kicad_pcb))
+            _log(f"  KiCad board refreshed: {kicad_pcb.name}")
+        except Exception as exc:
+            _log(f"  KiCad board refresh skipped ({exc})")
+
     zip_path = create_output_package(output_dir, project_name)
     _log(f"  Package: {zip_path.name}")
 

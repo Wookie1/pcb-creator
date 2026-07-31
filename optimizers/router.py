@@ -1298,8 +1298,12 @@ def _boxes_overlap(a: tuple, b: tuple) -> bool:
 
 # Silk must sit inside the board outline with a little to spare: fabs clip
 # everything outside it, so an "optimally relocated" designator that lands past
-# the edge is simply MISSING from the assembled board.
-SILK_EDGE_MARGIN_MM = 0.2
+# the edge is simply MISSING from the assembled board. The bbox is the glyph
+# CENTERLINE, so the margin must also cover the stroke half-width (~0.075mm at
+# 1mm text) plus kicad-cli's silk-to-edge clearance (~0.2mm); 0.2 left the
+# edge-most label (the title/rev block) just close enough to trip the
+# "silkscreen clipped by board edge" DRC warning (#17).
+SILK_EDGE_MARGIN_MM = 0.3
 
 
 def _silk_on_board(bb: tuple, board_w: float, board_h: float) -> bool:
@@ -1652,7 +1656,9 @@ def _generate_silkscreen(
 
         for lx, ly, anchor in candidates:
             name_bb = _silk_text_bbox(lx, ly, project_name, 1.0, anchor)
-            rev_bb = _silk_text_bbox(lx, ly + 1.5, "Rev 1.0", 0.8, anchor)
+            # fh must match the rendered item (font_height_mm=1.0 below) or the
+            # on-board check underestimates the rev label's true extent (#17).
+            rev_bb = _silk_text_bbox(lx, ly + 1.5, "Rev 1.0", 1.0, anchor)
             if not any(_boxes_overlap(name_bb, z) for z in exclusion_zones) and \
                not any(_boxes_overlap(rev_bb, z) for z in exclusion_zones) and \
                _silk_on_board(name_bb, board_w, board_h) and \

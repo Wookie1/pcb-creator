@@ -1433,16 +1433,27 @@ def get_project_status(project_name: str) -> dict:
             comp = stats.get("completion_pct")
         unrouted = rr.get("unrouted_nets") or stats.get("unrouted_nets") or []
         if comp is not None and comp < 100:
+            cur_layers = (_read_project_json(project_name, "_placement.json")
+                          or {}).get("board", {}).get("layers", 2)
+            if cur_layers >= 4:
+                capacity = ("this 4-layer board can free routing layers by "
+                            "reducing plane_layers (2 → 1 → 0 via "
+                            "optimize_placement); enlarge the board only as a "
+                            "last resort (with user approval, since its size may "
+                            "be fixed).")
+            else:
+                capacity = ("on this 2-layer board ASK THE USER before going to "
+                            "4 layers, then plane_layers 2 → 1 → 0, and enlarge "
+                            "the board only as a last resort (also with user "
+                            "approval, since its size may be fixed).")
             result["next_step"] = next_step(
                 "route_board",
                 {"project_name": project_name, "keep_existing": True,
                  "effort": "best"},
                 f"Route finished at {comp}% with {len(unrouted)} net(s) still "
                 "unrouted. Finish them with keep_existing=True (protects the "
-                "routed majority); if it won't close, add routing capacity — on a "
-                "2-layer board ASK THE USER before going to 4 layers, then "
-                "plane_layers 2 → 1 → 0, and enlarge the board only as a last "
-                "resort (also with user approval, since its size may be fixed).",
+                f"routed majority); if it won't close, add routing capacity — "
+                f"{capacity}",
             )
         elif result.get("output_files"):
             result["next_step"] = next_step(
@@ -2520,11 +2531,13 @@ def optimize_placement(
     netlist carries no board outline. On a re-run, dimensions are reused from the
     existing placement if omitted.
 
-    seed: fixes the annealing RNG so a placement is reproducible; omit for a
-    fresh layout each run. Different seeds do give genuinely different layouts,
-    but do not seed-hunt for routability: re-routing one unchanged placement
-    varies by more completion points than most seeds differ by, so a "better"
-    seed is usually a luckier route.
+    seed: fixes the annealing RNG. Omitting it is ALSO deterministic — the
+    layout tries a fixed seed ladder (0..4) and keeps the first clean result, so
+    two no-seed runs are byte-identical. Pass an explicit seed only to force a
+    DIFFERENT layout; different seeds give genuinely different layouts, but do
+    not seed-hunt for routability: re-routing one unchanged placement varies by
+    more completion points than most seeds differ by, so a "better" seed is
+    usually a luckier route.
 
     two_sided=True lets the optimizer move small SMD passives to the BOTTOM —
     use it when parts do not FIT on top, not when routing is the problem (on
