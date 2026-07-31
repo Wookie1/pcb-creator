@@ -2296,6 +2296,12 @@ def apply_copper_fills(
     result["routing"].setdefault("config", {})
     result["routing"]["config"]["fill_net"] = fill_net_name
     result["routing"]["config"]["fill_clearance_mm"] = config.fill_clearance_mm
+    # Persist the copper-to-edge keepout so the exported board's DRC rule matches
+    # the pour; without it kicad-cli falls back to its stricter 0.5mm default and
+    # false-flags copper the fab accepts. getattr keeps this working whether or
+    # not RouterConfig carries the field (0.3mm = the generic-fab safe default).
+    result["routing"]["config"].setdefault(
+        "board_edge_clearance_mm", getattr(config, "board_edge_clearance_mm", 0.3))
 
     # Generate silkscreen if not present
     if not result.get("silkscreen"):

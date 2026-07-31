@@ -6,6 +6,7 @@ custom MountingHole .kicad_mod has only an unnumbered np_thru_hole pad, which
 the parser skips, so the part fell back to a 3mm SMD pad placeholder.
 """
 
+import re
 import tempfile
 from pathlib import Path
 
@@ -181,3 +182,43 @@ class TestDrillIncludesMountingHole:
         # 3.200mm tool present and one hit
         assert "C3.200" in txt
         assert "X5000Y5000" in txt
+
+
+class TestThruHolePadDrill:
+    """Regression for issue #1: the .drl and .kicad_pcb derived through-hole
+    drills differently, so the drill file shipped holes 0.2mm LARGER than the
+    copper pad (a 1.7mm header pad drilled 1.9mm) while DRC only ever saw the
+    good .kicad_pcb value. Both exporters must now share _th_drill_mm, and the
+    emitted hole must never exceed the pad envelope."""
+
+    def test_drl_matches_shared_helper_and_fits_pad(self):
+        from exporters.gerber_exporter import build_pad_map
+        from exporters.kicad_exporter import _th_drill_mm
+        routed = {"board": {"width_mm": 30, "height_mm": 20, "layers": 2},
+                  "placements": [
+                      {"designator": "J1",
+                       "package": "PinHeader_1x03_P2.54mm_Vertical",
+                       "x_mm": 10.0, "y_mm": 10.0, "rotation_deg": 0,
+                       "layer": "top", "component_type": "connector"}],
+                  "routing": {"traces": [], "vias": [], "unrouted_nets": []}}
+        netlist = {"version": "1.0", "project_name": "t", "elements": [
+            {"element_type": "component", "component_id": "comp_j1",
+             "designator": "J1", "component_type": "connector",
+             "package": "PinHeader_1x03_P2.54mm_Vertical"},
+            *[{"element_type": "port", "port_id": f"port_j1_{n}",
+               "component_id": "comp_j1", "pin_number": n, "name": str(n),
+               "electrical_type": "passive"} for n in (1, 2, 3)]]}
+        th = [p for k, p in build_pad_map(routed, netlist).items()
+              if k.startswith("port_j1") and p.layer == "all"]
+        assert th, "header should have through-hole pads"
+        pw, ph = th[0].pad_width_mm, th[0].pad_height_mm
+        expected = _th_drill_mm(pw, ph)          # the shared derivation
+        with tempfile.TemporaryDirectory() as d:
+            txt = (export_drill(routed, netlist, Path(d) / "t.drl")).read_text()
+        drills = [float(m) for m in re.findall(r"^T\d+C([\d.]+)", txt, re.M)]
+        assert drills, "no drill tools emitted"
+        # the header hole in the .drl is exactly what the shared helper (and thus
+        # the .kicad_pcb) produce — no second, divergent derivation
+        assert expected in drills, f"{expected} not among emitted drills {drills}"
+        # and it never exceeds the pad it sits in (the 1.9 > 1.7 symptom)
+        assert max(drills) < max(pw, ph)
