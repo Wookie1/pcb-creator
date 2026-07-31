@@ -6,6 +6,7 @@ custom MountingHole .kicad_mod has only an unnumbered np_thru_hole pad, which
 the parser skips, so the part fell back to a 3mm SMD pad placeholder.
 """
 
+import re
 import tempfile
 from pathlib import Path
 
@@ -181,3 +182,36 @@ class TestDrillIncludesMountingHole:
         # 3.200mm tool present and one hit
         assert "C3.200" in txt
         assert "X5000Y5000" in txt
+
+
+class TestThruHolePadDrillLeavesRing:
+    """Regression: export_drill once used min(pad)+0.2, drilling a 1.7mm header
+    pad at 1.9mm — a hole bigger than its pad (negative annular ring). The drill
+    must sit INSIDE the pad."""
+
+    def test_header_drill_smaller_than_pad(self):
+        from exporters.gerber_exporter import build_pad_map
+        routed = {"board": {"width_mm": 30, "height_mm": 20, "layers": 2},
+                  "placements": [
+                      {"designator": "J1",
+                       "package": "PinHeader_1x03_P2.54mm_Vertical",
+                       "x_mm": 10.0, "y_mm": 10.0, "rotation_deg": 0,
+                       "layer": "top", "component_type": "connector"}],
+                  "routing": {"traces": [], "vias": [], "unrouted_nets": []}}
+        netlist = {"version": "1.0", "project_name": "t", "elements": [
+            {"element_type": "component", "component_id": "comp_j1",
+             "designator": "J1", "component_type": "connector",
+             "package": "PinHeader_1x03_P2.54mm_Vertical"},
+            *[{"element_type": "port", "port_id": f"port_j1_{n}",
+               "component_id": "comp_j1", "pin_number": n, "name": str(n),
+               "electrical_type": "passive"} for n in (1, 2, 3)]]}
+        pad_min = min(min(p.pad_width_mm, p.pad_height_mm)
+                      for k, p in build_pad_map(routed, netlist).items()
+                      if k.startswith("port_j1") and p.layer == "all")
+        with tempfile.TemporaryDirectory() as d:
+            txt = (export_drill(routed, netlist, Path(d) / "t.drl")).read_text()
+        drills = [float(m) for m in re.findall(r"^T\d+C([\d.]+)", txt, re.M)]
+        assert drills, "no drill tools emitted"
+        assert max(drills) < pad_min, (
+            f"drill {max(drills)} must stay inside pad {pad_min} (annular ring)")
+        assert max(drills) <= pad_min - 0.3  # ≥0.15mm copper per side

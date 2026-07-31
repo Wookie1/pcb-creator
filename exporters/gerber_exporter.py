@@ -457,7 +457,10 @@ def export_drill(
     pad_map = build_pad_map(routed, netlist)
     for pad in pad_map.values():
         if pad.layer == "all":  # through-hole
-            drill = max(0.6, round(min(pad.pad_width_mm, pad.pad_height_mm) + 0.2, 2))
+            # Drill must sit INSIDE the pad, leaving ≥0.2mm copper per side, or
+            # the hole eats the annular ring (a 1.7mm pad was drilling 1.9mm).
+            # Mirrors kicad_exporter's pad_dia-0.4 cap so both exporters agree.
+            drill = max(0.3, round(min(pad.pad_width_mm, pad.pad_height_mm) - 0.4, 2))
             holes.append((pad.x_mm, pad.y_mm, drill))
 
     # NPTH mounting holes — not in pad_map (their .kicad_mod pad is unnumbered),
