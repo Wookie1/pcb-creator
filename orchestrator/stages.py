@@ -488,14 +488,14 @@ def run_placement(
         except Exception:
             pass
     if bw is None or bh is None:
-        req_path = _p(project_dir, project_name, "requirements")
-        if req_path.exists():
-            try:
-                rb = _load(req_path).get("board", {})
-                bw = bw or rb.get("width_mm")
-                bh = bh or rb.get("height_mm")
-            except Exception:
-                pass
+        # Fall through the same placement → circuit-draft → requirements chain
+        # _resolve_layers uses. The builder flow stores the user's requested size
+        # in the circuit draft (create_circuit's board_width_mm/height_mm) and
+        # never writes a requirements file; the old chain here skipped the draft,
+        # so the spec was silently dropped and the board shipped at 50×50 (#3).
+        rw, rh = _resolve_board_dims(project_dir, project_name)
+        bw = bw or rw
+        bh = bh or rh
     if bw is None:
         bw = 50.0
     if bh is None:

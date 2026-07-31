@@ -66,6 +66,21 @@ def _mounting_hole_drill_mm(package: str, component_type: str = "") -> float | N
     return 3.2
 
 
+def _th_drill_mm(pad_w: float, pad_h: float) -> float:
+    """Annular-aware drill for a through-hole pad of size (pad_w, pad_h).
+
+    Drill ≈ pin diameter + tolerance, but capped so ≥0.2mm copper remains around
+    the hole — deriving it from the pad's smaller dimension and flooring it high
+    could make the hole ≥ the pad (negative annular ring). The gerber and KiCad
+    exporters MUST share this so the .drl and .kicad_pcb agree on hole sizes
+    (issue #1: the two derivations diverged, shipping .drl holes 0.2mm larger
+    than the copper pad while DRC only ever saw the good .kicad_pcb drill).
+    """
+    pin_dia = min(pad_w, pad_h)
+    pad_dia = max(pad_w, pad_h)
+    return max(0.3, round(min(pin_dia + 0.2, pad_dia - 0.4), 2))
+
+
 def _allow_mask_bridges(fp_def, mask_clearance: float = 0.05,
                         min_web: float = 0.15) -> bool:
     """True if any two pads of this footprint sit closer than the manufacturable
@@ -383,9 +398,8 @@ def _footprint(
             # pad's smaller dimension and flooring it at 0.6mm could make the
             # hole ≥ the pad (negative annular → KiCad "hole leaves no copper").
             # Cap the drill so ≥0.2mm copper remains around it.
-            pin_dia = min(pad_w, pad_h)
             pad_dia = max(pad_w, pad_h)
-            drill = max(0.3, round(min(pin_dia + 0.2, pad_dia - 0.4), 2))
+            drill = _th_drill_mm(pad_w, pad_h)
             shape = "circle" if pin_num > 1 else "rect"  # pin 1 = square for identification
             lines.append(
                 f'    (pad "{pin_num}" thru_hole {shape}'

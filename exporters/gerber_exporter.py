@@ -202,11 +202,17 @@ def _render_text_strokes(
     stroke_w: float,
     anchor: str = "center",
     angle: float = 0,
+    mirror: bool = False,
 ) -> None:
     """Render text as stroke font line segments in a Gerber DataLayer.
 
     `angle` (0 or 90) rotates the rendered text about its (x, y) anchor, matching
     the bbox the silk relocator reserved and the KiCad export's gr_text angle.
+
+    `mirror` reflects each glyph about the vertical line through the anchor x, for
+    bottom-side text. Gerbers are in board top-view coordinates, so B_SilkS text
+    must be written mirrored to read correctly on the physical bottom — the same
+    thing KiCad's `(justify mirror)` does for B.* layers (issue #2).
     """
     from .stroke_font import STROKE_FONT
 
@@ -229,6 +235,8 @@ def _render_text_strokes(
     base_y = y - height / 2
 
     def _pt(px: float, py: float) -> tuple[float, float]:
+        if mirror:
+            px = 2 * x - px  # reflect about the anchor's vertical axis
         if not angle:
             return (px, py)
         return (x + (px - x) * ca - (py - y) * sa,
@@ -268,7 +276,8 @@ def _generate_silkscreen(
             stroke_w = max(fh * 0.15, 0.1)
             anchor = silk.get("anchor", "center")
             _render_text_strokes(dl, text, x, y, fh, stroke_w, anchor,
-                                 silk.get("angle", 0))
+                                 silk.get("angle", 0),
+                                 mirror=(layer == "bottom"))
 
         elif silk["type"] == "dot":
             dia = silk.get("diameter_mm", 0.5)
@@ -455,9 +464,12 @@ def export_drill(
 
     # Through-hole pads
     pad_map = build_pad_map(routed, netlist)
+    from exporters.kicad_exporter import _th_drill_mm
     for pad in pad_map.values():
         if pad.layer == "all":  # through-hole
-            drill = max(0.6, round(min(pad.pad_width_mm, pad.pad_height_mm) + 0.2, 2))
+            # Same annular-aware derivation the KiCad exporter uses, so the .drl
+            # and the .kicad_pcb agree on hole sizes (issue #1).
+            drill = _th_drill_mm(pad.pad_width_mm, pad.pad_height_mm)
             holes.append((pad.x_mm, pad.y_mm, drill))
 
     # NPTH mounting holes — not in pad_map (their .kicad_mod pad is unnumbered),

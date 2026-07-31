@@ -40,8 +40,7 @@ def make_qfn(
     offsets: dict[int, tuple[float, float]] = {}
 
     # Pad dimensions per IPC-7351B for QFN nominal density
-    pad_len = 0.8   # toe-to-heel
-    pad_w = pitch_mm * 0.55  # slightly narrower than pitch
+    pad_len = 0.8   # toe-to-heel; square pad side is derived from this below
 
     half_body = body_mm / 2.0
     # Pad centre sits at body edge minus half pad length (toe extends out)
@@ -75,7 +74,12 @@ def make_qfn(
     if exposed_pad:
         offsets[pin] = (0.0, 0.0)
 
-    return FootprintDef(pin_offsets=offsets, pad_size=(pad_w, pad_len))
+    # ponytail: build_pad_map applies one pad_size to all four sides without
+    # per-side rotation, so both extents must clear the pitch or adjacent pads
+    # overlap (the #18 self-short). A square pad <= pitch is the largest land
+    # that never overlaps on any side. Upgrade path = per-pad pad_size.
+    side = round(min(pad_len, pitch_mm * 0.75), 3)
+    return FootprintDef(pin_offsets=offsets, pad_size=(side, side))
 
 
 def make_dfn(
@@ -118,7 +122,10 @@ def make_dfn(
     if exposed_pad:
         offsets[pin] = (0.0, 0.0)
 
-    return FootprintDef(pin_offsets=offsets, pad_size=(pad_w, pad_len))
+    # DFN rows run along Y, so the along-row extent is pad_w (< pitch) and the
+    # long axis (pad_len) points outward along X. Transposed vs the old
+    # (pad_w, pad_len), which put the long axis along the row → #18 overlap.
+    return FootprintDef(pin_offsets=offsets, pad_size=(pad_len, pad_w))
 
 
 # ---------------------------------------------------------------------------
@@ -180,9 +187,13 @@ def make_sop(
     for i in range(per_side):
         offsets[per_side + i + 1] = (round(half_row, 4), round(-y_start - i * p, 4))
 
+    # Rows run along Y, so the along-row extent must be the short pad dim
+    # (pad_width, < pitch) and the long dim (pad_height) points outward along X.
+    # The old (pad_width, pad_height) put the long axis along the row, so every
+    # fine-pitch part self-overlapped — the #18 MSOP-14 failure.
     return FootprintDef(
         pin_offsets=offsets,
-        pad_size=(params.pad_width, params.pad_height),
+        pad_size=(params.pad_height, params.pad_width),
     )
 
 
@@ -293,8 +304,7 @@ def make_qfp(
 
     per_side = pin_count // 4
     # Gull-wing leads extend ~1mm beyond the body on each side
-    pad_len = 1.5
-    pad_w = round(pitch_mm * 0.55, 3)
+    pad_len = 1.5   # square pad side is derived from this below
     pad_centre = body_mm / 2.0 + 1.0  # lead-tip land centre
 
     offsets: dict[int, tuple[float, float]] = {}
@@ -317,7 +327,11 @@ def make_qfp(
         offsets[pin] = (round(span / 2 - i * pitch_mm, 4), round(-pad_centre, 4))
         pin += 1
 
-    return FootprintDef(pin_offsets=offsets, pad_size=(pad_len, pad_w))
+    # ponytail: 4-sided part, one pad_size, no per-side rotation → both extents
+    # must clear the pitch or perpendicular rows overlap (#18). Square pad <=
+    # pitch is the largest non-overlapping land. Upgrade path = per-pad pad_size.
+    side = round(min(pad_len, pitch_mm * 0.75), 3)
+    return FootprintDef(pin_offsets=offsets, pad_size=(side, side))
 
 
 # ---------------------------------------------------------------------------
