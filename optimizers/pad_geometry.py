@@ -295,10 +295,11 @@ def get_footprint_def(
          so project-specific overrides are respected.
       1. KiCad .kicad_mod library — real-world footprints from the official
          KiCad library, community-maintained and datasheet-verified (~50K pkgs)
-      2. IPC-7351B parametric — algorithmic generation per the IPC land
+      2. Local JSON cache — entries saved from prior EasyEDA / LLM lookups or
+         supplied via provide_footprint (real manufacturer / agent-corrected
+         data).  Ahead of IPC so an explicit fix overrides a bad generated one.
+      3. IPC-7351B parametric — algorithmic generation per the IPC land
          pattern standard (QFN, BGA, SOP, SSOP, TSSOP, DFN, SOT-223, …)
-      3. Local JSON cache — entries saved from prior EasyEDA / LLM lookups
-         (real manufacturer data or at least package-specific attempts)
       4. Built-in definitions — custom approximations shipped with this
          project.  Last local resort before network/LLM fallback.
 
@@ -331,16 +332,13 @@ def get_footprint_def(
         except Exception:
             pass
 
-    # --- Tier 2: IPC-7351B parametric ---
-    try:
-        from optimizers.ipc7351 import ipc7351_lookup
-        fp = ipc7351_lookup(package, pin_count)
-        if fp is not None:
-            return fp
-    except ImportError:
-        pass
-
-    # --- Tier 3: local cache (EasyEDA / prior LLM results) ---
+    # --- Tier 2: local cache (EasyEDA / prior LLM results / provide_footprint) ---
+    # Checked BEFORE the IPC parametric generator: cache entries are real
+    # manufacturer data or geometry an agent explicitly supplied via
+    # provide_footprint to *correct* a bad generated footprint. If IPC ran first
+    # its unanchored name regex (SOP/SSOP/MSOP/DFN…) would silently shadow the
+    # agent's fix, so the documented remedy could never override the tier that
+    # produced the bad footprint.
     if cache is not None:
         try:
             cached = cache.get_footprint(package)
@@ -351,6 +349,15 @@ def get_footprint_def(
                 return FootprintDef(pin_offsets=pin_offsets, pad_size=pad_size)
         except Exception:
             pass
+
+    # --- Tier 3: IPC-7351B parametric ---
+    try:
+        from optimizers.ipc7351 import ipc7351_lookup
+        fp = ipc7351_lookup(package, pin_count)
+        if fp is not None:
+            return fp
+    except ImportError:
+        pass
 
     # --- Tier 4: built-in approximations (last local resort) ---
     fp = _builtin_footprint_def(package, pin_count)

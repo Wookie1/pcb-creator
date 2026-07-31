@@ -566,6 +566,42 @@ def test_set_positions_partial_warns(server):
     assert any(u["designator"] == "NOPE" for u in r["unpinned"])
 
 
+def test_set_positions_rejects_45deg(server):
+    """#7: the bulk tool must reject the forbidden 45° like place_component does,
+    not store it as a user anchor (SMD pad rects are only rotated for 90/270)."""
+    name = _build_led(server, "cov_sp_rot")
+    call(server, "optimize_placement",
+         {"project_name": name, "board_width_mm": 30, "board_height_mm": 20,
+          "seed": 1})
+    r = call(server, "set_component_positions",
+             {"project_name": name,
+              "positions": [{"designator": "J1", "x_mm": 5, "y_mm": 10,
+                             "rotation_deg": 45}]})
+    assert r["success"] is False
+    assert r["pinned_count"] == 0
+    assert any("0, 90, 180, or 270" in u["reason"] for u in r["unpinned"])
+    # A valid rotation on the same tool still pins.
+    ok_r = call(server, "set_component_positions",
+                {"project_name": name,
+                 "positions": [{"designator": "J1", "x_mm": 5, "y_mm": 10,
+                                "rotation_deg": 270}]})
+    assert ok_r["success"] and ok_r["pinned_count"] == 1
+
+
+def test_demote_4_to_2_layers_requires_approval(server, tmp_path):
+    """#8: dropping a placed 4-layer board to 2 layers discards its planes, so it
+    must gate on approval symmetrically with the 2->4 promotion."""
+    name = _build_led(server, "cov_demote")
+    pdir = _projects_dir(tmp_path) / name
+    (pdir / f"{name}_placement.json").write_text(json.dumps(
+        {"board": {"layers": 4, "plane_layers": 2, "width_mm": 30,
+                   "height_mm": 20}, "placements": []}))
+    r = call(server, "optimize_placement", {"project_name": name, "layers": 2})
+    assert r["success"] is False
+    assert "approval" in r["error"].lower()
+    assert any(o["args"].get("approved") is True for o in r["remediation"])
+
+
 def test_set_positions_nothing_pinned_is_failure(server):
     name = _build_led(server, "cov_sp_none")
     call(server, "optimize_placement",

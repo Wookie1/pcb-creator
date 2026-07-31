@@ -33,6 +33,59 @@ def _load(path: Path) -> dict:
     return json.loads(path.read_text())
 
 
+def netlist_sig(netlist: dict) -> str:
+    """Stable signature of a netlist's electrical content (components, ports,
+    nets). Placement, routing and the synthesized BOM are all derived from this,
+    so a changed signature means those artifacts are stale. Ignores volatile
+    top-level metadata (timestamps, file paths)."""
+    import hashlib
+    payload = json.dumps(netlist.get("elements", []), sort_keys=True, default=str)
+    return hashlib.sha256(payload.encode()).hexdigest()[:16]
+
+
+def placement_sig(placement: dict) -> str:
+    """Signature of the positions/rotations/layers a route consumed, so a
+    placement edited after routing (e.g. set_component_positions moved a part
+    but the board was never re-routed) is detected as stale."""
+    import hashlib
+    items = sorted(
+        (p.get("designator", ""), round(float(p.get("x_mm", 0) or 0), 3),
+         round(float(p.get("y_mm", 0) or 0), 3), int(p.get("rotation_deg", 0) or 0),
+         p.get("layer", "top"))
+        for p in placement.get("placements", []))
+    board = placement.get("board", {})
+    payload = json.dumps([items, board.get("width_mm"), board.get("height_mm"),
+                          board.get("layers"), board.get("plane_layers")],
+                         sort_keys=True, default=str)
+    return hashlib.sha256(payload.encode()).hexdigest()[:16]
+
+
+def staleness_reason(project_dir: Path, project_name: str) -> str | None:
+    """Reason the routed board no longer reflects the netlist/placement, or None.
+
+    Manufacturing outputs, DRC and fab quotes are all produced FROM the routed
+    board; if the circuit or the placement changed after the last route, those
+    artifacts silently describe an old board. Compares signatures stamped into
+    routed.json at route time against the current netlist/placement files.
+    """
+    routed_path = _p(project_dir, project_name, "routed")
+    if not routed_path.exists():
+        return None
+    src = _load(routed_path).get("source_sig")
+    if not src:  # routed before signatures existed — can't judge, don't false-alarm
+        return None
+    netlist_path = _p(project_dir, project_name, "netlist")
+    if netlist_path.exists() and src.get("netlist") != netlist_sig(_load(netlist_path)):
+        return ("the circuit (netlist) was edited after the board was last "
+                "routed, so the routed board, its gerbers, DRC and BOM no longer "
+                "match your design")
+    placement_path = _p(project_dir, project_name, "placement")
+    if placement_path.exists() and src.get("placement") != placement_sig(_load(placement_path)):
+        return ("components were re-placed after the board was last routed, so "
+                "the routed board no longer matches the current placement")
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Placement
 # ---------------------------------------------------------------------------
@@ -919,6 +972,11 @@ def run_routing(project_dir: Path, project_name: str, config,
 
     placement_data = _load(placement_path)
     netlist_data = _load(netlist_path)
+    # Signatures of exactly the on-disk inputs this route consumes, captured
+    # BEFORE placement_data["board"] is mutated below so they match what a later
+    # staleness_reason() recomputes from the unmodified files.
+    _src_sig = {"netlist": netlist_sig(netlist_data),
+                "placement": placement_sig(placement_data)}
     router_kwargs = _build_router_kwargs(project_dir, project_name, log=log)
 
     # Caller-driven incremental routing (keep_existing) — captured before the
@@ -1152,6 +1210,35 @@ def run_routing(project_dir: Path, project_name: str, config,
         st["completion_pct"] = (round(100 * st["routed_nets"] / total, 1)
                                 if total else 100.0)
 
+    # Short-cleanup on the INCREMENTAL path too. A keep_existing re-route can
+    # itself create a short (e.g. Freerouting re-routes a power-plane net as
+    # ordinary traces through a protected stitch via) — and previously nothing
+    # ripped it, because cleanup ran on fresh routes only, so the DRC error the
+    # incremental route CREATED could never converge. cleanup_shorts is
+    # monotonic (it keeps a candidate only when it strictly reduces bad nets),
+    # so this can only help or no-op. Runs on the fully-merged board, then
+    # re-derives connectivity since the board changed.
+    if _incremental and routed is not None and getattr(config, "short_cleanup", True):
+        try:
+            from validators.validate_routing import incomplete_net_ids
+            cleaned = _short_cleanup(
+                routed, placement_data, netlist_data, exclude_nets,
+                escape_wiring, fr_kwargs, router_kwargs, timeout_s,
+                config, log=_log)
+            if cleaned is not None and cleaned is not routed:
+                routed = cleaned
+                rt = routed.setdefault("routing", {})
+                st = rt.setdefault("statistics", {})
+                total = st.get("total_nets", 0)
+                incomplete = sorted(incomplete_net_ids(routed, netlist_data))
+                rt["unrouted_nets"] = incomplete
+                st["unrouted_nets"] = len(incomplete)
+                st["routed_nets"] = max(0, total - len(incomplete))
+                st["completion_pct"] = (round(100 * st["routed_nets"] / total, 1)
+                                        if total else 100.0)
+        except Exception as exc:
+            _log(f"  Incremental short cleanup skipped: {exc}")
+
     # Persist the design rules the board was ACTUALLY routed to, so the DRC
     # checks against the same clearance/widths the router used (otherwise the
     # validator falls back to its 0.2mm default and false-flags fine-pitch
@@ -1181,6 +1268,9 @@ def run_routing(project_dir: Path, project_name: str, config,
         except Exception as exc:
             _log(f"  Inner-plane final re-cut skipped: {exc}")
 
+    # Stamp the input signatures so export/DRC/quote can tell whether this routed
+    # board still reflects the current netlist/placement (staleness_reason).
+    routed["source_sig"] = _src_sig
     routed_path = _p(project_dir, project_name, "routed")
     routed_path.write_text(json.dumps(routed, indent=2))
 
@@ -1615,7 +1705,31 @@ def _bom_from_netlist(netlist: dict) -> dict:
             "quantity": len(dess_sorted),
         })
     bom.sort(key=lambda b: _natkey(b["designator"].split(",")[0]))
-    return {"bom": bom}
+    # Tag so run_export knows this BOM was derived from the netlist and may be
+    # re-derived when the netlist changes — an LLM/user-authored _bom.json has no
+    # such tag and is never regenerated out from under its author.
+    return {"bom": bom, "synthesized_from_netlist": True}
+
+
+def _carry_bom_part_numbers(old_bom: dict, new_bom: dict) -> None:
+    """Copy resolved lcsc/mpn/manufacturer from an old synthesized BOM onto a
+    freshly re-derived one, matched by (component_type, value, package).
+
+    Belt-and-suspenders for the cache-wipe case: resolve_part_numbers already
+    refills from the component cache by the same key, but carrying them straight
+    across means a part number the agent set survives even if the cache is gone.
+    """
+    part_keys = ("lcsc", "mpn", "manufacturer")
+    by_key: dict[tuple, dict] = {}
+    for it in old_bom.get("bom", []):
+        k = (it.get("component_type", ""), it.get("value", ""), it.get("package", ""))
+        carried = {pk: it[pk] for pk in part_keys if it.get(pk)}
+        if carried:
+            by_key[k] = carried
+    for it in new_bom.get("bom", []):
+        k = (it.get("component_type", ""), it.get("value", ""), it.get("package", ""))
+        for pk, v in by_key.get(k, {}).items():
+            it.setdefault(pk, v)
 
 
 def run_export(project_dir: Path, project_name: str, config, log=None) -> dict:
@@ -1646,11 +1760,19 @@ def run_export(project_dir: Path, project_name: str, config, log=None) -> dict:
     netlist_path = _p(project_dir, project_name, "netlist")
     netlist_data = _load(netlist_path) if netlist_path.exists() else {}
     bom_path = _p(project_dir, project_name, "bom")
-    bom_data = _load(bom_path) if bom_path.exists() else None
-    # No standalone BOM file (e.g. KiCad-netlist import) — derive one from the
-    # netlist so the manufacturing package always ships a BOM CSV.
-    if bom_data is None and netlist_data.get("elements"):
+    existing_bom = _load(bom_path) if bom_path.exists() else None
+    # Re-derive the BOM from the CURRENT netlist whenever it is absent or was
+    # itself synthesized from a netlist — otherwise a package/value/quantity
+    # change since the first export never reaches the BOM (it used to be frozen
+    # at first export, so an assembly order could place the wrong part). An
+    # LLM/user-authored BOM (no synthesized tag) is used as-is.
+    if netlist_data.get("elements") and (
+            existing_bom is None or existing_bom.get("synthesized_from_netlist")):
         bom_data = _bom_from_netlist(netlist_data)
+        if existing_bom:
+            _carry_bom_part_numbers(existing_bom, bom_data)
+    else:
+        bom_data = existing_bom
 
     output_dir = project_dir / "output"
     output_dir.mkdir(exist_ok=True)
@@ -1669,7 +1791,11 @@ def run_export(project_dir: Path, project_name: str, config, log=None) -> dict:
         # "LCSC Part #" column auto-matches at JLCPCB assembly; persist the
         # enriched BOM so later quotes/status see the same numbers.
         from orchestrator.quoting import resolve_part_numbers
-        if resolve_part_numbers(bom_data):
+        changed = resolve_part_numbers(bom_data)
+        # Persist whenever we re-derived (tagged) so a stale frozen _bom.json a
+        # later quote/status would read gets overwritten, even if nothing newly
+        # resolved.
+        if changed or bom_data.get("synthesized_from_netlist"):
             bom_path.write_text(json.dumps(bom_data, indent=2))
         bom_csv = export_bom_csv(bom_data, output_dir / f"{project_name}_bom.csv")
         produced.append(str(bom_csv))

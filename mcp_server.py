@@ -453,6 +453,33 @@ def _route_failure_next_step(project_name: str, err: str) -> dict:
     return step
 
 
+def _staleness_reason(project_name: str) -> str | None:
+    """Reason the routed board is stale vs the current netlist/placement, or None.
+
+    Shared gate for the artifact-producing tools (export/DRC/quote): all of them
+    read _routed.json, so a netlist or placement edited after the last route
+    silently ships an old board. See orchestrator.stages.staleness_reason.
+    """
+    from orchestrator import stages
+    return stages.staleness_reason(_project_dir(project_name), project_name)
+
+
+def _stale_fail(project_name: str, reason: str) -> dict:
+    """Uniform refusal + remediation when the routed board is stale."""
+    return fail(
+        f"Refusing — {reason}. Re-place and re-route so the manufacturing "
+        "artifacts match the current design, then retry.",
+        data={"stale": True},
+        remediation=[
+            option("Re-place from the current netlist (needed if components were "
+                   "added/removed)", "optimize_placement",
+                   {"project_name": project_name}),
+            option("Then re-route the board", "route_board",
+                   {"project_name": project_name}),
+        ],
+    )
+
+
 def _requires_approval(project_name: str, layers: int | None,
                        plane_layers: int | None,
                        board_width_mm: float | None,
@@ -476,6 +503,12 @@ def _requires_approval(project_name: str, layers: int | None,
                             (layers is None and plane_layers is not None)):
         return ("promoting this placed 2-layer board to 4 layers changes the "
                 "stackup and raises fab cost")
+    # Demotion is just as destructive as promotion: dropping a placed 4-layer
+    # board to 2 layers silently discards its power/ground planes (plane_layers)
+    # the design may depend on. Gate it symmetrically.
+    if cur_layers == 4 and layers == 2:
+        return ("demoting this placed 4-layer board to 2 layers discards its "
+                "power/ground planes (plane_layers) the design may depend on")
     cur_w, cur_h = board.get("width_mm"), board.get("height_mm")
     grew_w = board_width_mm and cur_w and board_width_mm > cur_w + 1e-6
     grew_h = board_height_mm and cur_h and board_height_mm > cur_h + 1e-6
@@ -1265,6 +1298,12 @@ def get_project_status(project_name: str) -> dict:
             "trace_length_mm": stats.get("total_trace_length_mm", 0),
             "unrouted_nets": routing.get("unrouted_nets",
                                          stats.get("unrouted_nets", [])),
+            # Plane-delivered SMD pads with no clear stitching-via site: they are
+            # physically open, so an incomplete power-plane net is explained here
+            # (which pad, which net) instead of leaving the agent to guess. The
+            # Freerouting path writes this into routed.json via apply_copper_fills
+            # but it was never surfaced in status.
+            "unstitched_plane_pads": routing.get("unstitched_plane_pads", []),
         }
 
     # routing_state: in-memory job wins; else infer from on-disk artifact.
@@ -1490,7 +1529,16 @@ def export_kicad(project_name: str) -> dict:
 
     try:
         result_path = export_kicad_pcb(routed, netlist, output_path)
-        return ok({"kicad_path": str(result_path)})
+        out = {"kicad_path": str(result_path)}
+        # Inspection path (works on imperfect boards), so warn rather than
+        # refuse: this .kicad_pcb is the routed board, which may pre-date a
+        # netlist/placement edit the user just made.
+        stale = _staleness_reason(project_name)
+        if stale:
+            out["stale_warning"] = (
+                f"This .kicad_pcb reflects the last route — {stale}. Re-place "
+                "and re-route to regenerate it against the current design.")
+        return ok(out)
     except Exception as e:
         return fail(str(e))
 
@@ -2819,6 +2867,13 @@ def run_drc(project_name: str) -> dict:
                                 {"project_name": project_name})],
         )
 
+    # A DRC pass on a routed board that no longer matches the netlist/placement
+    # validates the wrong board — exactly the false "DRC passes" the staleness
+    # report flags. Refuse until the board is re-placed/re-routed.
+    stale = _staleness_reason(project_name)
+    if stale:
+        return _stale_fail(project_name, stale)
+
     # DRC exports the board to run kicad-cli on it, so it needs the SAME
     # footprint geometry placement/routing used. Without this the pad geometry
     # falls back to a different tier and DRC invents violations that are not on
@@ -2897,6 +2952,13 @@ def export_outputs(project_name: str) -> dict:
             remediation=[option("Route the board first", "route_board",
                                 {"project_name": project_name})],
         )
+
+    # Staleness gate: never ship gerbers/drill/BOM/CPL built from a routed board
+    # that no longer reflects the netlist or placement (the same artifact-
+    # divergence class as the DRC/gerber postmortems, here for whole boards).
+    stale = _staleness_reason(project_name)
+    if stale:
+        return _stale_fail(project_name, stale)
 
     # Activate project-local custom footprints so Gerber export uses the same
     # footprint geometry as placement/routing.
@@ -3106,6 +3168,13 @@ def get_fab_quote(project_name: str, quantity: int = 5,
             "All BOM lines have part numbers. The exported BOM CSV predates "
             "them — re-run export_outputs to refresh the manufacturing package "
             "(CSV/ZIP) with the finalized part numbers before ordering.")
+    # Advisory (not a manufacturing artifact), so warn rather than refuse: the
+    # priced board / BOM predates a netlist or placement edit.
+    stale = _staleness_reason(project_name)
+    if stale:
+        result["stale_warning"] = (
+            f"This quote may be off — {stale}. Re-place, re-route and "
+            "re-export before ordering.")
     return ok(result, nxt)
 
 
@@ -3329,10 +3398,23 @@ def set_component_positions(
             unpinned.append({"designator": des,
                              "reason": "not a component in this circuit"})
             continue
+        # Same rotation constraint place_component enforces: 45° part rotation is
+        # a known no-go (SMD pad rects are only rotated for 90/270 in the
+        # exporters — the morgan pad-overlap bug), so the bulk path must reject it
+        # too instead of storing it as an anchor.
+        try:
+            rot = int(pos.get("rotation_deg", 0))
+        except (TypeError, ValueError):
+            rot = None
+        if rot not in (0, 90, 180, 270):
+            unpinned.append({"designator": des,
+                             "reason": "rotation_deg must be 0, 90, 180, or 270 "
+                                       f"(got {pos.get('rotation_deg')!r})"})
+            continue
         idx = des_index[des]
         placement["placements"][idx]["x_mm"] = float(x)
         placement["placements"][idx]["y_mm"] = float(y)
-        placement["placements"][idx]["rotation_deg"] = int(pos.get("rotation_deg", 0))
+        placement["placements"][idx]["rotation_deg"] = rot
         placement["placements"][idx]["layer"] = pos.get("layer", "top")
         placement["placements"][idx]["placement_source"] = "user"
         pinned.append(des)
