@@ -40,8 +40,13 @@ def infer_electrical_type(net_class: str, component_type: str) -> str:
     if net_class == "ground":
         return "ground"
     if net_class == "power":
-        # Connectors and regulators *supply* power; ICs and passives *receive* it.
-        if component_type in ("connector", "voltage_regulator"):
+        # A connector on a power net supplies it. A regulator sinks on its input
+        # and sources on its output, but net class alone can't tell those pins
+        # apart — typing *every* regulator power pin power_out made a supply→
+        # regulator-input net read as two sources and warned on every board (#9).
+        # Default the regulator to power_in (sink); its real power_out comes from
+        # the pinout (parse_pinout: OUT/VOUT → power_out) when one is supplied.
+        if component_type == "connector":
             return "power_out"
         return "power_in"
     # Signal net: passives are passive, everything else is signal.

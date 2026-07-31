@@ -142,11 +142,14 @@ def validate_referential_integrity(netlist: dict) -> tuple[list[str], list[str]]
                 f"Net '{nid}' ('{net_name}') has only {port_count} port(s) — nets require at least 2. {fix}"
             )
 
-    # Check that every component has at least one port
+    # Check that every component has at least one port. Mechanical parts
+    # (mounting holes, fiducials) are portless by design — no electrical pins.
     components_with_ports = set()
     for port in ports.values():
         components_with_ports.add(port.get("component_id"))
-    for cid in components:
+    for cid, comp in components.items():
+        if comp.get("component_type") in ("mounting_hole", "fiducial"):
+            continue
         if cid not in components_with_ports:
             errors.append(f"Component '{cid}' has no ports defined")
 

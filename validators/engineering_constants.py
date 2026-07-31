@@ -63,9 +63,6 @@ DECOUPLING_CAP_TOLERANCE: float = 0.1  # ±10%
 
 _VOLTAGE_RE = re.compile(r"([\d.]+)\s*V", re.IGNORECASE)
 _CURRENT_RE = re.compile(r"([\d.]+)\s*(m?A)", re.IGNORECASE)
-_RESISTANCE_RE = re.compile(
-    r"([\d.]+)\s*(M(?:ohm|Ω)?|k(?:ohm|Ω)?|ohm|Ω)", re.IGNORECASE
-)
 _CAPACITANCE_RE = re.compile(
     r"([\d.]+)\s*(m|u|µ|n|p)?F", re.IGNORECASE
 )
@@ -90,18 +87,31 @@ def parse_current(s: str) -> float:
     return value
 
 
+_R_NOTATION_RE = re.compile(r"(\d*\.?\d*)\s*([RKM])\s*(\d*)", re.IGNORECASE)
+_R_MULT = {"r": 1.0, "k": 1_000.0, "m": 1_000_000.0}
+
+
 def parse_resistance(s: str) -> float:
-    """Parse a resistance string like '220ohm', '4.7kohm', '10Mohm' into float ohms."""
-    m = _RESISTANCE_RE.search(s)
-    if not m:
-        raise ValueError(f"Cannot parse resistance: {s}")
-    value = float(m.group(1))
-    unit = m.group(2).lower()
-    if unit.startswith("m"):
-        value *= 1_000_000
-    elif unit.startswith("k"):
-        value *= 1_000
-    return value
+    """Parse a resistance string into float ohms.
+
+    Accepts the unit forms ('220ohm', '4.7kohm', '10Mohm') and the EIA
+    R-notation the earlier regex silently mishandled (#10): the multiplier
+    letter also serves as the decimal point, so '4k7' is 4.7k = 4700 (not 4000),
+    '2R2' is 2.2, 'R47' is 0.47. Bare numbers and an 'R' suffix are ohms:
+    '470', '470R', '0R'. This unblocks jellybean part-number resolution, which
+    returns None on a parse failure.
+    """
+    t = re.sub(r"(?:ohm|Ω)s?\s*$", "", s.strip(), flags=re.IGNORECASE).strip()
+    m = _R_NOTATION_RE.fullmatch(t)
+    if m and (m.group(1) or m.group(3)):
+        whole, letter, frac = m.group(1) or "0", m.group(2).lower(), m.group(3)
+        # R-notation: the letter is the decimal point ('4k7' → 4.7). A trailing
+        # letter with no fractional digits ('470R', '4.7k') is just the multiplier.
+        num = float(f"{whole}.{frac}") if frac else float(whole)
+        return num * _R_MULT[letter]
+    if re.fullmatch(r"\d+(?:\.\d+)?", t):
+        return float(t)
+    raise ValueError(f"Cannot parse resistance: {s}")
 
 
 def parse_capacitance(s: str) -> float:

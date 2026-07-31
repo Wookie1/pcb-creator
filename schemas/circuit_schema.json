@@ -70,9 +70,11 @@
             "voltage_regulator",
             "crystal",
             "fuse",
-            "relay"
+            "relay",
+            "mounting_hole",
+            "fiducial"
           ],
-          "description": "Component type from the allowed list."
+          "description": "Component type from the allowed list. mounting_hole and fiducial are mechanical (no ports)."
         },
         "value": {
           "type": "string",

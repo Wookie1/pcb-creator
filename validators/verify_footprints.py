@@ -43,7 +43,7 @@ def verify_footprints(netlist: dict) -> list[dict]:
         Resolution uses the module-level tiered lookup, so callers must have run
         ``configure_lookup`` first (CLI / GUI / MCP bootstrap all do).
     """
-    from optimizers.pad_geometry import get_footprint_def
+    from optimizers.pad_geometry import get_footprint_def, footprint_pad_overlaps
 
     pin_counts = _component_pin_counts(netlist)
 
@@ -105,6 +105,27 @@ def verify_footprints(netlist: dict) -> list[dict]:
                     + ("..." if len(missing) > 8 else "") + " with no pad. "
                     "Correct the package name (or pin numbering), or supply "
                     "full geometry via provide_footprint."
+                ),
+            })
+
+        # Self-collision: a footprint whose own pads overlap shorts those pins
+        # the instant it's placed (routes to 0% with adjacent-pin shorts and no
+        # stated cause — the #18/#20 fine-pitch trap). Diagnose it statically
+        # here instead of letting the agent chase a phantom routing failure.
+        overlaps = footprint_pad_overlaps(fp)
+        if overlaps:
+            pairs = ", ".join(f"{a}-{b}" for a, b in overlaps[:6])
+            issues.append({
+                "designator": des,
+                "package": pkg,
+                "pin_count": pin_count,
+                "reason": (
+                    f"footprint for '{pkg}' has overlapping pads (pin pairs "
+                    f"{pairs}" + ("..." if len(overlaps) > 6 else "") + f"); "
+                    f"pad_size {tuple(fp.pad_size)} is too large for the pin "
+                    "pitch, so the board would short at these pins. Supply "
+                    "correct geometry via provide_footprint or "
+                    "register_custom_footprint."
                 ),
             })
 

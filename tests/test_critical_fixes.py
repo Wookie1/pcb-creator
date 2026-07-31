@@ -18,27 +18,9 @@ if str(_REPO) not in sys.path:
 
 # --- #18 generated footprints must not self-overlap -------------------------
 
-def _pads_overlap(fp) -> bool:
-    """True if any two pads of a FootprintDef overlap (positive area).
-
-    Pads are axis-aligned rects centred on each pin offset, all sharing pad_size.
-    This is the adjacency check the report asked for — CI previously only
-    verified pad sizes were positive, never that neighbours clear each other.
-    """
-    pw, ph = fp.pad_size
-    pins = list(fp.pin_offsets.items())
-    eps = 1e-6
-    for i in range(len(pins)):
-        _, (x1, y1) = pins[i]
-        for j in range(i + 1, len(pins)):
-            _, (x2, y2) = pins[j]
-            if abs(x1 - x2) < pw - eps and abs(y1 - y2) < ph - eps:
-                return True
-    return False
-
-
 def test_generated_footprints_have_no_overlapping_pads():
     from optimizers.ipc7351 import ipc7351_lookup
+    from optimizers.pad_geometry import footprint_pad_overlaps
     # One per fixed family, incl. the reported MSOP-14 (falls through to the
     # generator because it is absent from the KiCad library).
     for package, pins in [
@@ -49,7 +31,8 @@ def test_generated_footprints_have_no_overlapping_pads():
     ]:
         fp = ipc7351_lookup(package, pins)
         assert fp is not None, f"{package} did not resolve"
-        assert not _pads_overlap(fp), f"{package} pads overlap: {fp.pad_size}"
+        assert not footprint_pad_overlaps(fp), \
+            f"{package} pads overlap: {fp.pad_size}"
 
 
 def test_msop14_long_axis_runs_outward():

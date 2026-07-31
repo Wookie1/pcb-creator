@@ -26,8 +26,15 @@ COMPONENT_TYPES = [
     "resistor", "capacitor", "inductor", "led", "diode",
     "transistor_npn", "transistor_pnp", "transistor_nmos", "transistor_pmos",
     "ic", "connector", "switch", "voltage_regulator", "crystal", "fuse",
-    "relay",
+    "relay", "mounting_hole", "fiducial",
 ]
+
+# Mechanical parts: no electrical pins, never connected or routed. They ride
+# through as portless components — the placement engine positions them by
+# package/type and the exporters render NPTH drills / fiducial mask openings.
+# (The LLM flow auto-adds fiducials in runner.py; the builder/MCP flow doesn't,
+# so both must be addable here — #11.)
+MECHANICAL_TYPES = frozenset({"mounting_hole", "fiducial"})
 
 # Default pin counts when neither pinout nor package patterns resolve one.
 _DEFAULT_PIN_COUNT = {
@@ -171,6 +178,32 @@ def add_component(project_dir: Path, project_name: str, designator: str,
         return {"ok": False, "code": "bad_package",
                 "error": "package must be a non-empty string, e.g. '0805', "
                          "'DIP-8', 'SOT-23'."}
+
+    if component_type in MECHANICAL_TYPES:
+        if pinout or pin_count:
+            return {"ok": False, "code": "mechanical_no_pins",
+                    "error": f"{component_type} is mechanical and has no "
+                             "electrical pins — omit pinout and pin_count."}
+        # Mounting holes need resolvable keepout geometry; fiducials carry their
+        # own and are exempt, matching verify_footprints.
+        if (component_type == "mounting_hole" and footprint_lookup is not None
+                and footprint_lookup(package, 0) is None):
+            return {"ok": False, "code": "unresolved_footprint",
+                    "package": package,
+                    "error": f"Package '{package}' does not resolve to a "
+                             "footprint. Use a standard name like "
+                             "'MountingHole_3.2mm_M3'."}
+        comp = {
+            "component_type": component_type, "value": value, "package": package,
+            "pin_count": 0, "pin_names": {}, "pin_alts": {}, "pin_types": {},
+        }
+        if functional_group and functional_group.strip():
+            comp["functional_group"] = functional_group.strip()
+        draft["components"][designator] = comp
+        _save_draft(project_dir, project_name, draft)
+        return {"ok": True, "designator": designator, "package": package,
+                "pin_count": 0, "pins": [],
+                "component_count": len(draft["components"])}
 
     # Resolve pin names/types from an explicit pinout string when given.
     pin_names: dict[int, str] = {}
@@ -592,10 +625,16 @@ def finalize(project_dir: Path, project_name: str) -> dict:
             else:
                 etype = comp.get("pin_types", {}).get(str(n))
                 nclass = pin_net_class.get(canonical, "signal")
-                # The explicit pinout type wins unless the net contradicts it
-                # at the power/ground level.
                 inferred = infer_electrical_type(nclass, comp["component_type"])
-                if not etype or nclass in ("power", "ground"):
+                # Upgrade a signal/untyped pin sitting on a power/ground net, but
+                # keep an explicit power_in/power_out/ground from the pinout — a
+                # regulator's IN pin is power_in even though its net is 'power',
+                # and clobbering it to the inferred power_out made it read as a
+                # second source on the input net (#9).
+                if not etype:
+                    etype = inferred
+                elif nclass in ("power", "ground") and etype not in (
+                        "power_in", "power_out", "ground"):
                     etype = inferred
             elements.append({
                 "element_type": "port",

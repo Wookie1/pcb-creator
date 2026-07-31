@@ -84,6 +84,28 @@ class FootprintDef:
     is_through_hole: bool | None = None
 
 
+def footprint_pad_overlaps(fp: "FootprintDef") -> list[tuple[int, int]]:
+    """Pin-number pairs whose pads physically overlap. Empty list = clean.
+
+    Pads are axis-aligned rectangles of the shared pad_size centred on each pin
+    offset — the same model build_pad_map uses (one pad_size, no per-pad
+    rotation). A footprint whose own pads overlap is unroutable: it shorts those
+    pins the moment it is placed (the #18 fine-pitch failure). Checked at
+    rotation 0; a rigid rotation preserves the collision, so that suffices.
+    """
+    pw, ph = fp.pad_size
+    pins = list(fp.pin_offsets.items())
+    eps = 1e-6
+    out: list[tuple[int, int]] = []
+    for i in range(len(pins)):
+        pin_i, (x1, y1) = pins[i]
+        for j in range(i + 1, len(pins)):
+            pin_j, (x2, y2) = pins[j]
+            if abs(x1 - x2) < pw - eps and abs(y1 - y2) < ph - eps:
+                out.append((pin_i, pin_j))
+    return out
+
+
 # ---------------------------------------------------------------------------
 # Footprint definitions — offsets relative to component center at rotation=0
 # ---------------------------------------------------------------------------

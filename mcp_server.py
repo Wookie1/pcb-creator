@@ -1616,9 +1616,10 @@ def import_kicad_netlist(
 
     Converts a KiCad netlist export (.net) or schematic (.kicad_sch) into
     pcb-creator's internal circuit_schema format and saves it as the project
-    netlist.  After this call succeeds the project is ready for placement and
-    routing — call design_pcb with skip_to="routing" or use get_project_status
-    to confirm, then export_kicad / get_board_image when done.
+    netlist.  After this call succeeds the project is ready for placement — run
+    verify_footprints to confirm every package resolves, then optimize_placement
+    (pass board_width_mm/board_height_mm — an imported netlist carries no board
+    size) and route_board, then export_kicad / get_board_image when done.
 
     Accepted file types
     -------------------
@@ -1757,6 +1758,75 @@ def import_kicad_netlist(
         "net_count":             n_net,
         "warnings":              warnings,
         "unresolved_footprints": unresolved,
+    }, step)
+
+
+@mcp.tool()
+def import_kicad_pcb(project_name: str, file_path: str) -> dict:
+    """Re-import a hand-edited .kicad_pcb to continue the pipeline.
+
+    Round-trips the board after manual edits in KiCad: export_kicad → tweak
+    routing/vias/fills in Pcbnew → import_kicad_pcb. The .kicad_pcb's traces,
+    vias, and copper fills REPLACE the project's routing; placements, board
+    outline, and silkscreen are kept from the current board (edit those through
+    the placement tools, not KiCad). The previous routing is snapshotted, so
+    revert_board undoes the import.
+
+    Net names in the .kicad_pcb must match the project's nets (they will if the
+    file came from this project's export_kicad). After it succeeds, run_drc and
+    export_outputs act on the imported routing.
+
+    Args:
+        project_name: Existing project (must already be placed and routed).
+        file_path:    Absolute path to the edited .kicad_pcb file.
+    """
+    routed = _read_project_json(project_name, "_routed.json")
+    if routed is None:
+        return fail(
+            f"No routed board for '{project_name}' to merge the import into. "
+            "Place and route it first, export_kicad, then edit and re-import.",
+            remediation=[option("Route the board", "route_board",
+                                {"project_name": project_name})],
+        )
+    netlist = _read_project_json(project_name, "_netlist.json")
+    if netlist is None:
+        return fail(f"No netlist for '{project_name}'.")
+
+    path = Path(file_path)
+    if not path.exists():
+        return fail(f"KiCad file not found: {file_path}")
+    if path.suffix != ".kicad_pcb":
+        return fail(f"Expected a .kicad_pcb file, got '{path.suffix}'. "
+                    "Import a schematic netlist with import_kicad_netlist.")
+
+    _activate_project_lookup(project_name)
+    from exporters.kicad_importer import import_kicad_pcb as _import_pcb
+    try:
+        imported = _import_pcb(path, routed, netlist)
+    except Exception as exc:
+        return fail(f"Failed to parse '{path.name}': {exc}")
+
+    # Snapshot the pre-import routing so revert_board can undo the merge, then
+    # overwrite _routed.json in place (run_drc / export read it).
+    _snapshot_board(project_name)
+    out_path = _project_dir(project_name) / f"{project_name}_routed.json"
+    out_path.write_text(json.dumps(imported, indent=2), encoding="utf-8")
+
+    stats = routing_stats(imported)
+    unrouted = imported.get("routing", {}).get("unrouted_nets", [])
+    step = next_step(
+        "run_drc", {"project_name": project_name},
+        f"Imported routing: {stats['routed_nets']}/{stats['total_nets']} nets "
+        f"({stats['completion_pct']}%). Run DRC before exporting."
+        + (f" Still unrouted: {', '.join(unrouted)}." if unrouted else ""),
+    )
+    return ok({
+        "project_name":    project_name,
+        "routed_nets":     stats["routed_nets"],
+        "total_nets":      stats["total_nets"],
+        "completion_pct":  stats["completion_pct"],
+        "via_count":       stats["via_count"],
+        "unrouted_nets":   unrouted,
     }, step)
 
 
@@ -2033,7 +2103,12 @@ def add_component(project_name: str, designator: str, component_type: str,
 
     component_type: resistor, capacitor, inductor, led, diode, transistor_npn,
     transistor_pnp, transistor_nmos, transistor_pmos, ic, connector, switch,
-    voltage_regulator, crystal, fuse, relay.
+    voltage_regulator, crystal, fuse, relay, mounting_hole, fiducial.
+
+    mounting_hole and fiducial are mechanical: they have no electrical pins,
+    take no pinout/pin_count, and are never connected. Add them like any other
+    part (e.g. mounting_hole "M3" "MountingHole_3.2mm_M3"); placement positions
+    them and the exporters emit the NPTH drill / fiducial mask opening.
 
     The package is resolved to a real footprint immediately — unknown packages
     fail here (fix with provide_footprint) instead of blocking placement later.
