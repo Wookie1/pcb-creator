@@ -167,6 +167,44 @@ def test_pin1_dot_clear_of_all_pads():
 
 # --- designators avoid neighbouring component bodies ----------------------
 
+def test_designator_takes_diagonal_when_cardinals_blocked():
+    """Regression: four foreign pad 'bars' block all four cardinal label spots
+    at every gap. The old 4-direction search fell back to its default (above)
+    spot — landing on the top bar. The label must instead take an open diagonal
+    and sit clear of every pad."""
+    pl, nl, pm = _scene([
+        ("R1", 30, 30, 0.4, 0.4,
+         [(1, 29.6, 30.0, 0.4, 0.4), (2, 30.4, 30.0, 0.4, 0.4)]),
+        # foreign bars N/S/E/W of R1, long enough to block all gaps; diagonals open
+        ("P_N", 30, 33, 0.4, 0.4, [(1, 30.0, 33.0, 0.6, 6.0)]),
+        ("P_S", 30, 27, 0.4, 0.4, [(1, 30.0, 27.0, 0.6, 6.0)]),
+        ("P_E", 33, 30, 0.4, 0.4, [(1, 33.0, 30.0, 6.0, 0.6)]),
+        ("P_W", 27, 30, 0.4, 0.4, [(1, 27.0, 30.0, 6.0, 0.6)]),
+    ])
+    r1 = [d for d in _designators(_generate_silkscreen(pl, nl, pm))
+          if d["text"] == "R1"][0]
+    assert not any(_boxes_overlap(_bb(r1), p) for p in _pad_boxes(pm)), \
+        "R1 label must not sit on any pad"
+
+
+def test_designator_over_body_beats_over_pad():
+    """When every pad-clear spot also overlaps a neighbouring body, the label
+    accepts the (invisible) body overlap rather than printing on an exposed
+    pad."""
+    big_body = (20.0, 20.0, 40.0, 40.0)  # U9 20x20 body swallowing R1's whole neighbourhood
+    pl, nl, pm = _scene([
+        ("R1", 30, 30, 0.4, 0.4,
+         [(1, 29.6, 30.0, 0.4, 0.4), (2, 30.4, 30.0, 0.4, 0.4)]),
+        ("U9", 30, 30, 20.0, 20.0, [(1, 21.0, 21.0, 0.5, 0.5)]),
+    ])
+    r1 = [d for d in _designators(_generate_silkscreen(pl, nl, pm))
+          if d["text"] == "R1"][0]
+    assert not any(_boxes_overlap(_bb(r1), p) for p in _pad_boxes(pm)), \
+        "never on a pad"
+    assert _boxes_overlap(_bb(r1), big_body), \
+        "expected the label to accept the body overlap (pass 2)"
+
+
 def test_designator_avoids_neighbor_body():
     """R1's default label spot (above) is under U9's housing — the label must
     relocate so it stays visible after assembly."""

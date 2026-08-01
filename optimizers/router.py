@@ -1467,35 +1467,37 @@ def _generate_silkscreen(
                                 pad.pad_height_mm / 2, dx / dist, dy / dist),
                 })
 
-    # Build exclusion zones from component pads, fiducials, and vias
-    # Silkscreen text must not overlap copper features
-    exclusion_zones: list[tuple[float, float, float, float]] = []  # (x_min, y_min, x_max, y_max)
-
-    # Pad exclusion zones (with 0.2mm margin)
+    # Build silk exclusion zones, split by severity:
+    #   pad_zones  — pads + fiducial openings. Silk over an exposed pad is a
+    #                real solder defect (mask sliver / poor wetting): HARD, never.
+    #   body_zones — component housings. Silk here is merely hidden after
+    #                assembly: SOFT, acceptable when a crowded board leaves no
+    #                fully-clear spot (better a hidden label than one on a pad).
     pad_margin = 0.2
+    pad_zones: list[tuple[float, float, float, float]] = []  # (x0,y0,x1,y1) HARD
+    body_zones: list[tuple[float, float, float, float]] = []  # SOFT
+
     for pad in pad_map.values():
         pw, ph = pad.pad_width_mm, pad.pad_height_mm
-        exclusion_zones.append((
+        pad_zones.append((
             pad.x_mm - pw / 2 - pad_margin,
             pad.y_mm - ph / 2 - pad_margin,
             pad.x_mm + pw / 2 + pad_margin,
             pad.y_mm + ph / 2 + pad_margin,
         ))
 
-    # Fiducial exclusion zones (full mask opening = 3mm diameter)
+    # Fiducial openings (full mask opening = 3mm diameter)
     for plc in placement.get("placements", []):
         if plc.get("component_type") == "fiducial":
             r = max(plc.get("footprint_width_mm", 3.0), plc.get("footprint_height_mm", 3.0)) / 2
-            exclusion_zones.append((
+            pad_zones.append((
                 plc["x_mm"] - r - pad_margin,
                 plc["y_mm"] - r - pad_margin,
                 plc["x_mm"] + r + pad_margin,
                 plc["y_mm"] + r + pad_margin,
             ))
 
-    # Component-body exclusion zones: silk under a part's housing is invisible
-    # after assembly (a designator "relocated clear of pads" could still end up
-    # beneath a neighbouring connector or IC body).
+    # Component bodies.
     # ponytail: layer-blind like the pad zones above — a top label also avoids
     # bottom-side bodies; conservative but simple. Split per-layer if two-sided
     # boards get crowded.
@@ -1506,12 +1508,16 @@ def _generate_silkscreen(
         bh = plc.get("footprint_height_mm", 0) or 0
         if plc.get("rotation_deg", 0) in (90, 270):
             bw, bh = bh, bw
-        exclusion_zones.append((
+        body_zones.append((
             plc["x_mm"] - bw / 2 - pad_margin,
             plc["y_mm"] - bh / 2 - pad_margin,
             plc["x_mm"] + bw / 2 + pad_margin,
             plc["y_mm"] + bh / 2 + pad_margin,
         ))
+
+    # Markers slide off any copper/body (they must sit legibly beside their own
+    # pad), so they weigh pads and bodies equally.
+    exclusion_zones = pad_zones + body_zones
 
     # --- Marker cleanup: slide pin-1 dots / anode "A"s off copper -----------
     # A marker is meaningful only next to its pad, so it keeps its direction
@@ -1579,21 +1585,30 @@ def _generate_silkscreen(
     # rather than vanishing.
     out_silk: list[dict] = []
 
-    # Non-designator items: keep, and register each as an obstacle.
+    # Pads (+ fiducials) are HARD obstacles a designator must never overlap;
+    # bodies are SOFT. Pin-1 dots / anode "A"s already placed are HARD too.
+    hard_zones = list(pad_zones)
+    soft_zones = body_zones
+
+    # Non-designator items: keep, and register each as a HARD obstacle.
     for item in silk:
         if item.get("purpose") == "designator":
             continue
         out_silk.append(item)
         if item["type"] == "text":
-            exclusion_zones.append(_silk_text_bbox(
+            hard_zones.append(_silk_text_bbox(
                 item["x_mm"], item["y_mm"], item["text"],
                 item.get("font_height_mm", 1.0), item.get("anchor", "center")))
         else:  # dot
             r = item.get("diameter_mm", 0.5) / 2
-            exclusion_zones.append((item["x_mm"] - r, item["y_mm"] - r,
-                                    item["x_mm"] + r, item["y_mm"] + r))
+            hard_zones.append((item["x_mm"] - r, item["y_mm"] - r,
+                               item["x_mm"] + r, item["y_mm"] + r))
 
-    _GAPS = (0.8, 1.6, 2.4)
+    _GAPS = (0.8, 1.6, 2.4, 3.2, 4.0)
+    # 8 directions (cardinals + diagonals): a dense passive row blocks all four
+    # cardinals, but a diagonal often clears the neighbours' pads.
+    _DIRS = ((0, 1), (0, -1), (1, 0), (-1, 0),
+             (1, 1), (1, -1), (-1, 1), (-1, -1))
     for item in silk:
         if item.get("purpose") != "designator":
             continue
@@ -1602,25 +1617,34 @@ def _generate_silkscreen(
         txt = item["text"]
         hw, hh = cw / 2, ch / 2
         chosen = None
-        for angle in (0, 90):                  # upright everywhere first, then rotate
-            for gap in _GAPS:
-                for tx, ty in ((cx0, cy0 + hh + gap),    # above
-                               (cx0, cy0 - hh - gap),    # below
-                               (cx0 + hw + gap, cy0),    # right
-                               (cx0 - hw - gap, cy0)):   # left
-                    bb = _silk_text_bbox(tx, ty, txt, fh, "center", angle)
-                    if (not any(_boxes_overlap(bb, z) for z in exclusion_zones)
-                            and _silk_on_board(bb, board_w, board_h)):
+        # Pass 1 keeps clear of pads AND bodies; pass 2 (crowded board) keeps
+        # clear of pads/other silk only, accepting an unavoidable body overlap —
+        # a hidden label beats one printed on an exposed pad.
+        for avoid_bodies in (True, False):
+            for angle in (0, 90):              # upright everywhere first, then rotate
+                for gap in _GAPS:
+                    for dx, dy in _DIRS:
+                        tx = cx0 + dx * (hw + gap)
+                        ty = cy0 + dy * (hh + gap)
+                        bb = _silk_text_bbox(tx, ty, txt, fh, "center", angle)
+                        if not _silk_on_board(bb, board_w, board_h):
+                            continue
+                        if any(_boxes_overlap(bb, z) for z in hard_zones):
+                            continue
+                        if avoid_bodies and any(_boxes_overlap(bb, z) for z in soft_zones):
+                            continue
                         chosen = (tx, ty, angle, bb)
+                        break
+                    if chosen:
                         break
                 if chosen:
                     break
             if chosen:
                 break
         if chosen is None:
-            # Nothing clear — fall back to the default spot, but pulled inside
-            # the outline. A designator printed over copper is ugly; one printed
-            # past the board edge does not get printed at all.
+            # No spot clear of pads anywhere near the part — last resort: default
+            # spot pulled inside the outline. (Rare; means every candidate hit a
+            # pad or ran off-board.)
             tx, ty = cx0, cy0 + hh + 0.8
             bb = _silk_text_bbox(tx, ty, txt, fh, "center", 0)
             tx, ty = _clamp_silk(tx, ty, bb, board_w, board_h)
@@ -1630,10 +1654,13 @@ def _generate_silkscreen(
         item["y_mm"] = round(ty, 3)
         if angle:
             item["angle"] = angle
-        exclusion_zones.append(bb)
+        hard_zones.append(bb)
         out_silk.append(item)
 
     silk = out_silk
+    # Board-name/rev placement below must clear pads, markers, and every
+    # relocated designator (all in hard_zones) plus bodies.
+    exclusion_zones = hard_zones + soft_zones
 
     # Board name and revision label
     project_name = placement.get("project_name", "")
