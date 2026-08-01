@@ -1468,8 +1468,9 @@ def _generate_silkscreen(
                     anode_port = p
                     break
             if not anode_port:
-                # Default: pin 1 is anode for LEDs/diodes
-                anode_port = next((p for p in ports if p.get("pin_number") == 1), None)
+                # Default: pin 2 is the anode for LEDs/diodes (pin 1 = cathode,
+                # matching circuit_builder's default pin names).
+                anode_port = next((p for p in ports if p.get("pin_number") == 2), None)
 
             if anode_port and anode_port["port_id"] in pad_map:
                 pad = pad_map[anode_port["port_id"]]

@@ -145,8 +145,8 @@ def test_anode_marker_clear_of_all_pads():
     assert len(a) == 1
     for pad_box in _pad_boxes(pad_map):
         assert not _boxes_overlap(_bb(a[0]), pad_box)
-    # Still meaningful: on the anode side (pin 1 at x=26 -> left of centre)
-    assert a[0]["x_mm"] < 26.0
+    # Still meaningful: on the anode side (diode pin 2 at x=34 -> right of centre)
+    assert a[0]["x_mm"] > 34.0
 
 
 def test_pin1_dot_clear_of_all_pads():

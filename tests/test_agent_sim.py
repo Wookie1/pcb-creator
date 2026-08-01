@@ -400,7 +400,7 @@ def test_builder_flow_envelope_chain(server):
 
     # add_component returns the pin table the agent connects by
     add_d1 = results[2]
-    assert {"pin": 1, "name": "anode"} in add_d1["pins"]
+    assert {"pin": 1, "name": "cathode"} in add_d1["pins"]
 
     # connect_pins infers net classes from names
     assert results[4]["net_class"] == "power"

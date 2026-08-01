@@ -161,8 +161,9 @@ def _diode_vf(comp: dict) -> tuple[float, str]:
 def _anode_first(comp_ports: list[dict]) -> list[dict]:
     """Order a diode's two ports anode-first.
 
-    Falls back to pin-number order, which matches circuit_builder's default
-    naming (pin 1 = anode, pin 2 = cathode).
+    Ports carry anode/cathode names by default (see circuit_builder), so the
+    name checks below decide it; pin-number order is only a last resort for
+    unnamed explicit pinouts.
     """
     for p in comp_ports:
         name = str(p.get("name", "")).strip().lower()

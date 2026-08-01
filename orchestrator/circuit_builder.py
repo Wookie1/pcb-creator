@@ -49,8 +49,10 @@ _DEFAULT_PIN_COUNT = {
 # package); pass an explicit pinout to add_component to override (e.g. for
 # TO-92 parts with different lead order).
 _DEFAULT_PIN_NAMES = {
-    "led": {1: "anode", 2: "cathode"},
-    "diode": {1: "anode", 2: "cathode"},
+    # Pin 1 = cathode: the near-universal 2-terminal-diode convention, and what
+    # the SOD/DO-214/chip-LED footprints place at pad 1 (see optimizers/ipc7351.py).
+    "led": {1: "cathode", 2: "anode"},
+    "diode": {1: "cathode", 2: "anode"},
     "transistor_npn": {1: "base", 2: "emitter", 3: "collector"},
     "transistor_pnp": {1: "base", 2: "emitter", 3: "collector"},
     "transistor_nmos": {1: "gate", 2: "source", 3: "drain"},
