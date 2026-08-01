@@ -801,16 +801,19 @@ def _build_router_kwargs(project_dir: Path, project_name: str, log=None) -> dict
             req_data = _load(req_path)
             copper_oz = req_data.get("board", {}).get("copper_weight_oz", 0.5)
             mfg = req_data.get("manufacturing", {})
-            if mfg:
-                manufacturer = mfg.get("manufacturer", "")
-                if manufacturer:
-                    from validators.engineering_constants import get_dfm_profile
-                    mfg_rules = get_dfm_profile(manufacturer)
-                    _log(f"  DFM profile: {mfg_rules.get('description', manufacturer)}")
-                for key in ("trace_width_min_mm", "clearance_min_mm",
-                            "via_drill_min_mm", "via_diameter_min_mm"):
-                    if key in mfg:
-                        mfg_rules[key] = mfg[key]
+            # Nested manufacturing.manufacturer (LLM reqs) OR top-level
+            # manufacturer (hand-written test reqs) — same lookup drc_report.py
+            # uses, so the router derives rules from the same profile the DRC
+            # will judge the board against.
+            manufacturer = mfg.get("manufacturer", "") or req_data.get("manufacturer", "")
+            if manufacturer:
+                from validators.engineering_constants import get_dfm_profile
+                mfg_rules = get_dfm_profile(manufacturer)
+                _log(f"  DFM profile: {mfg_rules.get('description', manufacturer)}")
+            for key in ("trace_width_min_mm", "clearance_min_mm",
+                        "via_drill_min_mm", "via_diameter_min_mm"):
+                if key in mfg:
+                    mfg_rules[key] = mfg[key]
         except Exception:
             pass
 
@@ -843,13 +846,30 @@ def _build_router_kwargs(project_dir: Path, project_name: str, log=None) -> dict
             kwargs["clearance_mm"] = max(cl_floor, mfg_rules["clearance_min_mm"])
         if "via_drill_min_mm" in mfg_rules:
             kwargs["via_drill_mm"] = max(via_d_floor, mfg_rules["via_drill_min_mm"])
+            # Raw fab floor for the DRC rule (see build_kicad_pro). The board USES
+            # via_drill_mm; the rule must enforce the fab's real minimum so a via
+            # that slips below it is flagged, not silently accommodated.
+            kwargs["via_drill_min_mm"] = mfg_rules["via_drill_min_mm"]
         if "via_diameter_min_mm" in mfg_rules:
             kwargs["via_diameter_mm"] = max(via_dia_floor, mfg_rules["via_diameter_min_mm"])
+            kwargs["via_diameter_min_mm"] = mfg_rules["via_diameter_min_mm"]
+        if "board_edge_clearance_mm" in mfg_rules:
+            # Carry the fab's real copper-to-edge spec so DRC checks against it
+            # rather than KiCad's conservative 0.5mm default (which the .kicad_pro
+            # otherwise falls back to, false-flagging copper the fab accepts).
+            kwargs["board_edge_clearance_mm"] = mfg_rules["board_edge_clearance_mm"]
     elif fine_pitch:
         # No DFM profile but the board is fine-pitch — use a safe fine ruleset
         # (5 mil / 5 mil, common to every modern fab) so escape is feasible.
         kwargs["trace_width_signal_mm"] = 0.127
         kwargs["clearance_mm"] = 0.127
+        # Tighten the via too, to the escape router's default (0.45/0.2). Leaving
+        # it at the coarse 0.6mm default makes the post-route power-plane stitcher
+        # unable to place a via-in-pad on a small power pad near dense routing
+        # (a 0.6mm via needs 0.49mm to an adjacent 0.127mm trace; a 0.45mm one
+        # needs 0.415mm) — and mismatched with the 0.45mm escape vias.
+        kwargs["via_diameter_mm"] = 0.45
+        kwargs["via_drill_mm"] = 0.2
 
     if fine_pitch:
         _log(f"  Fine-pitch board (min pad pitch {min_pitch:.2f}mm): using "
@@ -865,6 +885,27 @@ ROUTING_EFFORT = {
     "normal": {"max_passes": 20, "timeout_s": 300, "retry_on_timeout": False},
     "best":   {"max_passes": 40, "timeout_s": 900, "retry_on_timeout": True},
 }
+
+
+def _premerge_excluded_escapes(routed, escape_wiring, exclude_nets):
+    """Merge the EXCLUDED-net (plane) escape stubs/vias into `routed` before a
+    copper fill/stitch pass. Those nets are absent from the DSN, so Freerouting
+    never echoes their escapes in the SES — and the plane stitcher, not seeing
+    them, re-stitches pads the escape already delivered: a redundant via where
+    there is room, and a false "no clear via site" where the escape via itself
+    blocks the ring (a quad pack's edge-facing power pin). Idempotent: the caller
+    is expected to run a deduping safety-net merge afterwards. Non-excluded
+    escapes (GND, signal) DO come back in the SES, so they are left out here to
+    avoid duplication."""
+    if not (routed and escape_wiring and escape_wiring.get("traces")):
+        return
+    excl = set(exclude_nets)
+    keep = lambda o: o.get("net_name") in excl or o.get("net_id") in excl
+    rt = routed.setdefault("routing", {})
+    rt.setdefault("traces", []).extend(
+        t for t in escape_wiring["traces"] if keep(t))
+    rt.setdefault("vias", []).extend(
+        v for v in escape_wiring.get("vias", []) if keep(v))
 
 
 def _short_cleanup(routed, placement_data, netlist_data, exclude_nets,  # pragma: no cover - drives kicad-cli DRC + Freerouting re-route; called only from the live-route path
@@ -892,12 +933,17 @@ def _short_cleanup(routed, placement_data, netlist_data, exclude_nets,  # pragma
     cl_timeout = min(timeout_s, 600)
 
     def _set_rules(rt):
-        rt.setdefault("routing", {}).setdefault("config", {}).update({
+        cfg = rt.setdefault("routing", {}).setdefault("config", {})
+        cfg.update({
             "trace_clearance_mm": router_kwargs.get("clearance_mm", 0.2),
             "trace_width_signal_mm": router_kwargs.get("trace_width_signal_mm", 0.25),
             "via_diameter_mm": router_kwargs.get("via_diameter_mm", 0.6),
             "via_drill_mm": router_kwargs.get("via_drill_mm", 0.3),
         })
+        for _k in ("board_edge_clearance_mm", "via_diameter_min_mm",
+                   "via_drill_min_mm"):
+            if _k in router_kwargs:
+                cfg[_k] = router_kwargs[_k]
         return rt
 
     def _route_fn(fixed):
@@ -907,6 +953,10 @@ def _short_cleanup(routed, placement_data, netlist_data, exclude_nets,  # pragma
                                        **base_kwargs)
         except Exception:
             return None
+        # Same escape-visibility fix as the fresh route: the plane net is absent
+        # from the DSN, so its escapes must be re-merged before the stitch pass
+        # or the stitcher falsely re-stitches the escaped plane pads.
+        _premerge_excluded_escapes(r, escape_wiring, exclude_nets)
         return _set_rules(apply_copper_fills(r, netlist_data,
                                              RouterConfig(**router_kwargs)))
 
@@ -1007,6 +1057,11 @@ def run_routing(project_dir: Path, project_name: str, config,
             "num_layers": num_layers,
             "plane_layers": plane_layers,
         }
+        if "board_edge_clearance_mm" in router_kwargs:
+            # Inset the routable boundary so Freerouting keeps copper this far
+            # from the board edge (it otherwise only honours trace clearance to
+            # the boundary and routes right up to the rim → copper_to_edge DRC).
+            dsn_config["edge_clearance_mm"] = router_kwargs["board_edge_clearance_mm"]
         if num_layers > 2:
             _log(f"  Layer count: {num_layers}, inner plane layers: {plane_layers} "
                  f"({2 - plane_layers if num_layers >= 4 else 0} inner signal layer(s))")
@@ -1014,6 +1069,7 @@ def run_routing(project_dir: Path, project_name: str, config,
         # The power net is excluded ONLY when In2 is a plane (plane_layers>=2);
         # with an inner signal layer it is routed as traces instead.
         exclude_nets = ["GND"]
+        power_plane_net = ""   # the In2 plane net (GND is In1, delivered by fill)
         if plane_layers >= 2:
             best_pwr: tuple[int, str] = (0, "")
             for elem in netlist_data.get("elements", []):
@@ -1025,6 +1081,7 @@ def run_routing(project_dir: Path, project_name: str, config,
                         best_pwr = (pin_count, elem.get("name", elem.get("net_id", "")))
             if best_pwr[1]:
                 exclude_nets.append(best_pwr[1])
+                power_plane_net = best_pwr[1]
                 _log(f"  Excluding power plane net from routing: {best_pwr[1]} ({best_pwr[0]} pins)")
         # Fine-pitch escape fanout: pre-route dog-bone escapes for single-row
         # fine-pitch parts and hand them to Freerouting as protected wiring,
@@ -1059,10 +1116,39 @@ def run_routing(project_dir: Path, project_name: str, config,
                 if escapes["traces"]:
                     _log(f"  Fine-pitch escape fanout: pre-routed "
                          f"{len(escapes['vias'])} pin escape(s) as protected wiring")
-                    fixed_routing = escapes
                     escape_wiring = escapes
             except Exception as exc:
                 _log(f"  Escape fanout skipped: {exc}")
+
+        # Power-plane via-in-pad reservation: keep Freerouting clear of the spot
+        # the post-route plane stitcher drops a via into on each coarse power pad,
+        # so via-in-pad lands deterministically instead of losing the race to
+        # whatever Freerouting routed there first. In2 POWER pads only — GND (In1)
+        # is delivered by the copper fill's thermal relief, not this stitcher, so
+        # reserving its pads would just over-constrain the router. Fine-pitch
+        # parts are handled by the escape fanout above.
+        if _fresh_route and power_plane_net:
+            try:
+                from optimizers.escape_router import (
+                    generate_plane_stitch_keepouts, EscapeConfig,
+                )
+                kcfg = EscapeConfig(
+                    clearance_mm=router_kwargs.get("clearance_mm", 0.127),
+                    via_diameter_mm=router_kwargs.get("via_diameter_mm", 0.45),
+                )
+                pkos = generate_plane_stitch_keepouts(
+                    placement_data, netlist_data, kcfg,
+                    exclude_nets=(power_plane_net,))["keepouts"]
+                if pkos:
+                    escape_wiring.setdefault("keepouts", []).extend(pkos)
+                    _log(f"  Power-plane stitch: reserved {len(pkos)} "
+                         f"via-in-pad site(s) as keepouts")
+            except Exception as exc:
+                _log(f"  Power-plane stitch reservation skipped: {exc}")
+
+        if _fresh_route and any(escape_wiring.get(k) for k in
+                                ("traces", "vias", "keepouts")):
+            fixed_routing = escape_wiring
         eff = ROUTING_EFFORT.get(effort, ROUTING_EFFORT["normal"])
         timeout_s = max_seconds or eff["timeout_s"] or config.freerouting_timeout_s
         fr_kwargs = dict(
@@ -1093,6 +1179,11 @@ def run_routing(project_dir: Path, project_name: str, config,
             unrouted = routed.get("routing", {}).get("unrouted_nets", [])
             _log(f"  Freerouting incomplete ({completion:.0f}%): {len(unrouted)} nets unrouted")
             _log("  Continuing with partial result (no fallback when Freerouting is the engine)")
+        # Make the excluded-net (plane) escapes visible to the stitch pass — see
+        # _premerge_excluded_escapes. The fixed_routing safety-net merge below
+        # dedupes it to a no-op. Fresh routes only.
+        if _fresh_route:
+            _premerge_excluded_escapes(routed, escape_wiring, exclude_nets)
         from optimizers.router import apply_copper_fills, RouterConfig
         routed = apply_copper_fills(routed, netlist_data, RouterConfig(**router_kwargs))
 
@@ -1250,6 +1341,9 @@ def run_routing(project_dir: Path, project_name: str, config,
         "via_diameter_mm": router_kwargs.get("via_diameter_mm", 0.6),
         "via_drill_mm": router_kwargs.get("via_drill_mm", 0.3),
     })
+    for _k in ("board_edge_clearance_mm", "via_diameter_min_mm", "via_drill_min_mm"):
+        if _k in router_kwargs:
+            routed["routing"]["config"][_k] = router_kwargs[_k]
 
     # FINAL inner-plane re-cut, UNCONDITIONAL, right before persisting. Short
     # cleanup and the protected-wiring union both move/add vias after the planes
@@ -1732,6 +1826,64 @@ def _carry_bom_part_numbers(old_bom: dict, new_bom: dict) -> None:
             it.setdefault(pk, v)
 
 
+def export_blocked(project_dir: Path, project_name: str, routed: dict) -> dict | None:
+    """Why manufacturing files must not be produced, or None if the board is shippable.
+
+    FAIL CLOSED. Gerbers from an uncertified board are worse than no gerbers —
+    they look shippable. Three refusals, mirroring the ones mcp_server's
+    export_outputs raises with richer remediation:
+
+      1. open nets            — the board physically cannot work
+      2. missing or non-authoritative DRC report — we cannot certify it
+      3. DRC found errors     — it is not fabricable
+
+    Case 2 reads the persisted <project>_drc_report.json rather than re-running
+    kicad-cli, so gating costs a file read: every real caller (CLI runner step 5,
+    mcp_server.export_outputs, scripts) runs DRC immediately before exporting.
+    A missing report means DRC never ran, which is exactly when a bad board slips
+    out — so absence blocks rather than passes.
+    """
+    open_nets = list((routed or {}).get("routing", {}).get("unrouted_nets") or [])
+    if open_nets:
+        shown = ", ".join(open_nets[:6]) + ("…" if len(open_nets) > 6 else "")
+        return {"error": f"Refusing to export: {len(open_nets)} net(s) are not "
+                         f"connected ({shown}). A board with missing connections "
+                         "is not manufacturable. Finish routing first.",
+                "gate": "connectivity", "unrouted_nets": open_nets}
+
+    drc_path = _p(project_dir, project_name, "drc_report")
+    if not drc_path.exists():
+        return {"error": "Refusing to export: no DRC report — the board has not "
+                         "been checked. Run DRC before exporting.",
+                "gate": "drc_missing"}
+    try:
+        drc = _load(drc_path)
+    except Exception as exc:
+        return {"error": f"Refusing to export: DRC report unreadable ({exc}).",
+                "gate": "drc_unreadable"}
+
+    if not drc.get("authoritative"):
+        return {"error": "Refusing to export: DRC was not verified "
+                         "authoritatively (kicad-cli unavailable). The internal "
+                         "heuristic check is not a manufacturability guarantee — "
+                         "it misses through-hole shorts, mask bridges and starved "
+                         "thermals. Install/locate kicad-cli (PCB_KICAD_CLI).",
+                "gate": "drc_not_authoritative",
+                "drc_engine": drc.get("drc_engine", "internal")}
+
+    if not drc.get("passed", True):
+        n = drc.get("statistics", {}).get("errors", 0)
+        failing = sorted({c["rule"] for c in drc.get("checks", [])
+                          if not c.get("passed")})
+        return {"error": f"Refusing to export: the board has {n} DRC error(s) "
+                         f"({', '.join(failing)}). Manufacturing files from a "
+                         "board with shorts, disconnected nets or clearance "
+                         "errors are not fabricable — do not ship or commit them.",
+                "gate": "drc_failed", "drc_errors": n, "failing_rules": failing}
+
+    return None
+
+
 def run_export(project_dir: Path, project_name: str, config, log=None) -> dict:
     """Generate manufacturing outputs from the routed board.
 
@@ -1757,6 +1909,17 @@ def run_export(project_dir: Path, project_name: str, config, log=None) -> dict:
         return {"success": False, "error": "No routed board found — run routing first"}
 
     routed = _load(routed_path)
+
+    # Manufacturing gate. This lives here rather than only in
+    # mcp_server.export_outputs because the CLI runner and scripts/ call
+    # run_export directly and bypassed that gate entirely — scripts/
+    # test_stm32_4layer.py shipped a full Gerber set from a board with 140 DRC
+    # errors and 11 unrouted nets. The MCP tool still pre-checks so it can
+    # return richer remediation; this is the backstop no caller can skip.
+    blocked = export_blocked(project_dir, project_name, routed)
+    if blocked:
+        _log(f"  REFUSED: {blocked['error']}")
+        return {"success": False, **blocked}
     netlist_path = _p(project_dir, project_name, "netlist")
     netlist_data = _load(netlist_path) if netlist_path.exists() else {}
     bom_path = _p(project_dir, project_name, "bom")

@@ -190,6 +190,10 @@ def main(path, min_dia=0.6, min_drill=0.3):
                 "x_mm": round(pcbnew.ToMM(ip.x), 3),
                 "y_mm": round(pcbnew.ToMM(ip.y), 3),
                 "diameter_mm": dia, "drill_mm": drl,
+                # Matches the SetLayerPair(F_Cu, B_Cu) above. Consumers treat a
+                # missing pair as None, not as a default, which silently voids
+                # every layer-span test downstream.
+                "from_layer": "top", "to_layer": "bottom",
             })
             # keep the new via out of the obstacle/through sets handled by re-loop
     if added_vias:

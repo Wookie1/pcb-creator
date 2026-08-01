@@ -1555,8 +1555,12 @@ def _placed_project(tmp_path, name="s", w=30, h=20):
     return pdir, name
 
 
-def _routed_on_disk(tmp_path, name="s", open_nets=None):
-    """Placed project + synthesized routed.json (no router needed)."""
+def _routed_on_disk(tmp_path, name="s", open_nets=None, drc_passed=True):
+    """Placed project + synthesized routed.json (no router needed).
+
+    Also writes a passing authoritative DRC report: run_export fails closed
+    without one (stages.export_blocked), the same way the MCP tool does.
+    """
     pdir, name = _placed_project(tmp_path, name)
     placement = json.loads((pdir / f"{name}_placement.json").read_text())
     routed = {
@@ -1571,6 +1575,12 @@ def _routed_on_disk(tmp_path, name="s", open_nets=None):
         },
     }
     (pdir / f"{name}_routed.json").write_text(json.dumps(routed))
+    (pdir / f"{name}_drc_report.json").write_text(json.dumps({
+        "version": "1.0", "project_name": name, "engine": "kicad-cli",
+        "passed": drc_passed, "authoritative": True, "drc_engine": "kicad-cli",
+        "checks": [], "statistics": {"errors": 0 if drc_passed else 3,
+                                     "warnings": 0},
+    }))
     return pdir, name
 
 

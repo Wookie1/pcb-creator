@@ -54,6 +54,12 @@ class RouterConfig:
     via_drill_mm: float = VIA_DRILL_MM
     via_diameter_mm: float = VIA_DIAMETER_MM
     copper_weight_oz: float = COPPER_WEIGHT_DEFAULT_OZ
+    board_edge_clearance_mm: float = 0.3   # copper-to-board-edge keepout
+    # Fab's MINIMUM manufacturable via (None → unknown; DRC then floors the rule
+    # at the smallest via actually on the board). Distinct from via_diameter_mm/
+    # via_drill_mm, which are the sizes this board USES.
+    via_diameter_min_mm: float | None = None
+    via_drill_min_mm: float | None = None
     # Copper fill parameters
     fill_net_name: str = "GND"  # net name to use for fill (resolved at runtime)
     fill_clearance_mm: float = FILL_CLEARANCE_MM
@@ -533,6 +539,24 @@ def _setup_grid(
                     pad.x_mm - eff_pw / 2 - clr, pad.y_mm - eff_ph / 2 - clr,
                     pad.x_mm + eff_pw / 2 + clr, pad.y_mm + eff_ph / 2 + clr,
                     comp_layer, nid,
+                )
+        else:
+            # No net at all — a no-connect pin, mounting pad or unassigned pad.
+            # It is still real copper, and only the via exclusion above knew
+            # that: the net-keyed branch skips it, so the ground pour flowed
+            # straight over an unused pin and kicad-cli reported
+            # "Items shorting two nets (nets  and GND)" against the blank net.
+            # OBSTACLE keeps both the pour and the A* router off it. It belongs
+            # to no net, so nothing may legitimately connect to it.
+            th = pad.layer == "all"
+            blk_layers = ("top", "bottom") if th else (pad.layer,)
+            half_w = (max(pw, ph) if th else pw) / 2
+            half_h = (max(pw, ph) if th else ph) / 2
+            for blk_layer in blk_layers:
+                grid.mark_rect(
+                    pad.x_mm - half_w - clr, pad.y_mm - half_h - clr,
+                    pad.x_mm + half_w + clr, pad.y_mm + half_h + clr,
+                    blk_layer, OBSTACLE,
                 )
 
 
@@ -2086,12 +2110,34 @@ def apply_copper_fills(
         existing_via_positions: set[tuple[float, float]] = {
             (round(v.x_mm, 2), round(v.y_mm, 2)) for v in stitch_vias
         }
+        # Drill hole-to-hole spacing, enforced HERE rather than only in the
+        # post-filter. The obstacle lists below are copper-clearance checks that
+        # skip same-net features, so two same-net stitch vias could land a drill
+        # diameter apart: legal copper, undrillable board. _filter_via_hole_spacing
+        # then deleted one — but its pad's stub trace stayed, leaving that pad
+        # connected to nothing, the plane net reported unrouted, and export
+        # blocked on a board whose plane was actually poured fine. Rejecting the
+        # site here instead lets the candidate ring try the next position.
+        hole_min_center = config.via_drill_mm + HOLE_TO_HOLE_MIN_MM
+        pwr_hole_keepouts = _mounting_hole_keepouts(
+            routed.get("placements", []), config.via_diameter_mm)
+        drilled_pts: list[tuple[float, float]] = [
+            (v.get("x_mm", 0.0), v.get("y_mm", 0.0)) for v in base_vias
+        ]
+
+        def _drillable(vx: float, vy: float) -> bool:
+            m2 = hole_min_center * hole_min_center
+            if any((vx - px) ** 2 + (vy - py) ** 2 < m2 for px, py in drilled_pts):
+                return False
+            return not any((vx - hx) ** 2 + (vy - hy) ** 2 < hd * hd
+                           for hx, hy, hd in pwr_hole_keepouts)
         # Build foreign-obstacle list (non-pwr pads + all routed/stitch vias)
+        # Round obstacles only (vias genuinely are circles). Foreign PADS are
+        # checked as rectangles via pad_rects below: bounding a 0.3x1.475mm LQFP
+        # pad with a max(w,h)/2 = 0.738mm circle overstates its narrow axis
+        # ~5x, which walled off every legal via site around a fine-pitch part
+        # and left its power pads unstitched.
         obstacles: list[tuple[float, float, float]] = []
-        for fref, fpi in pad_map.items():
-            if fpi.net_id == pwr_net_id:
-                continue
-            obstacles.append((fpi.x_mm, fpi.y_mm, max(fpi.pad_width_mm, fpi.pad_height_mm) / 2))
         for ev in base_vias:
             if ev.get("net_id") == pwr_net_id:
                 continue
@@ -2115,9 +2161,100 @@ def apply_copper_fills(
             tt = 0.0 if L2 == 0 else max(0.0, min(1.0, ((px - ax) * dx + (py - ay) * dy) / L2))
             return math.hypot(px - (ax + tt * dx), py - (ay + tt * dy))
 
+        # Foreign pads as RECTANGLES for the stub check below. The circular
+        # `obstacles` list above uses max(w,h)/2, which on a 0.3x1.475mm LQFP pad
+        # is a 0.738mm radius — nearly 5x the pad's narrow axis. That is fine for
+        # siting a via (conservative) but would reject every stub leaving a
+        # fine-pitch pad, since neighbours sit only 0.5mm away.
+        pad_rects: list[tuple[float, float, float, float]] = [
+            (fpi.x_mm, fpi.y_mm, fpi.pad_width_mm / 2, fpi.pad_height_mm / 2)
+            for fpi in pad_map.values() if fpi.net_id != pwr_net_id
+        ]
+
+        def _seg_rect_gap(ax, ay, bx, by, cx, cy, hw, hh) -> float:
+            """Distance from segment to an axis-aligned rect; 0 if it enters.
+
+            Distance to a convex set is convex, so ternary search on t finds the
+            true minimum. Projecting onto the rect CENTRE instead does not: a
+            segment skimming a corner is nearest the rect well away from where it
+            is nearest the centre, and that shortcut silently passed real
+            overlaps.
+            """
+            def _pt_gap(t):
+                px, py = ax + (bx - ax) * t, ay + (by - ay) * t
+                return math.hypot(max(abs(px - cx) - hw, 0.0),
+                                  max(abs(py - cy) - hh, 0.0))
+            lo, hi = 0.0, 1.0
+            for _ in range(60):
+                m1 = lo + (hi - lo) / 3
+                m2 = hi - (hi - lo) / 3
+                if _pt_gap(m1) < _pt_gap(m2):
+                    hi = m2
+                else:
+                    lo = m1
+            return min(_pt_gap(0.0), _pt_gap(1.0), _pt_gap((lo + hi) / 2))
+
+        def _seg_seg_gap(p1x, p1y, p2x, p2y, q1x, q1y, q2x, q2y) -> float:
+            """Distance between two segments; 0 when they intersect.
+
+            The intersection test is not optional here: for two segments meeting
+            in an X, all four endpoint-to-segment distances are non-zero, so the
+            usual min-of-four would report a comfortable gap across a crossing —
+            exactly the case this guards.
+            """
+            d = (p2x - p1x) * (q2y - q1y) - (p2y - p1y) * (q2x - q1x)
+            if abs(d) > 1e-12:
+                t = ((q1x - p1x) * (q2y - q1y) - (q1y - p1y) * (q2x - q1x)) / d
+                u = ((q1x - p1x) * (p2y - p1y) - (q1y - p1y) * (p2x - p1x)) / d
+                if 0.0 <= t <= 1.0 and 0.0 <= u <= 1.0:
+                    return 0.0
+            return min(
+                _pt_seg_dist(p1x, p1y, q1x, q1y, q2x, q2y),
+                _pt_seg_dist(p2x, p2y, q1x, q1y, q2x, q2y),
+                _pt_seg_dist(q1x, q1y, p1x, p1y, p2x, p2y),
+                _pt_seg_dist(q2x, q2y, p1x, p1y, p2x, p2y),
+            )
+
+        def _stub_clear(px, py, vx, vy) -> bool:
+            """The pad->via stub must not run into foreign copper.
+
+            Only the VIA site was ever checked, so the stub that carries the pad
+            to it crossed whatever lay between: the adjacent pin on an LQFP
+            ("Items shorting two nets (nets VCC3V3 and )" once no-connect pads
+            became real copper), and — since trace_obstacles was consulted for
+            the via but not the stub — routed signal traces too, leaving a
+            VCC3V3 stub crossing BOOT0 as the board's last DRC error.
+            """
+            half_w = router_trace_w / 2
+            for cx, cy, hw, hh in pad_rects:
+                if _seg_rect_gap(px, py, vx, vy, cx, cy, hw, hh) < half_w + clearance:
+                    return False
+            for ax, ay, bx, by, th in trace_obstacles:
+                if _seg_seg_gap(px, py, vx, vy, ax, ay, bx, by) < half_w + th + clearance:
+                    return False
+            return True
+
+        # Pads the escape fanout already dropped to the plane. Re-stitching them
+        # is at best a redundant via and at worst a false "no clear via site" —
+        # the escape via itself blocks every ring candidate around a crowded pad
+        # (e.g. a quad pack's edge-facing power pin), so the pad is reported
+        # unrouted though it is in fact connected. The power plane net is
+        # EXCLUDED from Freerouting, so the only traces it can carry are the
+        # protected escape stubs/fanouts — any such trace endpoint on a pad is an
+        # escape delivery. (Can't key off escape_role: the Freerouting SES round-
+        # trip strips it, and it is only re-attached after this stitch pass.)
+        escaped_pad_keys: set[tuple[float, float]] = set()
+        for t in routing.get("traces", []):
+            if t.get("net_id") != pwr_net_id:
+                continue
+            escaped_pad_keys.add((round(t["start_x_mm"], 2), round(t["start_y_mm"], 2)))
+            escaped_pad_keys.add((round(t["end_x_mm"], 2), round(t["end_y_mm"], 2)))
+
         for ref, pi in (pad_map.items() if pl >= 2 else []):
             if pi.net_id != pwr_net_id:
                 continue
+            if (round(pi.x_mm, 2), round(pi.y_mm, 2)) in escaped_pad_keys:
+                continue  # already delivered to the plane by the escape fanout
             if pi.layer == "all":
                 continue  # through-hole: already penetrates inner2
             placed = False
@@ -2146,17 +2283,39 @@ def apply_copper_fills(
                         ok = False
                         break
                 if ok:
+                    for cx, cy, hw, hh in pad_rects:
+                        gap = math.hypot(max(abs(vx - cx) - hw, 0.0),
+                                         max(abs(vy - cy) - hh, 0.0))
+                        if gap < via_r + clearance:
+                            ok = False
+                            break
+                if ok:
                     for ax, ay, bx, by, th in trace_obstacles:
                         if _pt_seg_dist(vx, vy, ax, ay, bx, by) < via_r + th + clearance:
                             ok = False
                             break
+                if ok and not _drillable(vx, vy):
+                    ok = False
+                if ok and (dx, dy) != (0.0, 0.0) and not _stub_clear(
+                        pi.x_mm, pi.y_mm, vx, vy):
+                    ok = False
                 if ok:
                     existing_via_positions.add(pos_key)
+                    drilled_pts.append((vx, vy))
                     pwr_stitch_vias.append({
                         "x_mm": vx,
                         "y_mm": vy,
                         "drill_mm": config.via_drill_mm,
                         "diameter_mm": config.via_diameter_mm,
+                        # Through via: it must cross inner2 to reach the power
+                        # plane, and generate_inner_plane already antipads every
+                        # foreign-net via on the way past inner1. Omitting the
+                        # pair serialised as None, and the connectivity check
+                        # then refused to credit these vias with touching the
+                        # plane — the plane was poured correctly but its net was
+                        # still reported unrouted, blocking export.
+                        "from_layer": "top",
+                        "to_layer": "bottom",
                         "net_id": pwr_net_id,
                         "net_name": pwr_net_name,
                     })

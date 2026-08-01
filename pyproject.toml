@@ -8,6 +8,9 @@ dependencies = [
     "jinja2>=3.1",
     "jsonschema>=4.0",
     "gerber-writer>=0.4",
+    # Nodal solve for the netlist electrical checks (validators/circuit_graph.py).
+    # Already present transitively; declared because it is now load-bearing.
+    "numpy>=1.24",
     "cairosvg>=2.7",
     # 3.x required: tests (and any in-process caller) invoke @mcp.tool()
     # functions directly; 2.x FunctionTool objects are not callable.

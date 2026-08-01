@@ -169,3 +169,85 @@ def test_structural_errors_not_marked_cleanable(tmp_path, monkeypatch):
     assert r["reroute_cleanable"] is False           # annular_ring is structural
     assert "structural" in r["error"].lower()
     assert {v["rule"] for v in r["top_violations"]} == {"annular_ring", "clearance_min"}
+
+
+# --- stage-level gate ------------------------------------------------------
+# The MCP tool is not the only door: orchestrator/runner.py (CLI steps 6) and
+# scripts/ call stages.run_export directly and used to bypass every check above.
+# scripts/test_stm32_4layer.py shipped a full Gerber set from a board with 140
+# DRC errors and 11 unrouted nets. These pin the backstop in stages itself.
+
+def _cfg():
+    from pathlib import Path as _Path
+    from orchestrator.config import OrchestratorConfig
+    return OrchestratorConfig.from_env(
+        base_dir=_Path(__file__).resolve().parent.parent)
+
+
+def _routed(tmp_path, unrouted=(), drc=None):
+    import json
+    pdir = tmp_path / "p"
+    pdir.mkdir(exist_ok=True)
+    (pdir / "p_routed.json").write_text(json.dumps(
+        {"board": {}, "placements": [],
+         "routing": {"unrouted_nets": list(unrouted)}}))
+    if drc is not None:
+        (pdir / "p_drc_report.json").write_text(json.dumps(drc))
+    return pdir
+
+
+_CLEAN_DRC = {"passed": True, "authoritative": True, "checks": [],
+              "statistics": {"errors": 0}}
+
+
+def test_stage_gate_blocks_drc_errors(tmp_path):
+    pdir = _routed(tmp_path, drc={
+        "passed": False, "authoritative": True,
+        "checks": [{"rule": "no_shorts", "passed": False}],
+        "statistics": {"errors": 140}})
+    import json
+    blocked = stages.export_blocked(pdir, "p", json.loads((pdir / "p_routed.json").read_text()))
+    assert blocked and blocked["gate"] == "drc_failed"
+    assert blocked["drc_errors"] == 140
+
+
+def test_stage_gate_blocks_open_nets(tmp_path):
+    import json
+    pdir = _routed(tmp_path, unrouted=["net_a", "net_b"], drc=_CLEAN_DRC)
+    blocked = stages.export_blocked(pdir, "p", json.loads((pdir / "p_routed.json").read_text()))
+    assert blocked and blocked["gate"] == "connectivity"
+
+
+def test_stage_gate_blocks_when_drc_never_ran(tmp_path):
+    """Absence of a report must block, not pass — that is how bad boards ship."""
+    import json
+    pdir = _routed(tmp_path, drc=None)
+    blocked = stages.export_blocked(pdir, "p", json.loads((pdir / "p_routed.json").read_text()))
+    assert blocked and blocked["gate"] == "drc_missing"
+
+
+def test_stage_gate_blocks_non_authoritative_drc(tmp_path):
+    import json
+    pdir = _routed(tmp_path, drc={"passed": True, "authoritative": False,
+                                  "drc_engine": "internal", "checks": [],
+                                  "statistics": {"errors": 0}})
+    blocked = stages.export_blocked(pdir, "p", json.loads((pdir / "p_routed.json").read_text()))
+    assert blocked and blocked["gate"] == "drc_not_authoritative"
+
+
+def test_stage_gate_allows_clean_board(tmp_path):
+    import json
+    pdir = _routed(tmp_path, drc=_CLEAN_DRC)
+    assert stages.export_blocked(pdir, "p", json.loads((pdir / "p_routed.json").read_text())) is None
+
+
+def test_run_export_refuses_and_writes_nothing(tmp_path):
+    """The real entry point, not just the predicate: no output dir on refusal."""
+    pdir = _routed(tmp_path, drc={
+        "passed": False, "authoritative": True,
+        "checks": [{"rule": "no_shorts", "passed": False}],
+        "statistics": {"errors": 7}})
+    r = stages.run_export(pdir, "p", _cfg())
+    assert r["success"] is False
+    assert r["gate"] == "drc_failed"
+    assert not (pdir / "output").exists()

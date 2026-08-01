@@ -12,8 +12,9 @@ whole breakout as *protected wiring* (fed to Freerouting via the existing
 ``fixed_routing`` / ``(type protect)`` path) so the autorouter starts from a
 clean, comfortable-pitch grid clear of the pad field and never has to enter it.
 
-Geometry (single-row / single-column fine-pitch parts — FPC/edge connectors,
-morgan's ``CN1``):
+Geometry (per pad row — a single-row/column part like an FPC or edge connector
+is one row; a quad pack (LQFP/TQFP/QFN) is decomposed into its four sides and
+each is fanned out the same way, outward from the part centre):
 
   pad ──stub──▶ via ──onward──▶ release line
                 (2 staggered via rows so the Ø-via field clears at pad pitch)
@@ -24,7 +25,7 @@ makes the connection).  The near via-row's onward traces thread the gaps
 *between* the far via-row deterministically (≈0.2 mm clearance), which the
 generic autorouter could not reliably do on its own.  Onward traces drop to a
 stackup-aware signal layer (an inner signal layer when one exists, never a
-plane).  Multi-row / quad parts (QFP/QFN) are left to the autorouter.
+plane).
 """
 
 from __future__ import annotations
@@ -52,6 +53,7 @@ _INNER_PLANE_LAYERS = ["inner1", "inner2"]
 class EscapeConfig:
     trace_width_mm: float = 0.127
     clearance_mm: float = 0.127
+    edge_clearance_mm: float = 0.5   # copper-to-board-edge (fab minimum)
     via_diameter_mm: float = 0.45
     via_drill_mm: float = 0.2
     drop_layer: str | None = None   # onward-trace layer; None → stackup-aware auto
@@ -115,6 +117,61 @@ def _min_adjacent_pitch(pads: list[PadInfo]) -> float | None:
     return best
 
 
+_SIDE_EDIR = {"L": (-1.0, 0.0), "R": (1.0, 0.0),
+              "B": (0.0, -1.0), "T": (0.0, 1.0)}
+
+
+def _side_groups(smd: list[PadInfo], pitch: float, bcx: float,
+                 bcy: float) -> list[tuple[list[PadInfo], tuple[float, float]]]:
+    """Split a part's pads into escapable rows: ``[(ordered_pads, edir), ...]``.
+
+    A single row/column yields one group escaping toward the BOARD centre (right
+    for a connector sitting on a board edge).  A quad pack — pads hugging all
+    FOUR edges of their bounding box — yields one group per side, each escaping
+    outward from the PART centre.  Pads near no edge (a centre thermal pad)
+    belong to no side.  Anything else (a dual-row connector, a staggered field)
+    is left to the autorouter, as before.
+    """
+    xs = [p.x_mm for p in smd]
+    ys = [p.y_mm for p in smd]
+    span_x, span_y = max(xs) - min(xs), max(ys) - min(ys)
+    tol = pitch * 0.5
+    if span_y <= tol and span_x > tol:
+        return [(sorted(smd, key=lambda p: p.x_mm),
+                 (0.0, 1.0 if bcy >= sum(ys) / len(ys) else -1.0))]
+    if span_x <= tol and span_y > tol:
+        return [(sorted(smd, key=lambda p: p.y_mm),
+                 (1.0 if bcx >= sum(xs) / len(xs) else -1.0, 0.0))]
+
+    minx, maxx, miny, maxy = min(xs), max(xs), min(ys), max(ys)
+    groups: dict[str, list[PadInfo]] = {"L": [], "R": [], "B": [], "T": []}
+    for p in smd:
+        d = {"L": p.x_mm - minx, "R": maxx - p.x_mm,
+             "B": p.y_mm - miny, "T": maxy - p.y_mm}
+        near = min(d.values())
+        if near > pitch:
+            continue                       # centre / thermal pad — no side
+        cands = [s for s, v in d.items() if v <= near + tol]
+        if len(cands) > 1:
+            # A pad's long axis points outward from its own side, so a corner
+            # pad matching two edges belongs to the one its length agrees with.
+            pref = ("L", "R") if p.pad_width_mm >= p.pad_height_mm else ("B", "T")
+            cands = [s for s in cands if s in pref] or cands
+        groups[min(cands, key=lambda s: d[s])].append(p)
+
+    # A real side is a run of pads, not the two end pads of a dual-row connector
+    # that happen to hug the left/right edge — so require all four to be present
+    # before treating the part as a quad pack at all.
+    sides = {s: g for s, g in groups.items() if len(g) >= 3}
+    if len(sides) < 4:
+        return []
+    out = []
+    for side, g in sides.items():
+        key = (lambda p: p.y_mm) if side in ("L", "R") else (lambda p: p.x_mm)
+        out.append((sorted(g, key=key), _SIDE_EDIR[side]))
+    return out
+
+
 def generate_escape_routing(
     placement: dict,
     netlist: dict,
@@ -152,9 +209,6 @@ def generate_escape_routing(
         return bool(net_id) and (net_id in exclude or
                                  net_names.get(net_id, net_id) in exclude)
 
-    plane_names = _plane_layer_names(cfg.num_layers, cfg.plane_layers)
-    gnd_plane_layer = plane_names[0] if plane_names else "bottom"
-
     # Group pads by part
     by_part: dict[str, list[PadInfo]] = {}
     for pad in pad_map.values():
@@ -186,40 +240,57 @@ def generate_escape_routing(
                 return False
         return True
 
-    for des, pads in by_part.items():
-        if len(pads) < cfg.min_pins:
-            continue
-        # Skip through-hole pads (layer "all") — they don't need an escape.
-        smd = [p for p in pads if p.layer in ("top", "bottom")]
-        if len(smd) < cfg.min_pins:
-            continue
-        pitch = _min_adjacent_pitch(smd)
-        if pitch is None or pitch >= cfg.pitch_threshold_mm:
-            continue
+    def _overshoots(x: float, y: float, edir: tuple[float, float],
+                    half: float) -> bool:
+        """True when an escape's copper would sit within edge clearance of the
+        board edge it heads for (or off the board entirely).  ``half`` is the
+        copper's half-extent (via radius or trace half-width); it must clear the
+        edge by ``edge_clearance_mm``.  Only the escape axis is checked — the
+        pad's own position on the other axis is a given, and clamping it would
+        reject a pad legitimately near a side edge."""
+        margin = half + cfg.edge_clearance_mm
+        if edir[0] > 0:
+            return x > bw - margin
+        if edir[0] < 0:
+            return x < margin
+        if edir[1] > 0:
+            return y > bh - margin
+        return y < margin
 
-        xs = [p.x_mm for p in smd]
-        ys = [p.y_mm for p in smd]
-        span_x, span_y = max(xs) - min(xs), max(ys) - min(ys)
-        tol = pitch * 0.5
-        if span_y <= tol and span_x > tol:
-            row_axis = "x"           # pads vary in x → escape along ±y
-            edir = (0.0, 1.0 if bcy >= sum(ys) / len(ys) else -1.0)
-            order = sorted(smd, key=lambda p: p.x_mm)
-        elif span_x <= tol and span_y > tol:
-            row_axis = "y"           # pads vary in y → escape along ±x
-            edir = (1.0 if bcx >= sum(xs) / len(xs) else -1.0, 0.0)
-            order = sorted(smd, key=lambda p: p.y_mm)
-        else:
-            continue                 # not a single row — leave to the autorouter
+    # Foreign-component pad rects an escape via/stub must clear (not the
+    # escaping part's own pads — those are what it fans out FROM). A dense quad
+    # pack escapes into its neighbours; a lone connector never did, so the
+    # single-row path never needed this.
+    pad_rects: list[tuple[float, float, float, float, str]] = []  # cx,cy,hw,hh,net
+    for p in pad_map.values():
+        if p.layer in ("top", "bottom"):
+            pad_rects.append((p.x_mm, p.y_mm, p.pad_width_mm / 2.0,
+                              p.pad_height_mm / 2.0, p.net_id or ""))
 
-        leaving = _nets_leaving_part(netlist, des)
+    def _pt_rect_gap(px, py, cx, cy, hw, hh):
+        return math.hypot(max(abs(px - cx) - hw, 0.0),
+                          max(abs(py - cy) - hh, 0.0))
 
+    def _clears_foreign_pads(px, py, net_id, des_pads, extra):
+        """`px,py` (a via or a stub point) must clear every pad that is neither
+        the escaping part's own nor on the same net."""
+        for cx, cy, hw, hh, pn in pad_rects:
+            if (cx, cy) in des_pads or pn == net_id:
+                continue
+            if _pt_rect_gap(px, py, cx, cy, hw, hh) < extra + cfg.clearance_mm - 1e-6:
+                return False
+        return True
+
+    def _escape_row(order: list[PadInfo], edir: tuple[float, float],
+                    leaving: set[str], des_pads: set[tuple[float, float]],
+                    part_vias: list[tuple[float, float, str]]) -> None:
+        """Fan one pad row out along `edir`, appending to the enclosing lists."""
         # Escape-axis half-extent of the widest pad (the stub must clear the
         # pad edge + via body + clearance before the via lands).
         if edir[0] != 0.0:
-            half_pad = max(p.pad_width_mm for p in smd) / 2.0
+            half_pad = max(p.pad_width_mm for p in order) / 2.0
         else:
-            half_pad = max(p.pad_height_mm for p in smd) / 2.0
+            half_pad = max(p.pad_height_mm for p in order) / 2.0
         base = half_pad + via_r + cfg.clearance_mm + 0.05
         stagger = via_clear + 0.05         # second via row this much further out
         # Release line: past the far via row + its body + clearance, so onward
@@ -230,7 +301,6 @@ def generate_escape_routing(
         drop_signal = cfg.drop_layer or _auto_drop_layer(
             order[0].layer, cfg.num_layers, cfg.plane_layers)
 
-        part_vias: list[tuple[float, float, str]] = []  # (x, y, net_id)
         for i, pad in enumerate(order):
             net_id = pad.net_id
             if not net_id or net_id not in leaving:
@@ -239,6 +309,20 @@ def generate_escape_routing(
             dist = base + (i % 2) * stagger
             vx = round(pad.x_mm + edir[0] * dist, 3)
             vy = round(pad.y_mm + edir[1] * dist, 3)
+            rx = round(pad.x_mm + edir[0] * release, 3)
+            ry = round(pad.y_mm + edir[1] * release, 3)
+
+            # The escape must land on the board: a part packed into a corner has
+            # no room on its outward sides, and an off-board via is worse than
+            # leaving the pin to the autorouter.
+            # The via COPPER (radius via_r) must clear the board edge by
+            # edge_clearance — _overshoots adds edge_clearance itself, so pass the
+            # bare radius. (Adding trace clearance here too double-counts it: with
+            # a 0.6mm via that spuriously rejected an edge-adjacent plane pin.)
+            if _overshoots(vx, vy, edir, via_r):
+                continue
+            if not is_plane and _overshoots(rx, ry, edir, trace_half):
+                continue
 
             # Collision guard, three checks — skip this pad's escape if any fails
             # (an unescaped pad just falls to the autorouter; a plane-net pad is
@@ -257,7 +341,10 @@ def generate_escape_routing(
                 >= via_r + trace_half + cfg.clearance_mm - 1e-6
                 for ox, oy, on in all_vias)
             if (via_via or not stub_clear
-                    or not _via_clears_foreign_traces(vx, vy, net_id)):
+                    or not _via_clears_foreign_traces(vx, vy, net_id)
+                    or not _clears_foreign_pads(vx, vy, net_id, des_pads, via_r)
+                    or (not is_plane and not _clears_foreign_pads(
+                        rx, ry, net_id, des_pads, trace_half))):
                 continue
 
             nm = net_names.get(net_id, net_id)
@@ -272,7 +359,14 @@ def generate_escape_routing(
             placed_traces.append((stub["start_x_mm"], stub["start_y_mm"],
                                   stub["end_x_mm"], stub["end_y_mm"],
                                   net_id, trace_half))
-            to_layer = gnd_plane_layer if is_plane else drop_signal
+            # A plane-net escape is a full through-via: it passes every inner
+            # plane and connects to whichever one carries its net (In1=GND,
+            # In2=power — router.py:2046), antipad-cleared on the others. Dropping
+            # to a single named plane layer instead only reaches In1, so a power
+            # pin on the In2 plane would be left unconnected. Matches the power
+            # stitch vias, which are likewise top→bottom.
+            to_layer = ("bottom" if pad.layer == "top" else "top") \
+                if is_plane else drop_signal
             vias.append({
                 "x_mm": vx, "y_mm": vy,
                 "drill_mm": cfg.via_drill_mm, "diameter_mm": cfg.via_diameter_mm,
@@ -282,8 +376,6 @@ def generate_escape_routing(
             # Signal nets: deterministic onward fanout to the release line on a
             # signal layer (plane nets are connected by the plane — no onward).
             if not is_plane:
-                rx = round(pad.x_mm + edir[0] * release, 3)
-                ry = round(pad.y_mm + edir[1] * release, 3)
                 traces.append({
                     "start_x_mm": vx, "start_y_mm": vy,
                     "end_x_mm": rx, "end_y_mm": ry,
@@ -305,6 +397,96 @@ def generate_escape_routing(
                         "diameter_mm": round(ko_d, 3),
                     })
             part_vias.append((vx, vy, net_id))
+
+    for des, pads in by_part.items():
+        if len(pads) < cfg.min_pins:
+            continue
+        # Skip through-hole pads (layer "all") — they don't need an escape.
+        smd = [p for p in pads if p.layer in ("top", "bottom")]
+        if len(smd) < cfg.min_pins:
+            continue
+        pitch = _min_adjacent_pitch(smd)
+        if pitch is None or pitch >= cfg.pitch_threshold_mm:
+            continue
+
+        leaving = _nets_leaving_part(netlist, des)
+        des_pads = {(p.x_mm, p.y_mm) for p in pads}
+        # Sides share one via list so opposite sides keep clearing each other.
+        part_vias: list[tuple[float, float, str]] = []   # (x, y, net_id)
+        for side_pads, edir in _side_groups(smd, pitch, bcx, bcy):
+            # Per-side pitch: across a quad pack the global minimum can fall
+            # between two pads on DIFFERENT sides, which is not a pitch.
+            side_pitch = _min_adjacent_pitch(side_pads)
+            if side_pitch is None or side_pitch >= cfg.pitch_threshold_mm:
+                continue
+            _escape_row(side_pads, edir, leaving, des_pads, part_vias)
         placed_via_centers.extend(part_vias)
 
     return {"traces": traces, "vias": vias, "keepouts": keepouts}
+
+
+def _is_escape_candidate(smd: list[PadInfo], cfg: EscapeConfig) -> bool:
+    """A part the fanout router already breaks out (fine pitch + enough pins).
+    Its plane pads are handled there and must NOT be reserved again here."""
+    if len(smd) < cfg.min_pins:
+        return False
+    pitch = _min_adjacent_pitch(smd)
+    return pitch is not None and pitch < cfg.pitch_threshold_mm
+
+
+def generate_plane_stitch_keepouts(
+    placement: dict,
+    netlist: dict,
+    config: EscapeConfig | None = None,
+    exclude_nets: tuple[str, ...] = (),
+    pad_map: dict | None = None,
+) -> dict:
+    """Reserve the via-in-pad spot on every COARSE plane pad, pre-route.
+
+    The post-route power-plane stitcher (``router.py``) drops a via into each
+    power-plane SMD pad to reach the inner plane, trying the pad centre first.
+    But it runs AFTER Freerouting, which by then has filled the space around the
+    pad — so on a congested board the centre (and the whole ring) is blocked and
+    the pad is left unconnected, nondeterministically. Freerouting cannot see the
+    excluded plane net to leave room on its own.
+
+    The fix is to hand Freerouting a small keepout at each such pad centre as
+    protected wiring, so it routes its traces AND vias clear of the spot the
+    stitcher will use. The centre is then deterministically free and via-in-pad
+    always lands. Fine-pitch parts are skipped — the escape fanout already breaks
+    their plane pins out (with an offset via, not via-in-pad). Returns
+    ``{"keepouts": [...]}`` to union into the escape wiring.
+    """
+    cfg = config or EscapeConfig()
+    if pad_map is None:
+        pad_map = build_pad_map(placement, netlist)
+
+    net_names: dict[str, str] = {}
+    for e in netlist.get("elements", []):
+        if e.get("element_type") == "net":
+            net_names[e["net_id"]] = e.get("name", e["net_id"])
+    exclude = set(exclude_nets)
+
+    def _is_plane_net(net_id: str | None) -> bool:
+        return bool(net_id) and (net_id in exclude or
+                                 net_names.get(net_id, net_id) in exclude)
+
+    by_part: dict[str, list[PadInfo]] = {}
+    for pad in pad_map.values():
+        by_part.setdefault(pad.designator, []).append(pad)
+
+    # Reserve a circle big enough that a via (radius via_r) landing at the pad
+    # centre still clears any trace Freerouting keeps outside it: keepout radius
+    # >= via_r + clearance.
+    ko_d = round(cfg.via_diameter_mm + 2 * cfg.clearance_mm, 3)
+    keepouts: list[dict] = []
+    for des, pads in by_part.items():
+        smd = [p for p in pads if p.layer in ("top", "bottom")]
+        if _is_escape_candidate(smd, cfg):
+            continue                 # fanout router already broke this part out
+        for pad in smd:
+            if _is_plane_net(pad.net_id):
+                keepouts.append({"x_mm": round(pad.x_mm, 3),
+                                 "y_mm": round(pad.y_mm, 3),
+                                 "diameter_mm": ko_d})
+    return {"keepouts": keepouts}

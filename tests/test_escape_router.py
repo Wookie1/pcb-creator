@@ -194,9 +194,11 @@ class TestPlaneNets:
         # sig_1 still gets a via + stub...
         assert any(v["net_id"] == "sig_1" for v in out["vias"])
         assert any(s["net_id"] == "sig_1" for s in _stubs(out))
-        # ...dropped to the GND plane (In1)...
+        # ...as a full through-via (top→bottom) that passes In1 and connects to
+        # whichever inner plane carries the net — a single-layer drop to In1
+        # would miss a power net living on the In2 plane...
         v1 = next(v for v in out["vias"] if v["net_id"] == "sig_1")
-        assert v1["to_layer"] == "inner1"
+        assert (v1["from_layer"], v1["to_layer"]) == ("top", "bottom")
         # ...and NO fanout trace.
         assert not any(f["net_id"] == "sig_1" for f in _fanouts(out))
 
@@ -226,3 +228,158 @@ class TestGuards:
             pm[k + "b"] = v
         out = generate_escape_routing(_placement(), _netlist_for(pm), pad_map=pm)
         assert out["vias"] == []
+
+
+# --- quad packs (LQFP/TQFP/QFN) --------------------------------------------
+# v1 classified a part as a single row or column and skipped anything else, so
+# an LQFP-48 — pads on four sides, both spans large — was never fanned out at
+# all. Its power pins then had no route to the inner plane: post-route stitching
+# runs after Freerouting, by which time the escape channels are taken, and a
+# 0.6mm via does not fit a 0.3mm pad. Sides are now decomposed and fanned out
+# individually, outward from the PART centre (not the board centre — that rule
+# is right for a connector on a board edge, wrong for one side of a quad pack).
+
+def _quad_padmap(per_side=12, pitch=0.5, cx=20.0, cy=15.0, half=3.5,
+                 plane_net=None):
+    """An LQFP-48-alike: `per_side` pads on each of four edges, each pad long
+    on the axis pointing out of its own side."""
+    pads, n = {}, 0
+    span = (per_side - 1) * pitch / 2.0
+    for side in ("L", "B", "R", "T"):
+        for i in range(per_side):
+            off = i * pitch - span
+            x, y = ((cx - half, cy + off) if side == "L" else
+                    (cx + half, cy + off) if side == "R" else
+                    (cx + off, cy - half) if side == "B" else
+                    (cx + off, cy + half))
+            vertical_side = side in ("L", "R")
+            n += 1
+            pid = f"cn1_{n}"
+            pads[pid] = PadInfo(
+                port_id=pid, designator="CN1", pin_number=n,
+                net_id=plane_net if (plane_net and n % 6 == 0) else f"sig_{n}",
+                x_mm=x, y_mm=y,
+                pad_width_mm=1.475 if vertical_side else 0.3,
+                pad_height_mm=0.3 if vertical_side else 1.475,
+                layer="top")
+    return pads
+
+
+class TestQuadPack:
+    def test_all_four_sides_escape(self):
+        pm = _quad_padmap()
+        out = generate_escape_routing(_placement(), _netlist_for(pm), pad_map=pm)
+        xs = [p.x_mm for p in pm.values()]
+        ys = [p.y_mm for p in pm.values()]
+        minx, maxx, miny, maxy = min(xs), max(xs), min(ys), max(ys)
+        left = [v for v in out["vias"] if v["x_mm"] < minx - 1e-6]
+        right = [v for v in out["vias"] if v["x_mm"] > maxx + 1e-6]
+        below = [v for v in out["vias"] if v["y_mm"] < miny - 1e-6]
+        above = [v for v in out["vias"] if v["y_mm"] > maxy + 1e-6]
+        for name, side in (("left", left), ("right", right),
+                           ("below", below), ("above", above)):
+            assert len(side) >= 10, f"{name} side barely escaped: {len(side)}"
+        # Every pad escapes, and outward — nothing fans into the pad field.
+        assert len(out["vias"]) == 48
+        assert len(left) + len(right) + len(below) + len(above) == 48
+
+    def test_quad_vias_are_collision_free(self):
+        """Opposite sides must clear each other's vias — they share one list."""
+        cfg = EscapeConfig()
+        pm = _quad_padmap()
+        out = generate_escape_routing(_placement(), _netlist_for(pm),
+                                      config=cfg, pad_map=pm)
+        centers = [(v["x_mm"], v["y_mm"]) for v in out["vias"]]
+        min_sep = cfg.via_diameter_mm + cfg.clearance_mm
+        for i in range(len(centers)):
+            for j in range(i + 1, len(centers)):
+                d = math.hypot(centers[i][0] - centers[j][0],
+                               centers[i][1] - centers[j][1])
+                assert d >= min_sep - 1e-6, f"vias {i},{j} too close: {d:.3f}"
+
+    def test_plane_pins_drop_to_the_plane(self):
+        """The reason for this work: a quad pack's power pins reach the plane."""
+        pm = _quad_padmap(plane_net="VCC3V3")
+        out = generate_escape_routing(
+            _placement(), _netlist_for(pm), pad_map=pm,
+            exclude_nets=("VCC3V3",),
+            config=EscapeConfig(num_layers=4, plane_layers=2))
+        plane_vias = [v for v in out["vias"] if v["net_id"] == "VCC3V3"]
+        assert len(plane_vias) == 8, "every VCC3V3 pin needs its own plane via"
+        # Through-via: passes both inner planes, connects to the one on its net
+        # (In2=power here — a drop to In1 alone would leave the pin unrouted).
+        assert all((v["from_layer"], v["to_layer"]) == ("top", "bottom")
+                   for v in plane_vias)
+        # Plane pins get no fanout (the plane makes the connection) but do get
+        # keepouts, since the autorouter never sees this excluded net.
+        assert not [t for t in _fanouts(out) if t["net_id"] == "VCC3V3"]
+        assert out["keepouts"]
+
+    def test_part_in_a_corner_skips_the_offboard_side(self):
+        """No room outward → leave those pins to the autorouter, don't route
+        off the board."""
+        pm = _quad_padmap(cx=4.0, cy=15.0)
+        out = generate_escape_routing(_placement(), _netlist_for(pm), pad_map=pm)
+        assert all(v["x_mm"] > 0 for v in out["vias"])
+        assert out["vias"], "the other three sides still escape"
+
+
+# --- coarse power-pad via-in-pad reservation --------------------------------
+# The post-route plane stitcher drops a via into each power-plane SMD pad, trying
+# the pad centre first. It runs AFTER Freerouting, which by then has filled the
+# space, so on a congested board the centre is blocked and the pad is left
+# unrouted — nondeterministically. Reserving each pad centre with a keepout
+# pre-route makes Freerouting route around it, so via-in-pad always lands.
+
+from optimizers.escape_router import generate_plane_stitch_keepouts
+
+
+def _mixed_padmap():
+    """One fine-pitch quad pack (escaped) + coarse power pads (reserved)."""
+    pads = _quad_padmap(plane_net="VCC")            # 8 of its pads on VCC
+    for i, (x, y) in enumerate([(30, 5), (32, 5), (30, 20)], start=1):
+        pid = f"c{i}_1"
+        pads[pid] = PadInfo(port_id=pid, designator=f"C{i}", pin_number=1,
+                            net_id="VCC", x_mm=x, y_mm=y,
+                            pad_width_mm=0.5, pad_height_mm=0.5, layer="top")
+    # a GND coarse pad — must NOT be reserved (GND is delivered by the fill)
+    pads["c9_2"] = PadInfo(port_id="c9_2", designator="C1", pin_number=2,
+                           net_id="GND", x_mm=30, y_mm=6,
+                           pad_width_mm=0.5, pad_height_mm=0.5, layer="top")
+    return pads
+
+
+class TestPlaneStitchKeepouts:
+    def test_reserves_coarse_power_pads_only(self):
+        pm = _mixed_padmap()
+        out = generate_plane_stitch_keepouts(
+            _placement(), _netlist_for(pm), exclude_nets=("VCC",), pad_map=pm)
+        # The three coarse caps are reserved; the escaped quad pack is not (the
+        # fanout breaks its plane pins out with an offset via, not via-in-pad).
+        kos = out["keepouts"]
+        assert len(kos) == 3, f"expected 3 coarse-pad reservations, got {len(kos)}"
+        centres = {(round(k["x_mm"]), round(k["y_mm"])) for k in kos}
+        assert centres == {(30, 5), (32, 5), (30, 20)}
+
+    def test_excludes_gnd_and_through_hole(self):
+        """GND connects via the fill; through-hole pads already cross the plane."""
+        pm = _mixed_padmap()
+        pm["j_th"] = PadInfo(port_id="j_th", designator="J9", pin_number=1,
+                             net_id="VCC", x_mm=5, y_mm=5,
+                             pad_width_mm=1.5, pad_height_mm=1.5, layer="all")
+        out = generate_plane_stitch_keepouts(
+            _placement(), _netlist_for(pm), exclude_nets=("VCC",), pad_map=pm)
+        centres = {(round(k["x_mm"]), round(k["y_mm"])) for k in out["keepouts"]}
+        assert (5, 5) not in centres, "through-hole VCC pad must not be reserved"
+        assert (30, 6) not in centres, "GND pad must not be reserved"
+
+    def test_keepout_big_enough_for_via_clearance(self):
+        """Radius must be >= via_r + clearance so a centred via clears any trace
+        Freerouting keeps outside the reserved circle."""
+        pm = _mixed_padmap()
+        cfg = EscapeConfig(via_diameter_mm=0.45, clearance_mm=0.127)
+        out = generate_plane_stitch_keepouts(
+            _placement(), _netlist_for(pm), config=cfg,
+            exclude_nets=("VCC",), pad_map=pm)
+        for k in out["keepouts"]:
+            assert k["diameter_mm"] / 2 >= cfg.via_diameter_mm / 2 + cfg.clearance_mm - 1e-9

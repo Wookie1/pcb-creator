@@ -76,6 +76,26 @@ def parse_voltage(s: str) -> float:
     return float(m.group(1))
 
 
+def parse_supply_voltage(s: str) -> float | None:
+    """Parse a requirements `power.voltage` string, or None if it is ambiguous.
+
+    parse_voltage() returns the *first* number it sees, so
+    "adjustable (1.23V-37V output)" silently becomes 1.23 and
+    "5V logic / 7-35V motor" silently becomes 5. Either would seed the DC solve
+    with a wrong rail and produce confidently wrong currents, so anything
+    naming more than one voltage is rejected instead of guessed.
+    """
+    if not s:
+        return None
+    matches = _VOLTAGE_RE.findall(s)
+    if len(matches) != 1:
+        return None
+    try:
+        return float(matches[0])
+    except ValueError:
+        return None
+
+
 def parse_current(s: str) -> float:
     """Parse a current string like '20mA' or '1A' into float amps."""
     m = _CURRENT_RE.search(s)

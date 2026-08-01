@@ -56,6 +56,21 @@ def _copper_stack(num_layers: int) -> list[str]:
     return ["top"] + [f"inner{i}" for i in range(1, num_layers - 1)] + ["bottom"]
 
 
+def _via_layers(via: dict) -> tuple[str, str]:
+    """A via's (from_layer, to_layer), defaulting a MISSING or None field.
+
+    dict.get(key, default) only substitutes the default when the key is absent —
+    a key present with a None value returns None. Via producers that omitted the
+    layer pair (the power-plane stitcher) ended up serialised as
+    "from_layer": None, so every layer test here silently failed: _reaches_plane
+    saw {None, None}, refused to credit the via with touching the plane, and the
+    net's pads were reported as disconnected groups even though a solid inner
+    plane joined them. Stitching vias are through vias, so top/bottom are the
+    right fallbacks.
+    """
+    return (via.get("from_layer") or "top", via.get("to_layer") or "bottom")
+
+
 def _via_spanned_layers(from_layer: str, to_layer: str,
                         stack: list[str]) -> list[str]:
     """Every copper layer a via crosses, inclusive. A through-via (top↔bottom)
@@ -183,7 +198,7 @@ def _check_via_clearance(routed: dict) -> tuple[list[str], list[str]]:
                 continue
 
             # Via affects both layers it connects
-            via_layers = {via.get("from_layer", "top"), via.get("to_layer", "bottom")}
+            via_layers = set(_via_layers(via))
             if trace.get("layer") not in via_layers:
                 continue
 
@@ -252,8 +267,8 @@ def _check_connectivity(routed: dict, netlist: dict | None) -> tuple[list[str], 
     num_layers = routed.get("board", {}).get("layers")
     if not num_layers:
         seen = ({t.get("layer") for t in traces}
-                | {v.get("from_layer") for v in vias}
-                | {v.get("to_layer") for v in vias})
+                | {_via_layers(v)[0] for v in vias}
+                | {_via_layers(v)[1] for v in vias})
         inner_idx = [int(s[5:]) for s in seen
                      if isinstance(s, str) and s.startswith("inner") and s[5:].isdigit()]
         num_layers = (max(inner_idx) + 2) if inner_idx else 2
@@ -366,7 +381,7 @@ def _check_connectivity(routed: dict, netlist: dict | None) -> tuple[list[str], 
         for v in net_vias:
             vx, vy = v["x_mm"], v["y_mm"]
             spanned = _via_spanned_layers(
-                v.get("from_layer", "top"), v.get("to_layer", "bottom"), stack)
+                *_via_layers(v), stack)
             hub = None
             for L in spanned:
                 p = (round(vx, 2), round(vy, 2), L)
@@ -409,7 +424,7 @@ def _check_connectivity(routed: dict, netlist: dict | None) -> tuple[list[str], 
             outer = {"top", "bottom"}
 
             def _reaches_plane(v: dict) -> bool:
-                fl, tl = v.get("from_layer", "top"), v.get("to_layer", "bottom")
+                fl, tl = _via_layers(v)
                 # A through via (top↔bottom) crosses every inner layer.
                 if {fl, tl} == outer:
                     return True
@@ -434,7 +449,7 @@ def _check_connectivity(routed: dict, netlist: dict | None) -> tuple[list[str], 
                 if not _reaches_plane(v):
                     continue
                 vp = (round(v["x_mm"], 2), round(v["y_mm"], 2),
-                      v.get("from_layer", "top"))
+                      _via_layers(v)[0])
                 _join(vp)
                 for pad_pos in pads:
                     if math.hypot(vp[0] - pad_pos[0], vp[1] - pad_pos[1]) < snap:
@@ -648,7 +663,7 @@ def _check_pad_clearance(routed: dict, netlist: dict | None) -> tuple[list[str],
         vx, vy = via["x_mm"], via["y_mm"]
         v_radius = via.get("diameter_mm", 0.6) / 2
         v_net = via.get("net_id")
-        via_layers = {via.get("from_layer", "top"), via.get("to_layer", "bottom")}
+        via_layers = set(_via_layers(via))
 
         for layer in via_layers:
             for pad, pad_hw, pad_hh, is_circle in pads_by_layer.get(layer, []):

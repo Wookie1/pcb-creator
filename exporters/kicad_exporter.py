@@ -368,18 +368,25 @@ def _footprint(
     for port in ports:
         pin_port_map[port.get("pin_number", 0)] = port.get("port_id", "")
 
-    pad_w, pad_h = fp_def.pad_size
-    # KiCad does NOT rotate an SMD pad's rectangle with the footprint angle on
-    # load — only the pad POSITION rotates (verified via pcbnew: a -90° part's
-    # pads keep orient 0 / their authored w×h in board frame). So a 90°/270°
-    # rotated fine-pitch part would have its long pads overlap their neighbours
-    # (morgan CN1: 1.3mm pads at 0.5mm pitch → 45 pad-pad shorts). Pre-swap the
-    # pad dimensions into the board frame, mirroring build_pad_map's own swap,
-    # so the exported pad extents match the router/DRC pad model pad-for-pad.
-    if rot % 180 == 90:
-        pad_w, pad_h = pad_h, pad_w
-
     for pin_num, (dx, dy) in sorted(fp_def.pin_offsets.items()):
+        # Per-pin size. A quad pack rotates its pads 90° between sides, so one
+        # size for the whole footprint wrote half of an LQFP-48's pads at the
+        # long axis on BOTH axes — 1.475mm of copper on a 0.5mm pitch. Those
+        # pads then overlapped their neighbours in the exported board only,
+        # which is why kicad-cli reported clearance 0.0000mm and tracks shorting
+        # to <no net> pads while the routed geometry (which had already been
+        # fixed to use per-pin sizes) measured clean.
+        pad_w, pad_h = fp_def.pad_size_for(pin_num)
+        # KiCad does NOT rotate an SMD pad's rectangle with the footprint angle
+        # on load — only the pad POSITION rotates (verified via pcbnew: a -90°
+        # part's pads keep orient 0 / their authored w×h in board frame). So a
+        # 90°/270° rotated fine-pitch part would have its long pads overlap
+        # their neighbours (morgan CN1: 1.3mm pads at 0.5mm pitch → 45 pad-pad
+        # shorts). Pre-swap the pad dimensions into the board frame, mirroring
+        # build_pad_map's own swap, so the exported pad extents match the
+        # router/DRC pad model pad-for-pad.
+        if rot % 180 == 90:
+            pad_w, pad_h = pad_h, pad_w
         # Round offsets to avoid floating point noise (e.g., 3.8099999999999987)
         # which causes KiCad to compute pad positions that don't match trace endpoints
         # Back-side footprints store X-mirrored local offsets (KiCad bakes the
@@ -401,6 +408,8 @@ def _footprint(
             pad_dia = max(pad_w, pad_h)
             drill = _th_drill_mm(pad_w, pad_h)
             shape = "circle" if pin_num > 1 else "rect"  # pin 1 = square for identification
+            # Thermal relief (1) only for a pad that HAS a net; netless copper
+            # gets 0 so no zone bonds to it. Same rule as the SMD branch below.
             lines.append(
                 f'    (pad "{pin_num}" thru_hole {shape}'
                 f' (at {dx} {dy})'
@@ -408,7 +417,7 @@ def _footprint(
                 f' (drill {drill})'
                 f' (layers "*.Cu" "*.Mask")'
                 f' (net {net_num} "{net_name}")'
-                f' (zone_connect 1)'
+                f' (zone_connect {1 if net_num else 0})'
                 f' (tstamp {_uid()}))'
             )
         else:
@@ -435,13 +444,21 @@ def _footprint(
                 # "starved thermal" DRC. SMD pads have little thermal mass, so a
                 # solid connection is the right call (TH pads keep thermal relief
                 # above — they are large enough and benefit from it for rework).
+                # zone_connect 2 (solid) applies only to a pad that HAS a net.
+                # Emitting it unconditionally told KiCad to bond every netless
+                # pad — a no-connect pin, a mounting pad — solidly into whatever
+                # zone covered it, which is how a ground pour ended up welded to
+                # unused LQFP pins: "Items shorting two nets (nets GND and )".
+                # 0 = no zone connection, the right answer for copper that
+                # belongs to no net.
+                zone_connect = 2 if net_num else 0
                 lines.append(
                     f'    (pad "{pin_num}" smd rect'
                     f' (at {dx} {dy})'
                     f' (size {pad_w} {pad_h})'
                     f' (layers "{layer}" "{mask_layer}.Paste" "{mask_layer}.Mask")'
                     f' (net {net_num} "{net_name}")'
-                    f' (zone_connect 2)'
+                    f' (zone_connect {zone_connect})'
                     f' (tstamp {_uid()}))'
                 )
 
@@ -684,7 +701,31 @@ def build_kicad_pro(routed: dict, project_name: str) -> dict:
     cfg = routed.get("routing", {}).get("config", {})
     clearance = float(cfg.get("trace_clearance_mm", 0.2))
     track_w = float(cfg.get("trace_width_signal_mm", 0.2))
-    via_dia, via_drill = board_via_minima(routed)
+    # min_via_diameter / min_through_hole_diameter must enforce the FAB's floor,
+    # not the board's own smallest via — deriving the rule from the vias present
+    # is circular (a stray under-size via just lowers the rule to fit itself, so
+    # DRC never flags it). Use the profile's minimum when known; otherwise fall
+    # back to the smallest via on the board (no false positives when the fab is
+    # unknown).
+    board_via_dia, board_via_drill = board_via_minima(routed)
+    via_dia = float(cfg.get("via_diameter_min_mm") or board_via_dia)
+    via_drill = float(cfg.get("via_drill_min_mm") or board_via_drill)
+
+    rules = {
+        "min_clearance": round(clearance, 4),
+        "min_track_width": round(track_w, 4),
+        "min_via_diameter": round(via_dia, 4),
+        "min_through_hole_diameter": round(via_drill, 4),
+        "min_hole_clearance": 0.2,
+        "min_hole_to_hole": 0.25,
+    }
+    # Copper-to-edge: same reason as the rules above. Without this KiCad's DRC
+    # uses its conservative 0.5mm default, false-flagging traces the routed
+    # board's fab (JLCPCB 4-layer: 0.3mm) actually accepts. Emit the real spec
+    # from the routing config when known; else leave KiCad's stricter default.
+    edge_clr = cfg.get("board_edge_clearance_mm")
+    if edge_clr is not None:
+        rules["min_copper_edge_clearance"] = round(float(edge_clr), 4)
 
     return {
         "meta": {"filename": f"{project_name}.kicad_pro", "version": 3},
@@ -697,14 +738,7 @@ def build_kicad_pro(routed: dict, project_name: str) -> dict:
                 # "footprint library 'pcb-creator' not configured" check is a
                 # false positive here. Silence it so DRC reflects real issues.
                 "rule_severities": {"lib_footprint_issues": "ignore"},
-                "rules": {
-                    "min_clearance": round(clearance, 4),
-                    "min_track_width": round(track_w, 4),
-                    "min_via_diameter": round(via_dia, 4),
-                    "min_through_hole_diameter": round(via_drill, 4),
-                    "min_hole_clearance": 0.2,
-                    "min_hole_to_hole": 0.25,
-                },
+                "rules": rules,
                 "meta": {"version": 2},
             }
         },

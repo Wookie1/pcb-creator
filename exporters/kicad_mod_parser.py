@@ -8,6 +8,7 @@ normalised package names to file paths for fast lookup.
 from __future__ import annotations
 
 import re
+from collections import Counter
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -54,6 +55,7 @@ def parse_kicad_mod(path: str | Path) -> "FootprintDef | None":
     pin_offsets: dict[int, tuple[float, float]] = {}
     pad_widths: list[float] = []
     pad_heights: list[float] = []
+    pin_pad_sizes: dict[int, tuple[float, float]] = {}
 
     for pad in pads:
         # (pad <number> <type> <shape> (at x y [rot]) (size w h) ...)
@@ -86,8 +88,11 @@ def parse_kicad_mod(path: str | Path) -> "FootprintDef | None":
         pin_offsets[pad_num] = (round(x, 4), round(-y, 4))
 
         if size_field and len(size_field) >= 3:
-            pad_widths.append(_to_float(size_field[1]))
-            pad_heights.append(_to_float(size_field[2]))
+            w = _to_float(size_field[1])
+            h = _to_float(size_field[2])
+            pad_widths.append(w)
+            pad_heights.append(h)
+            pin_pad_sizes[pad_num] = (round(w, 4), round(h, 4))
 
     if not pin_offsets:
         return None
@@ -112,17 +117,31 @@ def parse_kicad_mod(path: str | Path) -> "FootprintDef | None":
         pin_offsets = {n: (round(x - cx, 4), round(y - cy, 4))
                        for n, (x, y) in pin_offsets.items()}
 
-    # Use median pad size (most common pad in the footprint)
-    if pad_widths:
-        pad_widths.sort()
-        pad_heights.sort()
-        mid = len(pad_widths) // 2
-        pw = round(pad_widths[mid], 3)
-        ph = round(pad_heights[mid], 3)
+    # Representative pad = the most common (width, height) PAIR.
+    #
+    # This used to take the median of widths and of heights INDEPENDENTLY, which
+    # is wrong for any footprint holding two pad orientations in similar numbers.
+    # An LQFP-48 has 24 pads at 0.3×1.475 and 24 at 1.475×0.3; sorting each axis
+    # on its own puts both medians at 1.475, yielding a 1.475mm SQUARE — the
+    # union of both orientations, and a pad that no longer exists. On 0.5mm pitch
+    # that overlaps its neighbours by 0.975mm, so every pad on a side merged into
+    # one blob: Freerouting saw the nets already shorted and routed ~0%, and
+    # kicad-cli reported clearance 0.0000mm. Taking the modal pair keeps a real
+    # pad, and pin_pad_sizes below preserves the per-pin truth.
+    if pin_pad_sizes:
+        counts = Counter(pin_pad_sizes.values())
+        pw, ph = counts.most_common(1)[0][0]
+    elif pad_widths:
+        pw, ph = round(pad_widths[0], 3), round(pad_heights[0], 3)
     else:
         pw, ph = 0.5, 0.5
 
-    return FootprintDef(pin_offsets=pin_offsets, pad_size=(pw, ph))
+    # Only carry per-pin sizes when they actually vary — uniform footprints
+    # (every passive, every SOIC) stay on the single representative size.
+    varied = {n: s for n, s in pin_pad_sizes.items() if s != (pw, ph)}
+
+    return FootprintDef(pin_offsets=pin_offsets, pad_size=(pw, ph),
+                        pin_pad_sizes=pin_pad_sizes if varied else None)
 
 
 # ---------------------------------------------------------------------------
