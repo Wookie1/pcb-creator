@@ -522,13 +522,14 @@ def test_set_positions_draft_not_compiled(server):
     assert any(o["tool"] == "finalize_circuit" for o in r["remediation"])
 
 
-def test_set_positions_no_placement_needs_dims(server):
+def test_set_positions_no_placement_resolves_draft_dims(server):
+    # No placement yet, but the circuit draft records the board size (30x20 from
+    # _build_led); set_component_positions must resolve it instead of refusing (B7).
     name = _build_led(server, "cov_sp_dims")
     r = call(server, "set_component_positions",
              {"project_name": name,
               "positions": [{"designator": "J1", "x_mm": 5, "y_mm": 5}]})
-    assert r["success"] is False
-    assert "board_width_mm" in r["error"]
+    assert r["success"] is True, r.get("error")
 
 
 def test_set_positions_generates_seed_and_pins(server, tmp_path):

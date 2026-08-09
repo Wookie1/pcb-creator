@@ -446,7 +446,7 @@ def generate_svg(
     if outline_vertices and len(outline_vertices) >= 3:
         # Polygon board outline
         points_str = " ".join(
-            f"{margin + v[0] * scale:.1f},{margin + (board_h - v[1]) * scale:.1f}"
+            f"{margin + v[0] * scale:.1f},{margin + (v[1]) * scale:.1f}"
             for v in outline_vertices
         )
         parts.append(
@@ -468,7 +468,7 @@ def generate_svg(
             f'stroke="#2a2a4a" stroke-width="0.5"/>'
         )
     for y_mm in range(0, int(board_h) + 1, 5):
-        y = margin + (board_h - y_mm) * scale
+        y = margin + (y_mm) * scale
         parts.append(
             f'<line x1="{margin}" y1="{y}" x2="{margin + board_w * scale}" y2="{y}" '
             f'stroke="#2a2a4a" stroke-width="0.5"/>'
@@ -491,9 +491,9 @@ def generate_svg(
             color = NET_COLORS.get(net.net_class, "#a3a3a3")
             for ia, ib, _ in edges:
                 x1 = margin + pts[ia][0] * scale
-                y1 = margin + (board_h - pts[ia][1]) * scale
+                y1 = margin + (pts[ia][1]) * scale
                 x2 = margin + pts[ib][0] * scale
-                y2 = margin + (board_h - pts[ib][1]) * scale
+                y2 = margin + (pts[ib][1]) * scale
                 parts.append(
                     f'<line x1="{x1:.1f}" y1="{y1:.1f}" x2="{x2:.1f}" y2="{y2:.1f}" '
                     f'stroke="{color}" stroke-width="1" stroke-dasharray="3,3" opacity="0.5">'
@@ -546,7 +546,7 @@ def generate_svg(
                 if len(polygon) < 3:
                     continue
                 points_str = " ".join(
-                    f"{margin + p[0] * scale:.1f},{margin + (board_h - p[1]) * scale:.1f}"
+                    f"{margin + p[0] * scale:.1f},{margin + (p[1]) * scale:.1f}"
                     for p in polygon
                 )
                 parts.append(
@@ -582,9 +582,9 @@ def generate_svg(
                 tw_mm = trace.get("width_mm", 0.25)
                 tw = tw_mm * scale
                 x1 = margin + trace["start_x_mm"] * scale
-                y1 = margin + (board_h - trace["start_y_mm"]) * scale
+                y1 = margin + (trace["start_y_mm"]) * scale
                 x2 = margin + trace["end_x_mm"] * scale
-                y2 = margin + (board_h - trace["end_y_mm"]) * scale
+                y2 = margin + (trace["end_y_mm"]) * scale
                 # Compute segment length
                 dx = trace["end_x_mm"] - trace["start_x_mm"]
                 dy = trace["end_y_mm"] - trace["start_y_mm"]
@@ -621,7 +621,7 @@ def generate_svg(
         # Draw vias
         for via in vias_list:
             vx = margin + via["x_mm"] * scale
-            vy = margin + (board_h - via["y_mm"]) * scale
+            vy = margin + (via["y_mm"]) * scale
             outer_r = via.get("diameter_mm", 0.6) / 2 * scale
             inner_r = via.get("drill_mm", 0.3) / 2 * scale
             nid = via.get("net_id", "")
@@ -642,7 +642,7 @@ def generate_svg(
         silk_items = routed.get("silkscreen", [])
     for silk in silk_items:
         sx = margin + silk.get("x_mm", 0) * scale
-        sy = margin + (board_h - silk.get("y_mm", 0)) * scale
+        sy = margin + (silk.get("y_mm", 0)) * scale
         silk_layer = silk.get("layer", "top_silk")
         silk_opacity = "0.9" if silk_layer == "top_silk" else "0.5"
 
@@ -693,7 +693,7 @@ def generate_svg(
 
         # Convert to SVG coords (flip Y axis)
         cx = margin + x_mm * scale
-        cy = margin + (board_h - y_mm) * scale
+        cy = margin + (y_mm) * scale
         rx = dw * scale / 2
         ry = dh * scale / 2
 
@@ -801,7 +801,7 @@ def generate_svg(
                 abs_y = cy_mm + rdy
 
                 px = margin + abs_x * scale
-                py = margin + (board_h - abs_y) * scale
+                py = margin + (abs_y) * scale
 
                 if is_th:
                     # Through-hole pad: circle with drill hole
@@ -834,12 +834,13 @@ def generate_svg(
     except Exception:
         pass  # pad rendering is optional — don't break visualization
 
-    # Origin marker
+    # Origin marker — (0,0) is top-left, y increases downward (matches the
+    # KiCad export, CPL, and place_component's "mm from top-left, y down").
     parts.append(
-        f'<circle cx="{margin}" cy="{margin + board_h * scale}" r="3" fill="#ff0" opacity="0.6"/>'
+        f'<circle cx="{margin}" cy="{margin}" r="3" fill="#ff0" opacity="0.6"/>'
     )
     parts.append(
-        f'<text x="{margin + 5}" y="{margin + board_h * scale - 3}" '
+        f'<text x="{margin + 5}" y="{margin + 10}" '
         f'font-size="7px" fill="#ff0" opacity="0.6" font-family="monospace">(0,0)</text>'
     )
 

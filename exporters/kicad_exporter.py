@@ -152,6 +152,24 @@ def _mirror_suffix(layer: str) -> str:
     return " (justify mirror)" if layer.startswith("B.") else ""
 
 
+def _silk_justify(anchor: str, layer: str) -> str:
+    """KiCad (justify …) for a silk label's horizontal anchor (+ back mirror).
+
+    Without it KiCad renders every gr_text CENTER-anchored, so a right-anchored
+    title placed 2mm from the right edge (its bbox checked as on-board) was drawn
+    extending PAST the edge — tripping "silkscreen clipped by board edge" and
+    diverging from the anchor-aware Gerber render (B10). center = KiCad default
+    (no token)."""
+    parts = []
+    if anchor == "left":
+        parts.append("left")
+    elif anchor == "right":
+        parts.append("right")
+    if layer.startswith("B."):
+        parts.append("mirror")
+    return f" (justify {' '.join(parts)})" if parts else ""
+
+
 # ---------------------------------------------------------------------------
 # S-expression building helpers
 # ---------------------------------------------------------------------------
@@ -566,10 +584,11 @@ def _silkscreen(silk_items: list[dict]) -> str:
             font_h = item.get("font_height_mm", 1.0)
             angle = item.get("angle", 0)
             at = f'(at {x} {y} {angle})' if angle else f'(at {x} {y})'
+            justify = _silk_justify(item.get("anchor", "center"), layer)
             lines.append(
                 f'  (gr_text "{text}" {at}'
                 f' (layer "{layer}")'
-                f' (effects (font (size {font_h} {font_h}) (thickness {font_h * 0.15})){_mirror_suffix(layer)})'
+                f' (effects (font (size {font_h} {font_h}) (thickness {font_h * 0.15})){justify})'
                 f' (tstamp {_uid()}))'
             )
         elif item.get("type") == "dot":

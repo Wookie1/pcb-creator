@@ -28,10 +28,13 @@ def _fixture(name):
 
 
 def test_validate_project_name_rejects_traversal():
-    for bad in ["../etc", "..", "a/b", "a.b", "", "/x", "A_upper", "x y"]:
+    # Same rule as the builder / schema (^[a-z][a-z0-9_]*$) so the backstop never
+    # accepts a name the builder later rejects (B11): no hyphens, no leading digit.
+    for bad in ["../etc", "..", "a/b", "a.b", "", "/x", "A_upper", "x y",
+                "3v3_reg", "x-y_1"]:
         with pytest.raises(ValueError):
             mcp_server._validate_project_name(bad)
-    for good in ["led_blinker", "3v3_reg", "a", "x-y_1"]:
+    for good in ["led_blinker", "a", "v3v3_reg", "xy_1"]:
         mcp_server._validate_project_name(good)  # no raise
 
 

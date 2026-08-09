@@ -496,6 +496,11 @@ def run_placement(
         rw, rh = _resolve_board_dims(project_dir, project_name)
         bw = bw or rw
         bh = bh or rh
+    # Last resort: no size given, and none in the placement / draft / requirements
+    # (e.g. a netlist imported from KiCad, which carries no board size). Default,
+    # but tell the caller a default was invented rather than shipping a 6-part
+    # circuit on a silent 50×50 board (B8).
+    dims_defaulted = bw is None or bh is None
     if bw is None:
         bw = 50.0
     if bh is None:
@@ -722,7 +727,7 @@ def run_placement(
     positions = {p["designator"]: (p["x_mm"], p["y_mm"]) for p in placement["placements"]}
     ev = IncrementalCost(nets, positions)
 
-    return {
+    result = {
         "success": True,
         "component_count": len(placement["placements"]),
         "wire_length_mm": round(ev.total_wire, 1),
@@ -738,6 +743,14 @@ def run_placement(
         "pinned_components": all_pinned_designators(project_dir, project_name),
         "placement_path": str(placement_path),
     }
+    if dims_defaulted:
+        result["dims_defaulted"] = True
+        result["warning"] = (
+            f"Board size was not specified and none was found in the placement, "
+            f"circuit draft, or requirements — defaulted to {bw:g}x{bh:g}mm. "
+            f"If that is wrong, re-run optimize_placement with board_width_mm / "
+            f"board_height_mm.")
+    return result
 
 
 # ---------------------------------------------------------------------------

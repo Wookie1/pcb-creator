@@ -234,13 +234,22 @@ def validate_referential_integrity(netlist: dict) -> tuple[list[str], list[str]]
                 prefix_numbers[prefix] = []
             prefix_numbers[prefix].append(number)
 
+    # Non-sequential numbering is a WARNING, not an error: real designs have
+    # legitimate gaps (a part removed after layout, or numbering by functional
+    # block), and a single IC named U9 is valid. Flag it so an ACCIDENTAL gap
+    # (a part dropped by mistake) is still visible, but never block finalize on
+    # it — there is no rename tool, so blocking would wedge the whole flow (B14).
     for prefix, numbers in prefix_numbers.items():
         numbers_sorted = sorted(numbers)
         expected = list(range(1, len(numbers_sorted) + 1))
         if numbers_sorted != expected:
-            errors.append(
-                f"Designators with prefix '{prefix}' are not sequential starting from 1: "
-                f"found {numbers_sorted}, expected {expected}"
+            missing = sorted(set(expected) - set(numbers_sorted))
+            warnings.append(
+                f"Designators with prefix '{prefix}' are not sequential: found "
+                f"{numbers_sorted}"
+                + (f" (gap at {missing})" if missing else "")
+                + " — fine if intentional; check that no part was dropped by "
+                "mistake."
             )
 
     # Check no duplicate port pin_numbers within the same component

@@ -341,12 +341,12 @@ class TestBuildPadMapGeometry:
              "connected_port_ids": ["p1", "p2"]},
         ]}
         pm = pg.build_pad_map(placement, netlist)
-        # 0805 pad_size is (0.6, 0.9); after 90deg rotation → (0.9, 0.6)
+        # 0805 pad_size is (1.025, 1.4); after 90deg rotation → (1.4, 1.025)
         p1 = pm["p1"]
-        assert p1.pad_width_mm == pytest.approx(0.9)
-        assert p1.pad_height_mm == pytest.approx(0.6)
-        # rotated offset: pin1 at (-0.9,0) → (0,-0.9), so y differs from centre
-        assert p1.y_mm == pytest.approx(10 - 0.9, abs=1e-3)
+        assert p1.pad_width_mm == pytest.approx(1.4)
+        assert p1.pad_height_mm == pytest.approx(1.025)
+        # rotated offset: pin1 at (-0.9125,0) → (0,-0.9125), so y differs from centre
+        assert p1.y_mm == pytest.approx(10 - 0.9125, abs=1e-3)
 
     def test_bottom_layer_mirrors_x(self):
         placement = {"board": {"width_mm": 20, "height_mm": 20},
@@ -363,8 +363,8 @@ class TestBuildPadMapGeometry:
              "connected_port_ids": ["p1"]},
         ]}
         pm = pg.build_pad_map(placement, netlist)
-        # pin1 dx=-0.9 mirrored to +0.9 on bottom
-        assert pm["p1"].x_mm == pytest.approx(10 + 0.9, abs=1e-3)
+        # pin1 dx=-0.9125 mirrored to +0.9125 on bottom
+        assert pm["p1"].x_mm == pytest.approx(10 + 0.9125, abs=1e-3)
         assert pm["p1"].layer == "bottom"
 
     def test_fallback_footprint_for_unknown_package(self):
@@ -973,7 +973,7 @@ class TestPlacementCostFunctions:
 
     def test_footprint_min_pitch(self):
         p = po._footprint_min_pitch("0805", 2)
-        assert p == pytest.approx(1.8)  # 2 pads 1.8mm apart
+        assert p == pytest.approx(1.825)  # 2 pads 1.825mm apart (KiCad R_0805)
         assert po._footprint_min_pitch("TOTALLY-UNKNOWN-9", 2) is None
 
     def test_build_escape_halos_skips_single_part_net(self):

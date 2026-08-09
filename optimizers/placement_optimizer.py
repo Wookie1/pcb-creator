@@ -1631,15 +1631,25 @@ def repair_placement(
         x, y = positions[des]
         fw, fh = footprints[des]
         pkg2, pc2 = packages.get(des, ("", 2))
-        nx, ny = _clamp_centre(x, y, fw, fh, rotations[des],
-                               board_w, board_h, pkg2, pc2)
-        within = (nx == x and ny == y)
         if is_user:
-            if not within:
+            # Trust set_placement_pin's PAD-level bounds check: clamp a user pin
+            # only if its PADS (copper), not its courtyard/body, fall outside the
+            # edge clearance. Clamping on the body box (fw/fh carry a +0.5mm
+            # courtyard margin) silently nudged a connector that was deliberately
+            # pinned flush to the edge — pads in bounds, body just over — inward by
+            # ~0.2mm, moving a part the contract says is never moved (B13). Copper
+            # -to-edge is what manufacturing needs, and set_placement_pin checked
+            # exactly that, so use the same pad-only box (1x1 body) here.
+            nx, ny = _clamp_centre(x, y, 1.0, 1.0, rotations[des],
+                                   board_w, board_h, pkg2, pc2)
+            if (nx, ny) != (x, y):
                 positions[des] = (round(nx, 2), round(ny, 2))
             pinned.add(des)
-        elif within:  # keepout already in bounds → respect its fixed position
-            pinned.add(des)
+        else:  # keepout: mechanically fixed — respect it only when in bounds
+            nx, ny = _clamp_centre(x, y, fw, fh, rotations[des],
+                                   board_w, board_h, pkg2, pc2)
+            if nx == x and ny == y:
+                pinned.add(des)
 
     movable = [d for d in positions if d not in pinned]
     if not movable:

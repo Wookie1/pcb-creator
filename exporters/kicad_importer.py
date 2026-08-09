@@ -152,7 +152,11 @@ def _to_float(val: str | int | float) -> float:
 # ---------------------------------------------------------------------------
 
 def _extract_nets(tree: list) -> dict[int, str]:
-    """Extract net declarations: kicad_net_num -> net_name."""
+    """Extract net declarations: kicad_net_num -> net_name.
+
+    Only present in pre-10 KiCad files (top-level net table). KiCad 10 dropped
+    the table and writes net names inline on every element, so this returns {}
+    there and net resolution falls back to names (see _net_ref)."""
     nets: dict[int, str] = {}
     for item in tree:
         if isinstance(item, list) and len(item) >= 3 and item[0] == "net":
@@ -163,6 +167,26 @@ def _extract_nets(tree: list) -> dict[int, str]:
             except (ValueError, IndexError):
                 pass
     return nets
+
+
+def _net_ref(field: list | None) -> tuple[int, str]:
+    """Parse a (net ...) field into (num, name), tolerating both KiCad forms.
+
+    Pre-10 carries a number resolved via the top-level net table — pads
+    `(net 3 "GND")`, tracks/vias `(net 3)`. KiCad 10 dropped the table and
+    writes the name inline everywhere: `(net "GND")`. A token that parses as an
+    int is a number (name via table); otherwise it is the name itself. Either
+    part may be absent: `(net 3)` -> (3, ""), `(net "GND")` -> (0, "GND")."""
+    if not field or len(field) < 2:
+        return 0, ""
+    num, name = 0, ""
+    try:
+        num = int(field[1])
+    except (ValueError, TypeError):
+        name = str(field[1])
+    if len(field) >= 3:  # trailing name token: (net 3 "GND")
+        name = str(field[2])
+    return num, name
 
 
 def _extract_segments(tree: list, net_name_to_id: dict[str, str]) -> list[dict]:
@@ -182,10 +206,9 @@ def _extract_segments(tree: list, net_name_to_id: dict[str, str]) -> list[dict]:
             continue
 
         layer_name = _LAYER_REVERSE.get(str(layer[1]), "top")
-        net_num = int(net[1]) if net else 0
+        net_num, net_name = _net_ref(net)
 
-        # Get net name from the net declarations (built by caller)
-        # We'll resolve net_id later via the net_name_to_id mapping
+        # net_id resolved later from name (KiCad 10) or number (via net table)
 
         traces.append({
             "start_x_mm": round(_to_float(start[1]), 4),
@@ -195,6 +218,7 @@ def _extract_segments(tree: list, net_name_to_id: dict[str, str]) -> list[dict]:
             "width_mm": round(_to_float(width[1]), 4),
             "layer": layer_name,
             "_net_num": net_num,  # resolved to net_id later
+            "_net_name": net_name,
         })
 
     return traces
@@ -215,7 +239,7 @@ def _extract_vias(tree: list) -> list[dict]:
         if not (at and size and drill):
             continue
 
-        net_num = int(net[1]) if net else 0
+        net_num, net_name = _net_ref(net)
 
         vias.append({
             "x_mm": round(_to_float(at[1]), 4),
@@ -225,6 +249,7 @@ def _extract_vias(tree: list) -> list[dict]:
             "from_layer": "top",
             "to_layer": "bottom",
             "_net_num": net_num,
+            "_net_name": net_name,
         })
 
     return vias
@@ -245,8 +270,10 @@ def _extract_zones(tree: list, net_name_to_id: dict[str, str]) -> list[dict]:
             continue
 
         layer_name = _LAYER_REVERSE.get(str(layer_field[1]), "top")
-        net_num = int(net_field[1]) if net_field else 0
-        net_name = str(net_name_field[1]) if net_name_field else ""
+        net_num, ref_name = _net_ref(net_field)
+        # Pre-10 carries the name in a separate (net_name ...); KiCad 10 inlines
+        # it in (net ...). Prefer whichever is present.
+        net_name = str(net_name_field[1]) if net_name_field else ref_name
 
         # Extract filled polygons
         polygons = []
@@ -266,6 +293,7 @@ def _extract_zones(tree: list, net_name_to_id: dict[str, str]) -> list[dict]:
                 "layer": layer_name,
                 "net_name": net_name,
                 "_net_num": net_num,
+                "_net_name": net_name,
                 "polygons": polygons,
             })
 
@@ -379,28 +407,32 @@ def import_kicad_pcb(
     # Resolve _net_num to net_id/net_name on all elements
     routed_net_ids: set[str] = set()
 
+    # Resolve to net_id by NAME first (KiCad 10, no net table), then by number
+    # (pre-10, via the table). Name wins because it is unambiguous across formats.
+    def _resolve(elem: dict) -> tuple[str, str]:
+        num = elem.pop("_net_num", 0)
+        name = elem.pop("_net_name", "")
+        net_id = net_name_to_id.get(name, "") if name else ""
+        if not net_id and num:
+            net_id = kicad_num_to_net_id.get(num, "")
+        return net_id, net_id_to_name.get(net_id, name or kicad_nets.get(num, ""))
+
     for t in traces:
-        net_num = t.pop("_net_num", 0)
-        net_id = kicad_num_to_net_id.get(net_num, "")
-        net_name = net_id_to_name.get(net_id, kicad_nets.get(net_num, ""))
+        net_id, net_name = _resolve(t)
         t["net_id"] = net_id
         t["net_name"] = net_name
         if net_id:
             routed_net_ids.add(net_id)
 
     for v in vias:
-        net_num = v.pop("_net_num", 0)
-        net_id = kicad_num_to_net_id.get(net_num, "")
-        net_name = net_id_to_name.get(net_id, kicad_nets.get(net_num, ""))
+        net_id, net_name = _resolve(v)
         v["net_id"] = net_id
         v["net_name"] = net_name
         if net_id:
             routed_net_ids.add(net_id)
 
     for f in fills:
-        net_num = f.pop("_net_num", 0)
-        net_id = kicad_num_to_net_id.get(net_num, "")
-        net_name = net_id_to_name.get(net_id, kicad_nets.get(net_num, ""))
+        net_id, net_name = _resolve(f)
         f["net_id"] = net_id
         if net_name:
             f["net_name"] = net_name

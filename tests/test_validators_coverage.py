@@ -575,10 +575,11 @@ def test_netlist_duplicate_designator_and_nonsequential():
         _port("p1", "c1", 1), _port("p2", "c2", 1), _port("p3", "c3", 1),
         _net("n1", "N1", ["p1", "p2"]),
     ]
-    errors, _ = vn.validate_referential_integrity({"elements": elements})
-    blob = "\n".join(errors)
-    assert "Duplicate designator" in blob
-    assert "not sequential" in blob
+    errors, warnings = vn.validate_referential_integrity({"elements": elements})
+    assert "Duplicate designator" in "\n".join(errors)
+    # Non-sequential numbering is a WARNING now, not a blocking error (B14) —
+    # real designs have legitimate gaps and there is no rename tool.
+    assert "not sequential" in "\n".join(warnings)
 
 
 def test_netlist_duplicate_pin_number_within_component():
@@ -1655,9 +1656,9 @@ def test_routing_pad_clearance_warning_dedup_same_pad():
         {"element_type": "net", "net_id": "a", "name": "A",
          "net_class": "signal", "connected_port_ids": ["p1"]},
     ]}
-    # Pad R1.1 copper right edge at x=9.4. Traces at x≈9.5 (gap ~0.05 < 0.15).
-    near = lambda y: {"start_x_mm": 9.5, "start_y_mm": 9.55 + y,
-                      "end_x_mm": 9.5, "end_y_mm": 10.45 + y,
+    # Pad R1.1 copper right edge at x=9.6. Traces at x≈9.7 (gap ~0.05 < 0.15).
+    near = lambda y: {"start_x_mm": 9.7, "start_y_mm": 9.55 + y,
+                      "end_x_mm": 9.7, "end_y_mm": 10.45 + y,
                       "width_mm": 0.1, "layer": "top",
                       "net_id": "b", "net_name": "B"}
     routed = {"placements": [
@@ -1713,8 +1714,9 @@ def test_routing_pad_clearance_no_netlist_returns_empty():
 def _pad_clearance_fixture(trace=None, via=None):
     """Synthetic routed+netlist with one SMD 0805 pad (R1.1) on net 'a'.
 
-    R1.1 sits at (9.1, 10): copper rect x[8.8,9.4] y[9.55,10.45].
-    Caller supplies a trace/via on a DIFFERENT net ('b') to probe clearance.
+    R1.1 sits at (9.0875, 10): copper rect x[8.575,9.6] y[9.3,10.7]
+    (KiCad R_0805 land, 1.025x1.4). Caller supplies a trace/via on a
+    DIFFERENT net ('b') to probe clearance.
     """
     netlist = {"elements": [
         {"element_type": "component", "component_id": "c1", "designator": "R1",
@@ -1744,7 +1746,7 @@ def test_routing_pad_clearance_trace_short_and_warning():
     assert any("Trace-pad short" in e for e in errors)
 
     # Trace just outside the pad but within clearance → warning.
-    near = {"start_x_mm": 9.5, "start_y_mm": 9.55, "end_x_mm": 9.5,
+    near = {"start_x_mm": 9.7, "start_y_mm": 9.55, "end_x_mm": 9.7,
             "end_y_mm": 10.45, "width_mm": 0.1, "layer": "top",
             "net_id": "b", "net_name": "B"}
     routed, netlist = _pad_clearance_fixture(trace=near)
@@ -1760,8 +1762,8 @@ def test_routing_pad_clearance_via_short_and_warning():
     errors, _ = vr._check_pad_clearance(routed, netlist)
     assert any("Via-pad short" in e for e in errors)
 
-    # Via just outside the pad (edge gap ~0.1mm < 0.15 threshold) → warning.
-    near_via = {"x_mm": 9.65, "y_mm": 10, "diameter_mm": 0.3, "net_id": "b",
+    # Via just outside the pad (edge gap ~0.05mm < 0.15 threshold) → warning.
+    near_via = {"x_mm": 9.8, "y_mm": 10, "diameter_mm": 0.3, "net_id": "b",
                 "net_name": "B", "from_layer": "top", "to_layer": "bottom"}
     routed, netlist = _pad_clearance_fixture(via=near_via)
     _, warnings = vr._check_pad_clearance(routed, netlist)

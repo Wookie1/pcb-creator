@@ -266,6 +266,11 @@ def import_ses(
     total_nets = len(routable_net_ids)
     routed_count = len(routed_routable)
     unrouted = sorted(routable_net_ids - routed_routable)
+    # Name the nets kept OUT of the denominator (poured, not traced) so a 13/13
+    # completion isn't read as a lost 14th net — the exclusion is now explicit (B15).
+    _id_to_name = {v: k for k, v in net_name_to_id.items()}
+    fill_handled_nets = sorted(_id_to_name.get(nid, nid)
+                               for nid in (excluded & all_net_ids))
 
     total_trace_length = 0.0
     for t in traces:
@@ -297,6 +302,9 @@ def import_ses(
                 "total_trace_length_mm": round(total_trace_length, 1),
                 "via_count": len(vias),
                 "layer_usage": layer_usage,
+                # Nets excluded from total_nets because a copper pour carries them
+                # (typically GND). Empty when nothing is fill-handled.
+                "fill_handled_nets": fill_handled_nets,
             },
             "config": {
                 "router": "freerouting",

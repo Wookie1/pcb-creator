@@ -142,12 +142,25 @@ def set_part_number(project_dir: Path, project_name: str, designator: str,
     Returns {success, line, bom_path} or {success: False, error,
     known_designators?}.
     """
-    provided = {k: v.strip() for k, v in
-                (("lcsc", lcsc or ""), ("mpn", mpn or ""),
-                 ("manufacturer", manufacturer or "")) if v and v.strip()}
-    if not provided:
+    # A field set to a clear-token ('none'/'null'/'clear'/'-') is explicitly
+    # REMOVED — the only way to retract a wrong id (e.g. a dead C999999999 the
+    # quote flagged) without overwriting it with another guessed id (B9). Empty
+    # / omitted still means "leave unchanged".
+    _CLEAR_TOKENS = {"none", "null", "clear", "-", "remove"}
+    provided: dict[str, str] = {}
+    clears: set[str] = set()
+    for k, v in (("lcsc", lcsc), ("mpn", mpn), ("manufacturer", manufacturer)):
+        if v is None or not v.strip():
+            continue
+        s = v.strip()
+        if s.lower() in _CLEAR_TOKENS:
+            clears.add(k)
+        else:
+            provided[k] = s
+    if not provided and not clears:
         return {"success": False,
-                "error": "Provide at least one of lcsc / mpn / manufacturer."}
+                "error": "Provide at least one of lcsc / mpn / manufacturer "
+                         "(or set one to 'none' to clear it)."}
     if "lcsc" in provided:
         provided["lcsc"] = provided["lcsc"].upper()
         if not _LCSC_RE.match(provided["lcsc"]):
@@ -181,6 +194,8 @@ def set_part_number(project_dir: Path, project_name: str, designator: str,
                                       for i in bom_data.get("bom", [])]}
 
     line.update(provided)
+    for k in clears:
+        line.pop(k, None)
     bom_path.write_text(json.dumps(bom_data, indent=2))
 
     if line.get("lcsc") or line.get("mpn"):
@@ -282,6 +297,18 @@ def quote_project(project_dir: Path, project_name: str, qty: int = 5,
                     item[k] = info[k]
                     if k == "mpn":
                         enriched += 1
+        elif live and live_info and item.get("lcsc"):
+            # Live lookups ARE working (other ids resolved) but THIS LCSC id
+            # returned nothing — it does not resolve to a real catalog part.
+            # A dead-but-format-valid id (e.g. C999999999) is exactly the
+            # "worth a human look before ordering" case, and it otherwise slips
+            # through: it has an lcsc so it never lands in `unresolved` (B9).
+            line["needs_review"] = True
+            line["lcsc_unresolved"] = True
+            notes.append(
+                f"{line['designator']}: LCSC {item['lcsc']} did not resolve to a "
+                "catalog part (no stock/price) — verify or replace the id before "
+                "ordering.")
         line["mpn"] = item.get("mpn")
         if item.get("manufacturer"):
             line["manufacturer"] = item["manufacturer"]

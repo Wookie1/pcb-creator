@@ -122,27 +122,31 @@ def footprint_pad_overlaps(fp: "FootprintDef") -> list[tuple[int, int]]:
 # Footprint definitions — offsets relative to component center at rotation=0
 # ---------------------------------------------------------------------------
 
-# 2-pad SMD passives: pads along X axis at ±half-body-length
+# 2-pad SMD passives: pads along X axis at ±half-C-to-C. Geometry matches the
+# KiCad R_xxxx_Metric reflow land patterns (IPC-7351 nominal) pad-for-pad —
+# bare codes ("0805") miss the verbose-keyed KiCad library and always land
+# here, so these ARE the shipped pads. Undersizing them (the old ~60%-of-nominal
+# values) shipped every from-scratch board with marginal reflow (B2).
 _SMD_2PAD = {
     "0402": FootprintDef(
-        pin_offsets={1: (-0.50, 0.0), 2: (0.50, 0.0)},
-        pad_size=(0.4, 0.5),
+        pin_offsets={1: (-0.51, 0.0), 2: (0.51, 0.0)},
+        pad_size=(0.54, 0.64),
     ),
     "0603": FootprintDef(
-        pin_offsets={1: (-0.75, 0.0), 2: (0.75, 0.0)},
-        pad_size=(0.5, 0.7),
+        pin_offsets={1: (-0.825, 0.0), 2: (0.825, 0.0)},
+        pad_size=(0.8, 0.95),
     ),
     "0805": FootprintDef(
-        pin_offsets={1: (-0.90, 0.0), 2: (0.90, 0.0)},
-        pad_size=(0.6, 0.9),
+        pin_offsets={1: (-0.9125, 0.0), 2: (0.9125, 0.0)},
+        pad_size=(1.025, 1.4),
     ),
     "1206": FootprintDef(
-        pin_offsets={1: (-1.10, 0.0), 2: (1.10, 0.0)},
-        pad_size=(0.8, 1.0),
+        pin_offsets={1: (-1.4625, 0.0), 2: (1.4625, 0.0)},
+        pad_size=(1.125, 1.75),
     ),
     "1210": FootprintDef(
-        pin_offsets={1: (-1.10, 0.0), 2: (1.10, 0.0)},
-        pad_size=(0.8, 1.2),
+        pin_offsets={1: (-1.4625, 0.0), 2: (1.4625, 0.0)},
+        pad_size=(1.125, 2.65),
     ),
 }
 
@@ -639,12 +643,58 @@ def _rotate_offset(dx: float, dy: float, rotation_deg: int) -> tuple[float, floa
         return dx * cos_r - dy * sin_r, dx * sin_r + dy * cos_r
 
 
+def _pad_info_for_pin(
+    plc: dict,
+    fp: "FootprintDef",
+    pin_number: int,
+    port_id: str,
+    net_id: str | None,
+    package: str,
+) -> PadInfo:
+    """Absolute PadInfo for one footprint pad of a placed component.
+
+    Shared by the netted (has a netlist port) and netless (thermal tab / exposed
+    pad with no logical pin) paths so both land at identical positions/sizes."""
+    # Pin offset (fall back to center if pin not in definition)
+    dx, dy = fp.pin_offsets.get(pin_number, (0.0, 0.0))
+
+    # Bottom-side components are MIRRORED about their local Y axis (dx -> -dx)
+    # before rotation — the same transform Specctra applies to back-side images
+    # and KiCad bakes into flipped footprints, so every consumer agrees
+    # pin-for-pin on pad positions.
+    rotation = plc.get("rotation_deg", 0)
+    if plc.get("layer", "top") == "bottom":
+        dx = -dx
+    dx_rot, dy_rot = _rotate_offset(dx, dy, rotation)
+
+    # Rotate pad dimensions if needed (a quad pack rotates its pads 90° between
+    # sides — one size for all of them would overlap neighbours).
+    pw, ph = fp.pad_size_for(pin_number)
+    if rotation in (90, 270):
+        pw, ph = ph, pw
+
+    # Through-hole pads span both layers; SMD pads are on the component layer only
+    is_th = is_through_hole_package(package, fp)
+    return PadInfo(
+        port_id=port_id,
+        designator=plc["designator"],
+        pin_number=pin_number,
+        net_id=net_id,
+        x_mm=plc["x_mm"] + dx_rot,
+        y_mm=plc["y_mm"] + dy_rot,
+        pad_width_mm=pw,
+        pad_height_mm=ph,
+        layer="all" if is_th else plc.get("layer", "top"),
+    )
+
+
 def build_pad_map(
     placement: dict,
     netlist: dict,
     *,
     kicad_index: object | None = None,
     cache: object | None = None,
+    include_netless: bool = False,
 ) -> dict[str, PadInfo]:
     """Build a complete map of port_id -> PadInfo with absolute board coordinates.
 
@@ -686,6 +736,11 @@ def build_pad_map(
 
     pad_map: dict[str, PadInfo] = {}
 
+    # Per designator: which footprint pads got a netlist port, and the resolved
+    # (placement, footprint, package) — reused by the netless pass below.
+    ported_pins: dict[str, set[int]] = {}
+    fp_by_des: dict[str, tuple[dict, "FootprintDef", str]] = {}
+
     for port in ports:
         port_id = port["port_id"]
         comp_id = port.get("component_id", "")
@@ -715,47 +770,23 @@ def build_pad_map(
                 pin_count,
             )
 
-        # Get pin offset (fall back to center if pin not in definition)
-        if pin_number in fp.pin_offsets:
-            dx, dy = fp.pin_offsets[pin_number]
-        else:
-            # Pin number not in definition — use center
-            dx, dy = 0.0, 0.0
+        pad_map[port_id] = _pad_info_for_pin(
+            plc, fp, pin_number, port_id, port_to_net.get(port_id), package)
+        ported_pins.setdefault(designator, set()).add(pin_number)
+        fp_by_des[designator] = (plc, fp, package)
 
-        # Apply component rotation. Bottom-side components are MIRRORED about
-        # their local Y axis (dx -> -dx) before rotation — the same transform
-        # Specctra applies to back-side images and KiCad bakes into flipped
-        # footprints, so every consumer agrees pin-for-pin on pad positions.
-        rotation = plc.get("rotation_deg", 0)
-        if plc.get("layer", "top") == "bottom":
-            dx = -dx
-        dx_rot, dy_rot = _rotate_offset(dx, dy, rotation)
-
-        # Absolute position
-        abs_x = plc["x_mm"] + dx_rot
-        abs_y = plc["y_mm"] + dy_rot
-
-        # Rotate pad dimensions if needed. Per-pin, because a quad pack's pads
-        # are rotated 90° between sides — one size for all of them inflates the
-        # narrow axis to the long one and overlaps neighbouring pads.
-        pw, ph = fp.pad_size_for(pin_number)
-        if rotation in (90, 270):
-            pw, ph = ph, pw
-
-        # Through-hole pads span both layers; SMD pads are on the component layer only
-        is_th = is_through_hole_package(package, fp)
-        pad_layer = "all" if is_th else plc.get("layer", "top")
-
-        pad_map[port_id] = PadInfo(
-            port_id=port_id,
-            designator=designator,
-            pin_number=pin_number,
-            net_id=port_to_net.get(port_id),
-            x_mm=abs_x,
-            y_mm=abs_y,
-            pad_width_mm=pw,
-            pad_height_mm=ph,
-            layer=pad_layer,
-        )
+    # Netless footprint pads: any pad in the footprint with no netlist port — a
+    # SOT-223 thermal tab, a QFN exposed pad, an NC connector pin. The KiCad
+    # exporter already writes these (netless copper is legal), so emitting them
+    # here keeps the Gerber/mask/paste faithful to the .kicad_pcb (B17). Off by
+    # default so the router/DRC pad model is unchanged.
+    if include_netless:
+        for designator, (plc, fp, package) in fp_by_des.items():
+            for pin_number in fp.pin_offsets:
+                if pin_number in ported_pins.get(designator, ()):
+                    continue
+                key = f"{designator}#pad{pin_number}"
+                pad_map[key] = _pad_info_for_pin(
+                    plc, fp, pin_number, key, None, package)
 
     return pad_map

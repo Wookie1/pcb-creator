@@ -380,7 +380,9 @@ def export_gerbers(
     output_dir.mkdir(parents=True, exist_ok=True)
 
     project = routed.get("project_name", "board")
-    pad_map = build_pad_map(routed, netlist)
+    # include_netless: emit thermal-tab / exposed-pad copper (footprint pads with
+    # no netlist pin) so the Gerbers match the .kicad_pcb (B17).
+    pad_map = build_pad_map(routed, netlist, include_netless=True)
     num_layers = routed.get("board", {}).get("layers", 2)
     copper_layers = _COPPER_LAYERS_BY_COUNT.get(num_layers, _COPPER_LAYERS_BY_COUNT[2])
 

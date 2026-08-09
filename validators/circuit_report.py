@@ -114,7 +114,8 @@ def build_report(
         issues.append({"severity": "warning", "check": "check_pullups", "detail": msg})
 
     not_checked = _build_not_checked(
-        solution, nets, supply_voltage, ambiguous, bad_rails, unknown_keys
+        solution, nets, supply_voltage, ambiguous, bad_rails, unknown_keys,
+        applied_models,
     )
 
     n_errors = sum(1 for i in issues if i["severity"] == "error")
@@ -178,6 +179,7 @@ def _build_not_checked(
     ambiguous: list[str],
     bad_rails: list[str],
     unknown_keys: list[str],
+    applied_models: dict | None = None,
 ) -> list[dict]:
     """Everything we could not evaluate, and the argument that would fix it."""
     entries: list[dict] = []
@@ -224,6 +226,7 @@ def _build_not_checked(
             }
         )
 
+    applied_models = applied_models or {}
     for part in solution.unmodeled:
         tainted = [
             nets.get(n, {}).get("name", n)
@@ -232,25 +235,50 @@ def _build_not_checked(
         ]
         if not tainted:
             continue
-        entries.append(
-            {
-                "what": part["designator"],
-                "value": part.get("value", ""),
-                "reason": part.get("reason", "no model for this part"),
-                "consequence": (
-                    f"Nets {', '.join(tainted)} were not evaluated — any current "
-                    f"through them depends on what this part does."
-                ),
-                "to_check_this": {
-                    "tool": "check_circuit",
-                    "args": {
-                        "models": {
-                            part["designator"]: {"vcc_min": "3.0V", "vcc_max": "3.6V"}
-                        }
+        des = part["designator"]
+        if des in applied_models:
+            # A model WAS supplied and applied (its supply-rail check ran against
+            # those bounds — see check_supply_voltage). The part's function still
+            # has no device model, so its output nets stay unevaluated. Reflect
+            # that instead of re-asking for the models we already used, which is
+            # what made supplying them look like a no-op.
+            entries.append(
+                {
+                    "what": des,
+                    "value": part.get("value", ""),
+                    "reason": (
+                        "function not simulated (no device model); the "
+                        f"{', '.join(sorted(applied_models[des]))} you supplied "
+                        "were checked against its supply rail"
+                    ),
+                    "consequence": (
+                        f"Nets {', '.join(tainted)} still depend on what this part "
+                        f"does and were not evaluated."
+                    ),
+                }
+            )
+        else:
+            # Example bounds bracket the actual supply so a verbatim copy can't
+            # trip a spurious over-voltage — the agent must replace them with the
+            # part's real datasheet Vcc range.
+            lo = f"{max(0.0, (supply_voltage or 0) - 1):g}V"
+            hi = f"{(supply_voltage or 0) + 1:g}V"
+            entries.append(
+                {
+                    "what": des,
+                    "value": part.get("value", ""),
+                    "reason": part.get("reason", "no model for this part"),
+                    "consequence": (
+                        f"Nets {', '.join(tainted)} were not evaluated — any current "
+                        f"through them depends on what this part does."
+                    ),
+                    "to_check_this": {
+                        "tool": "check_circuit",
+                        "args": {"models": {des: {"vcc_min": lo, "vcc_max": hi}}},
+                        "note": "replace with this part's datasheet Vcc range",
                     },
-                },
-            }
-        )
+                }
+            )
 
     for bad in bad_rails:
         entries.append(

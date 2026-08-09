@@ -71,6 +71,12 @@ def format_review_context(drc_report: dict | None, routed: dict) -> tuple[str, s
         f"- Total trace length: {trace_len:.1f} mm",
         f"- Via count: {vias}",
     ]
+    fill_handled = stats.get("fill_handled_nets") or []
+    if fill_handled:
+        # These are routed by a copper pour, so they are intentionally NOT in the
+        # routed/total count above — name them so the denominator isn't a mystery.
+        routing_lines.append(
+            f"- Poured (not in the count above): {', '.join(map(str, fill_handled))}")
     if unrouted:
         routing_lines.append(f"- UNROUTED NETS: {', '.join(str(n) for n in unrouted)}")
     routing_stats_text = "\n".join(routing_lines)

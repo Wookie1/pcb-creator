@@ -236,17 +236,26 @@ def _ensure_lookup_configured() -> None:
 
 
 def _slugify(text: str) -> str:
-    """Convert description to a filesystem-safe project name."""
+    """Convert description to a project name matching _PROJECT_NAME_RE."""
     slug = re.sub(r"[^a-z0-9]+", "_", text.lower().strip())
     slug = slug.strip("_")[:60]
-    return slug or "pcb_project"
+    # Must start with a letter (the shared rule) — a leading digit or an empty
+    # result would be suggested and then rejected, looping the remediation.
+    if not slug or not slug[0].isalpha():
+        slug = f"pcb_{slug}".rstrip("_")[:60]
+    return slug
 
 
 # Project names become directory names, so anything with a path separator or a
 # ".." component is a traversal attempt. Tool args originate from the LLM agent,
 # which is steerable by injected content — validate at the single choke point
 # every path flows through rather than trusting each of ~30 callers.
-_PROJECT_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
+# Same rule as the builder (circuit_builder.PROJECT_RE) and the JSON schemas
+# (^[a-z][a-z0-9_]*$) so a name accepted at this layer is never rejected later
+# with contradictory guidance (B11): lowercase, starts with a letter, no hyphens.
+_PROJECT_NAME_RE = re.compile(r"^[a-z][a-z0-9_]*$")
+_PROJECT_NAME_RULE = ("use lowercase letters, digits, and underscores only "
+                      "(must start with a letter)")
 
 
 def _validate_project_name(project_name: str) -> None:
@@ -256,8 +265,7 @@ def _validate_project_name(project_name: str) -> None:
     """
     if not _PROJECT_NAME_RE.match(project_name or ""):
         raise ValueError(
-            f"Invalid project_name {project_name!r}: use lowercase letters, "
-            "digits, '_' and '-' only (must start with a letter or digit)."
+            f"Invalid project_name {project_name!r}: {_PROJECT_NAME_RULE}."
         )
 
 
@@ -285,8 +293,7 @@ def _reject_bad_project_name(project_name: str) -> dict | None:
     if _PROJECT_NAME_RE.match(project_name or ""):
         return None
     return fail(
-        f"Invalid project_name {project_name!r}: use lowercase letters, digits, "
-        "'_' and '-' only (must start with a letter or digit).",
+        f"Invalid project_name {project_name!r}: {_PROJECT_NAME_RULE}.",
         remediation=[option(
             f"Retry with the safe name '{_slugify(project_name)}'",
             "create_circuit", {"project_name": _slugify(project_name)},
@@ -1362,6 +1369,9 @@ def get_project_status(project_name: str) -> dict:
             "trace_length_mm": stats.get("total_trace_length_mm", 0),
             "unrouted_nets": routing.get("unrouted_nets",
                                          stats.get("unrouted_nets", [])),
+            # Nets carried by a copper pour (usually GND) — deliberately excluded
+            # from total_nets, named here so 13/13 isn't read as a lost net (B15).
+            "fill_handled_nets": stats.get("fill_handled_nets", []),
             # Plane-delivered SMD pads with no clear stitching-via site: they are
             # physically open, so an incomplete power-plane net is explained here
             # (which pad, which net) instead of leaving the agent to guess. The
@@ -1421,23 +1431,46 @@ def get_project_status(project_name: str) -> dict:
         else:
             result["design_state"] = "none"
 
+    # Staleness reference: a re-route (or re-place + re-route) AFTER the last
+    # DRC/export leaves the drc report and output files describing the PREVIOUS
+    # board. Compare mtimes so status/next_step don't present a stale
+    # "passed"/"ready" verdict as if it were current (B6). 1s tolerance absorbs
+    # same-operation writes.
+    routed_path = pdir / f"{project_name}_routed.json"
+    routed_mtime = routed_path.stat().st_mtime if routed_path.exists() else None
+
+    def _older_than_route(path: Path) -> bool:
+        return (routed_mtime is not None and path.exists()
+                and path.stat().st_mtime < routed_mtime - 1)
+
     # DRC summary
     drc = _read_project_json(project_name, "_drc_report.json")
+    drc_stale = False
     if drc:
+        drc_stale = _older_than_route(pdir / f"{project_name}_drc_report.json")
         result["drc"] = {
             "passed": drc.get("passed", False),
             "summary": drc.get("summary", ""),
             "errors": drc.get("statistics", {}).get("errors", 0),
             "warnings": drc.get("statistics", {}).get("warnings", 0),
         }
+        if drc_stale:
+            result["drc"]["stale"] = True
+            result["drc"]["stale_note"] = (
+                "This DRC verdict predates the current route — the board was "
+                "re-routed after it. Re-run run_drc; do not trust this pass/fail.")
 
     # Output files
     output_dir = pdir / "output"
+    exports_stale = False
     if output_dir.exists():
-        result["output_files"] = [
-            str(f.relative_to(pdir)) for f in sorted(output_dir.iterdir())
-            if f.is_file()
-        ]
+        out_files = [f for f in sorted(output_dir.iterdir()) if f.is_file()]
+        result["output_files"] = [str(f.relative_to(pdir)) for f in out_files]
+        # Stale if the newest artifact predates the current route.
+        exports_stale = bool(out_files) and routed_mtime is not None and (
+            max(f.stat().st_mtime for f in out_files) < routed_mtime - 1)
+        if exports_stale:
+            result["output_files_stale"] = True
 
     # Anti-abandonment: while a background job runs, always tell the agent
     # what is happening and to keep polling.
@@ -1519,13 +1552,22 @@ def get_project_status(project_name: str) -> dict:
                 f"routed majority); if it won't close, add routing capacity — "
                 f"{capacity}",
             )
+        elif exports_stale:
+            # Outputs exist but predate the current route — re-export (which
+            # re-runs DRC internally) rather than shipping the old package (B6).
+            result["next_step"] = next_step(
+                "export_outputs", {"project_name": project_name},
+                "The board was re-routed after the last export — the output "
+                "files describe the PREVIOUS board. Re-run export_outputs to "
+                "regenerate the manufacturing package against the current route.",
+            )
         elif result.get("output_files"):
             result["next_step"] = next_step(
                 "get_board_image", {"project_name": project_name},
                 "Routed, DRC'd, and exported — the manufacturing package is "
                 "ready. Optionally fetch a final board image to review.",
             )
-        elif result.get("drc", {}).get("passed"):
+        elif result.get("drc", {}).get("passed") and not drc_stale:
             result["next_step"] = next_step(
                 "export_outputs", {"project_name": project_name},
                 "Routing complete and DRC passed — generate the manufacturing "
@@ -1534,7 +1576,9 @@ def get_project_status(project_name: str) -> dict:
         else:
             result["next_step"] = next_step(
                 "run_drc", {"project_name": project_name},
-                "Routing complete — run design-rule checks before export.",
+                "Routing complete — run design-rule checks before export."
+                + (" The existing DRC report is from a previous route."
+                   if drc_stale else ""),
             )
 
     return result
@@ -2024,6 +2068,28 @@ def provide_footprint(
     if not package:
         return fail("package must be a non-empty string.")
 
+    # The two modes are mutually exclusive (docstring: "use exactly ONE").
+    # Accepting both silently used the alias and discarded the explicit
+    # geometry — shadowing real datasheet pads with an approximation (B12).
+    if like_package and (pin_offsets or pad_size):
+        return fail(
+            "provide_footprint takes EITHER like_package (Mode 1) OR "
+            "pin_offsets + pad_size (Mode 2), not both — the explicit geometry "
+            "would be silently discarded in favour of the alias.",
+            remediation=[
+                option("Alias to a recognized package (drop the geometry)",
+                       "provide_footprint",
+                       {"project_name": project_name, "package": package,
+                        "like_package": like_package}),
+                option("Use only the explicit datasheet geometry (drop like_package)",
+                       "provide_footprint",
+                       {"project_name": project_name, "package": package,
+                        "pin_offsets": pin_offsets or {"1": [-1.27, 0.0],
+                                                       "2": [1.27, 0.0]},
+                        "pad_size": pad_size or [1.05, 1.4]}),
+            ],
+        )
+
     # Mode 1: alias to a recognized package.
     if like_package:
         ref = get_footprint_def(like_package, 0)
@@ -2206,7 +2272,10 @@ def add_component(project_name: str, designator: str, component_type: str,
     one group or invent a unique group per part. Omitting it is safe — the
     optimizer falls back to its shared-net heuristic.
     """
-    _ensure_lookup_configured()
+    # Activate the project's tier-0 custom footprints (custom-footprints.pretty/)
+    # so add_component's resolver sees register_custom_footprint geometry — not
+    # just _ensure_lookup_configured()'s base index, which misses it (B5).
+    _activate_project_lookup(project_name)
     from orchestrator import circuit_builder as cb
     from optimizers.pad_geometry import get_footprint_def
     result = cb.add_component(_project_dir(project_name), project_name,
@@ -2735,12 +2804,17 @@ def optimize_placement(
         promo = (f" NOTE: promoted to a {result.get('layers')}-layer board "
                  f"(plane_layers={result.get('plane_layers')}) because an inner-"
                  "plane stackup was requested.")
+    # Surface an invented board size loudly (B8) — a defaulted 50×50 for a
+    # netlist that carried no dimensions is easy to miss otherwise.
+    defaulted = f" ⚠ {result['warning']}" if result.get("dims_defaulted") else ""
     return ok(result, next_step(
         "route_board", {"project_name": project_name},
-        f"Placement done ({result.get('layers')}-layer): wire length "
-        f"{result.get('wire_length_mm')}mm, {result.get('crossings')} crossings."
-        f"{promo} Routing runs in the background; poll get_project_status "
-        "afterwards.",
+        f"Placement done ({result.get('layers')}-layer, board "
+        f"{result.get('board_width_mm'):g}x{result.get('board_height_mm'):g}mm): "
+        f"wire length {result.get('wire_length_mm')}mm, "
+        f"{result.get('crossings')} crossings."
+        f"{promo}{defaulted} Routing runs in the background; poll "
+        "get_project_status afterwards.",
     ))
 
 
@@ -3469,7 +3543,9 @@ def set_part_number(project_name: str, designator: str,
     'MPN' / 'LCSC Part #' columns, and is cached by type:value:package so the
     same part resolves automatically in future projects. Grouped lines match by
     membership ("D2" updates the "D1, D2, D3, D4" line); provided fields
-    overwrite, omitted fields are left unchanged.
+    overwrite, omitted fields are left unchanged. To RETRACT a wrong id (e.g. a
+    dead LCSC id the quote flagged) without guessing a replacement, pass that
+    field as "none" (also "null"/"clear"/"-") to clear it.
 
     Args:
         project_name: The project slug/name.
@@ -3614,27 +3690,34 @@ def set_component_positions(
     if placement_path.exists():
         placement = json.loads(placement_path.read_text())
     else:
-        # Need board dimensions to generate a seed placement
-        if board_width_mm is None or board_height_mm is None:
+        # No placement yet — resolve board dims: explicit args win, else the
+        # project's own draft/requirements (create_circuit stores the size in the
+        # draft), the same chain optimize_placement resolves. Only refuse if none
+        # of those know it, and then seed the remediation with what IS known
+        # instead of literal <width>/<height> placeholders (B7).
+        from orchestrator import stages as _stages
+        rw, rh = _stages._resolve_board_dims(pdir, project_name)
+        bw = board_width_mm if board_width_mm is not None else rw
+        bh = board_height_mm if board_height_mm is not None else rh
+        if bw is None or bh is None:
             return fail(
-                "No placement exists yet and board_width_mm/board_height_mm were "
-                "not provided, so no seed placement can be generated.",
+                "No placement exists yet and the board size is not recorded in "
+                "the project (circuit draft / requirements) — provide "
+                "board_width_mm/board_height_mm so a seed placement can be built.",
                 remediation=[
                     option("Provide board dimensions so a seed placement is generated",
                            "set_component_positions",
                            {"project_name": project_name, "positions": positions,
-                            "board_width_mm": "<width>", "board_height_mm": "<height>"}),
+                            "board_width_mm": rw or 50, "board_height_mm": rh or 40}),
                     option("Or run optimize_placement first, then pin positions",
                            "optimize_placement",
-                           {"project_name": project_name,
-                            "board_width_mm": "<width>", "board_height_mm": "<height>"}),
+                           {"project_name": project_name}),
                 ],
             )
         from optimizers.initial_placement import generate_grid_placement
         netlist = json.loads(netlist_path.read_text())
         _activate_project_lookup(project_name)
-        placement = generate_grid_placement(netlist, board_width_mm,
-                                            board_height_mm, project_name)
+        placement = generate_grid_placement(netlist, bw, bh, project_name)
         if placement is None:
             return fail(
                 "Could not generate a seed placement — check the netlist has "
