@@ -1974,6 +1974,48 @@ def test_run_drc_persists_harvested_gnd_stitch_vias(tmp_path, monkeypatch):
     assert len(calls) == 2
 
 
+def test_run_drc_unions_internal_short_checks_over_clean_kicad(tmp_path, monkeypatch):
+    """A kicad-cli clean verdict must NOT override an internal geometric short.
+
+    Regression for a real shipped-shorted board (parking_flasher_xor_20mm): the
+    authoritative merge dropped the internal pad_clearance/no_shorts checks, so
+    a kicad-cli false-clean shipped a board the internal engine had flagged.
+    The merge now UNIONs the short/clearance family in — this test pins the set
+    the merge carries and proves a failing carried check fails the whole report
+    even when kicad-cli reports nothing."""
+    from orchestrator import stages
+    from validators import kicad_drc as _kd
+    pdir, name = _routed_on_disk(tmp_path, "union")
+    monkeypatch.setattr("optimizers.route_cleanup.find_kicad_cli",
+                        lambda: "/fake/kicad-cli")
+
+    seen = {}
+
+    def fake_run_kicad_drc(routed, netlist, kcli, *, export_fn, project_name,
+                           extra_checks=None, **kw):
+        seen["rules"] = {c["rule"] for c in (extra_checks or [])}
+        # kicad-cli finds nothing (the false-clean), but the merge injects a
+        # real internal short via extra_checks — that must sink the report.
+        injected = list(extra_checks or []) + [{
+            "rule": "pad_clearance", "category": "electrical", "passed": False,
+            "violations": [{"rule": "pad_clearance", "severity": "error",
+                            "message": "trace(BULB) overlaps pad(Q1.2 net=VREG)"}]}]
+        return _kd.build_kicad_drc_report({"violations": []},
+                                          project_name=project_name,
+                                          extra_checks=injected)
+
+    monkeypatch.setattr(_kd, "run_kicad_drc", fake_run_kicad_drc)
+    report = stages.run_drc(pdir, name, _cfg())
+
+    # The short/clearance family is carried (the fix); dropping any of these
+    # would re-open the escape.
+    assert {"pad_clearance", "no_shorts", "trace_clearance",
+            "via_clearance"} <= seen["rules"]
+    # Union verdict: a carried internal short fails an otherwise-clean kicad run.
+    assert report["drc_engine"] == "kicad-cli"
+    assert report["passed"] is False
+
+
 # --- run_export (real Gerber/drill/BOM/STEP pipeline, no router) ----------
 
 def test_run_export_no_routed_board(tmp_path):

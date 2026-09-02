@@ -1668,19 +1668,20 @@ def run_drc(project_dir: Path, project_name: str, config, log=None,
 
     report = _run_drc(routed, netlist_data, req_data)
 
-    # When kicad-cli is installed, supersede the report with KiCad's own DRC for
-    # GEOMETRY — the authoritative engine the fab uses (correct rules from the
-    # exported .kicad_pro, poured zones, real short/antipad geometry). The
-    # internal report is the portable fallback. We carry over the internal
-    # CONNECTIVITY and current-capacity checks: connectivity stays on the
-    # router-reconciled internal check (KiCad's ratsnest disagrees with the
-    # router and would loop agents on "100% routed but N unconnected"), and
-    # KiCad has no current-capacity rule.
-    # drc_engine records WHICH engine produced this verdict. "internal" is the
-    # heuristic fallback — it MISSES THT-pad shorts, mask bridges, and starved
-    # thermals, so a clean "internal" report is NOT a manufacturability
-    # guarantee. Callers that gate on DRC (export) must treat authoritative ==
-    # False as "could not certify", never as "clean".
+    # When kicad-cli is installed, MERGE KiCad's own DRC with the internal
+    # geometric checks and take the UNION of failures — neither engine's clean
+    # verdict may override the other's failure. kicad-cli is authoritative for
+    # the geometry only IT sees (poured zones, mask bridges, THT-pad shorts,
+    # starved thermals, real .kicad_pro rules); the internal checks are the
+    # portable fallback AND a backstop against a kicad-cli false-negative.
+    # (A real fabricated board, parking_flasher_xor_20mm, shipped shorted
+    # because a kicad-cli false-clean REPLACED — instead of being unioned with —
+    # an internal pad_clearance that had correctly flagged 10 trace-pad shorts.)
+    # drc_engine records WHICH engine produced the geometry verdict. "internal"
+    # alone MISSES THT-pad shorts, mask bridges, and starved thermals, so a
+    # clean "internal" report is NOT a manufacturability guarantee. Callers that
+    # gate on DRC (export) must treat authoritative == False as "could not
+    # certify", never as "clean".
     report["drc_engine"] = "internal"
     report["authoritative"] = False
     try:
@@ -1689,16 +1690,25 @@ def run_drc(project_dir: Path, project_name: str, config, log=None,
         from exporters.kicad_exporter import export_kicad_pcb
         kcli = find_kicad_cli()
         if kcli:
-            # Carry these INTERNAL checks into the authoritative report:
-            #  - connectivity: router-reconciled (now incl. unrouted nets)
+            # Carry these INTERNAL checks into the authoritative report. They
+            # can only ADD failures (build_kicad_drc_report sets passed = all
+            # checks pass), never mask a kicad-cli one — this is the union.
+            #  - connectivity: router-reconciled (now incl. unrouted nets;
+            #    KiCad's ratsnest disagrees and would loop agents on "100%
+            #    routed but N unconnected")
             #  - trace_current_capacity: KiCad has no current-capacity rule
             #  - inner_plane_antipad: validates the copper_fills plane geometry
             #    that the GERBERS actually paint. kicad-cli only sees a pcbnew
             #    RE-POUR of empty board-sized zones — a different rendering than
             #    what ships — so without this a solid/antipad-less inner plane
             #    (which shorts every foreign pad in the gerbers) passes DRC.
+            #  - pad_clearance / no_shorts / trace_clearance / via_clearance:
+            #    the different-net-copper-collision family — the geometric
+            #    short/clearance backstop for a kicad-cli false-negative on a
+            #    trace/via crossing a foreign pad (the parking_flasher incident).
             _carry = {"connectivity", "trace_current_capacity",
-                      "inner_plane_antipad"}
+                      "inner_plane_antipad", "pad_clearance", "no_shorts",
+                      "trace_clearance", "via_clearance"}
             extra = [c for c in report.get("checks", [])
                      if c.get("rule") in _carry]
             # export_kicad_pcb harvests any export-time GND stitch vias back
