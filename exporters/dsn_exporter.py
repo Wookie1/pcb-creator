@@ -557,14 +557,27 @@ def export_dsn(
     # Determine which nets to exclude (typically GND for copper fill)
     exclude_nets = cfg.get("exclude_nets", [])
 
-    # Keepouts over pads that belong to no net, so the router cannot cross them.
+    # Keepouts over pads the router must NOT cross but that are ABSENT from the
+    # network it routes: truly netless pins (no-connect / mounting pads) AND pads
+    # of EXCLUDED nets — GND and the power plane net, delivered by copper
+    # fill/planes and dropped from the network section. Without a keepout
+    # Freerouting treats such a padstack as free space and routes other nets
+    # straight across it: a plane-pad short (the parking_flasher 12V↔GND fault
+    # that shipped a dead board). build_pad_map still returns these pads with
+    # their net_id, so match them by the excluded net NAMES.
     if "netless_pad_rects" not in cfg:
         try:
             from optimizers.pad_geometry import build_pad_map
             clr = cfg.get("clearance_mm", TRACE_CLEARANCE_MM)
+            _excl_names = set(exclude_nets)
+            excluded_net_ids = {
+                e.get("net_id") for e in netlist.get("elements", [])
+                if e.get("element_type") == "net"
+                and e.get("name", e.get("net_id")) in _excl_names
+            }
             rects = []
             for pad in build_pad_map(placement, netlist).values():
-                if pad.net_id:
+                if pad.net_id and pad.net_id not in excluded_net_ids:
                     continue
                 layers = (("F.Cu", "B.Cu") if pad.layer == "all"
                           else (("F.Cu",) if pad.layer == "top" else ("B.Cu",)))

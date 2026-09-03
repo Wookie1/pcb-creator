@@ -523,6 +523,43 @@ class TestDsnExporter:
         # Net definitions present with pin refs.
         assert "(net " in text and "(pins " in text
 
+    def test_dsn_keepout_protects_excluded_net_pads(self, tmp_path, placement, netlist):
+        """Pads of an EXCLUDED net (GND / power plane, delivered by fill) must get
+        routing keepouts. They are dropped from the network, so without a keepout
+        Freerouting routes other nets straight across them — the plane-pad short
+        that shipped parking_flasher_xor_20mm dead (12V↔GND)."""
+        import re
+        from exporters.dsn_exporter import export_dsn
+        from optimizers.pad_geometry import build_pad_map
+
+        def _ko_rects(text):
+            return [tuple(map(float, m)) for m in re.findall(
+                r'\(keepout "[^"]*" \(rect "[^"]+" '
+                r'([\-0-9.]+) ([\-0-9.]+) ([\-0-9.]+) ([\-0-9.]+)\)', text)]
+
+        def _covered(x, y, rects):
+            return any(min(a, c) - 0.01 <= x <= max(a, c) + 0.01 and
+                       min(b, d) - 0.01 <= y <= max(b, d) + 0.01
+                       for a, b, c, d in rects)
+
+        gnd_pads = [p for p in build_pad_map(placement, netlist).values()
+                    if p.net_id == "net_gnd"]
+        assert gnd_pads, "fixture must have GND pads"
+
+        excl = export_dsn(placement, netlist, tmp_path / "excl.dsn",
+                          {"exclude_nets": ["GND"]}).read_text()
+        assert '(net "GND"' not in excl, "excluded net must leave the network"
+        ko = _ko_rects(excl)
+        assert all(_covered(p.x_mm, p.y_mm, ko) for p in gnd_pads), \
+            "every excluded-net pad must be covered by a keepout"
+
+        # Control: when GND is NOT excluded it is a routed net (an obstacle via
+        # its network entry), so it gets no netless keepout — proves the keepout
+        # above comes from the exclusion, not from something unconditional.
+        base = export_dsn(placement, netlist, tmp_path / "base.dsn").read_text()
+        base_ko = _ko_rects(base)
+        assert not any(_covered(p.x_mm, p.y_mm, base_ko) for p in gnd_pads)
+
     def test_dsn_placement_fallback_no_image_map(self, placement, netlist):
         from exporters.dsn_exporter import _dsn_placement
         # Calling without des_image_map exercises the rebuild path (341-351).
