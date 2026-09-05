@@ -518,6 +518,323 @@ def _check_no_shorts(routed: dict) -> tuple[list[str], list[str]]:
 
 
 # ---------------------------------------------------------------------------
+# 5b. Fill shorts — foreign copper painted over by copper fills
+# ---------------------------------------------------------------------------
+
+def _poly_bbox(poly: list) -> tuple[float, float, float, float]:
+    xs = [p[0] for p in poly]
+    ys = [p[1] for p in poly]
+    return (min(xs), min(ys), max(xs), max(ys))
+
+
+def _point_in_poly(px: float, py: float, poly: list) -> bool:
+    """Ray-casting point-in-polygon test."""
+    inside = False
+    j = len(poly) - 1
+    for i in range(len(poly)):
+        xi, yi = poly[i]
+        xj, yj = poly[j]
+        if (yi > py) != (yj > py) and \
+                px < (xj - xi) * (py - yi) / (yj - yi) + xi:
+            inside = not inside
+        j = i
+    return inside
+
+
+def _segments_cross(a1x: float, a1y: float, a2x: float, a2y: float,
+                    b1x: float, b1y: float, b2x: float, b2y: float) -> bool:
+    """True if the two segments share a point (proper crossing or touching).
+
+    _segment_to_segment_distance cannot detect proper crossings (its four
+    point-to-segment combos stay > 0 when segments cross mid-air), so the
+    fill tests use this exact intersection predicate first.
+    """
+    denom = (a2x - a1x) * (b2y - b1y) - (a2y - a1y) * (b2x - b1x)
+    if abs(denom) < 1e-12:
+        return False
+    t = ((b1x - a1x) * (b2y - b1y) - (b1y - a1y) * (b2x - b1x)) / denom
+    u = ((b1x - a1x) * (a2y - a1y) - (b1y - a1y) * (a2x - a1x)) / denom
+    return 0.0 <= t <= 1.0 and 0.0 <= u <= 1.0
+
+
+def _poly_edge_distance(ax: float, ay: float, bx: float, by: float,
+                        poly: list) -> float:
+    """Distance from segment to polygon BOUNDARY; 0 when touching/crossing.
+
+    _segment_to_segment_distance cannot detect proper crossings (its four
+    point-to-segment combos stay > 0 when segments cross mid-air), so the
+    crossing test runs first.
+    """
+    n = len(poly)
+    d = math.inf
+    for i in range(n):
+        x1, y1 = poly[i]
+        x2, y2 = poly[(i + 1) % n]
+        if _segments_cross(ax, ay, bx, by, x1, y1, x2, y2):
+            return 0.0
+        d = min(
+            d,
+            _point_to_segment_distance(ax, ay, x1, y1, x2, y2),
+            _point_to_segment_distance(bx, by, x1, y1, x2, y2),
+            _point_to_segment_distance(x1, y1, ax, ay, bx, by),
+            _point_to_segment_distance(x2, y2, ax, ay, bx, by),
+        )
+    return d
+
+
+def _segment_to_poly_gap(ax: float, ay: float, bx: float, by: float,
+                         poly: list, is_copper: bool) -> float:
+    """Distance from segment (a point when a == b) to a polygon.
+
+    Returns 0.0 when the segment touches or crosses the boundary, and 0.0
+    when it lies inside a COPPER polygon. Inside a hole polygon (void) it
+    returns the distance to the void's edges — never more than the true
+    distance to the surrounding copper, conservative by design.
+    """
+    if is_copper and (_point_in_poly(ax, ay, poly)
+                      or _point_in_poly(bx, by, poly)):
+        return 0.0
+    return _poly_edge_distance(ax, ay, bx, by, poly)
+
+
+def _build_fill_regions(routed: dict) -> dict[str, list[dict]]:
+    """Group copper_fills into per-layer regions of (copper, hole) polygons.
+
+    Polygon semantics follow how gerber_exporter PAINTS the board: every
+    polygon of a pour (no is_plane flag) is positive copper; a plane
+    (is_plane: true) paints polygons[0] minus polygons[1:] (hole cut-outs),
+    so being inside the outer polygon does NOT mean being inside copper.
+    The validator must judge the geometry exactly as it ships, and KiCad
+    import zones emit unmarked polygons too.
+    """
+    by_layer: dict[str, list[dict]] = {}
+    for fill in routed.get("routing", {}).get("copper_fills", []):
+        layer = fill.get("layer")
+        net = fill.get("net_id")
+        polys = [p for p in fill.get("polygons", [])
+                 if isinstance(p, (list, tuple)) and len(p) >= 3]
+        if not layer or not net or not polys:
+            continue
+        plane = bool(fill.get("is_plane"))
+        if plane:
+            copper, holes = [polys[0]], polys[1:]
+        else:
+            copper, holes = polys, []
+        by_layer.setdefault(layer, []).append({
+            "net": net,
+            "name": fill.get("net_name") or net,
+            "plane": plane,
+            "outer": polys[0] if plane else None,
+            "polys": [(_poly_bbox(p), p, False) for p in copper]
+                     + [(_poly_bbox(p), p, True) for p in holes],
+        })
+    return by_layer
+
+
+def _distance_to_fill(px0: float, py0: float, px1: float, py1: float,
+                      region: dict, cutoff: float) -> float:
+    """Min distance from a segment (point when p0 == p1) to one fill region.
+
+    Polygon bboxes expanded by `cutoff` are skipped, which is exact: only
+    distances under the cutoff could affect a clearance verdict.
+    """
+    gx0 = min(px0, px1) - cutoff
+    gx1 = max(px0, px1) + cutoff
+    gy0 = min(py0, py1) - cutoff
+    gy1 = max(py0, py1) + cutoff
+    cands = [(poly, is_hole)
+             for bbox, poly, is_hole in region["polys"]
+             if not (gx1 < bbox[0] or gx0 > bbox[2]
+                     or gy1 < bbox[1] or gy0 > bbox[3])]
+    if not cands:
+        return math.inf
+
+    if region["plane"]:
+        outer = region["outer"]
+        holes = [poly for poly, is_hole in cands if is_hole]
+        # Copper = outer minus holes: an endpoint on the copper band is a
+        # short; one inside a hole void is measured against the void edges.
+        for x, y in ((px0, py0), (px1, py1)):
+            if (_point_in_poly(x, y, outer)
+                    and not any(_point_in_poly(x, y, h) for h in holes)):
+                return 0.0
+        d = math.inf
+        for poly, _is_hole in cands:
+            dist = _poly_edge_distance(px0, py0, px1, py1, poly)
+            if dist < d:
+                d = dist
+                if d <= 0.0:
+                    return 0.0
+        return d
+
+    d = math.inf
+    for poly, is_hole in cands:
+        dist = _segment_to_poly_gap(px0, py0, px1, py1, poly,
+                                    is_copper=not is_hole)
+        if dist < d:
+            d = dist
+            if d <= 0.0:
+                return 0.0
+    return d
+
+
+def _check_fill_shorts(routed: dict, netlist: dict | None) -> tuple[list[str], list[str]]:
+    """Check traces, vias and pads against copper fills of OTHER nets.
+
+    A pour painted directly on top of foreign-net copper is a real short: the
+    audit LM2596 board shipped a bottom GND pour covering 28 foreign trace
+    endpoints and validated clean because only trace-trace overlap was ever
+    checked against fills. Same-net features are connections (the pour exists
+    to carry that net), so they are skipped — same rule as _check_no_shorts.
+    """
+    errors: list[str] = []
+    warnings: list[str] = []
+
+    regions_by_layer = _build_fill_regions(routed)
+    if not regions_by_layer:
+        return errors, warnings
+
+    routing = routed.get("routing", {})
+    traces = routing.get("traces", [])
+    vias = routing.get("vias", [])
+    clearance = routing.get("config", {}).get("trace_clearance_mm", 0.2)
+
+    # --- traces vs fills (same layer only) ---
+    for t in traces:
+        layer = t.get("layer", "top")
+        regions = regions_by_layer.get(layer)
+        if not regions:
+            continue
+        t_net = t.get("net_id")
+        t_name = t.get("net_name", t_net)
+        half = t.get("width_mm", 0.25) / 2
+        ax, ay = t["start_x_mm"], t["start_y_mm"]
+        bx, by = t["end_x_mm"], t["end_y_mm"]
+        mx, my = (ax + bx) / 2, (ay + by) / 2
+
+        for region in regions:
+            if region["net"] == t_net:
+                continue
+            d = _distance_to_fill(ax, ay, bx, by, region, half + clearance)
+            if d == math.inf:
+                continue
+            gap = d - half
+            if gap < -0.01:
+                errors.append(
+                    f"Fill short on {layer}: trace({t_name}) overlaps "
+                    f"{region['name']} fill at ({mx:.2f},{my:.2f}) "
+                    f"(copper overlap {-gap:.3f}mm)"
+                )
+            elif gap < clearance - 0.05:
+                warnings.append(
+                    f"Fill clearance on {layer}: trace({t_name}) is {gap:.3f}mm "
+                    f"from {region['name']} fill at ({mx:.2f},{my:.2f}) "
+                    f"(min {clearance}mm)"
+                )
+
+    # --- vias vs fills (on every layer the via lands on) ---
+    for via in vias:
+        v_net = via.get("net_id")
+        v_radius = via.get("diameter_mm", 0.6) / 2
+        vx, vy = via["x_mm"], via["y_mm"]
+        v_name = via.get("net_name", v_net)
+
+        for layer in set(_via_layers(via)):
+            regions = regions_by_layer.get(layer)
+            if not regions:
+                continue
+            for region in regions:
+                if region["net"] == v_net:
+                    continue
+                d = _distance_to_fill(vx, vy, vx, vy, region,
+                                      v_radius + clearance)
+                if d == math.inf:
+                    continue
+                gap = d - v_radius
+                if gap < -0.01:
+                    errors.append(
+                        f"Fill short on {layer}: via({v_name}) overlaps "
+                        f"{region['name']} fill at ({vx:.2f},{vy:.2f}) "
+                        f"(copper overlap {-gap:.3f}mm)"
+                    )
+                elif gap < clearance - 0.05:
+                    warnings.append(
+                        f"Fill clearance on {layer}: via({v_name}) is "
+                        f"{gap:.3f}mm from {region['name']} fill at "
+                        f"({vx:.2f},{vy:.2f}) (min {clearance}mm)"
+                    )
+
+    # --- pads vs fills ---
+    if netlist is None:
+        return errors, warnings
+    try:
+        import sys as _sys
+        _sys.path.insert(0, str(Path(__file__).parent.parent))
+        from optimizers.pad_geometry import build_pad_map
+        pad_map = build_pad_map(routed, netlist)
+    except Exception:  # pragma: no cover - build_pad_map is defensive; this guards a corrupt pad map
+        warnings.append("Fill short check: could not build pad map")
+        return errors, warnings
+
+    for pad in pad_map.values():
+        if pad.net_id is None:
+            continue
+        is_th = pad.layer == "all"
+        if is_th:
+            radius = max(pad.pad_width_mm, pad.pad_height_mm) / 2
+            # Through-hole copper penetrates both outer layers
+            layers = ["top", "bottom"]
+            geom = [(pad.x_mm, pad.y_mm, pad.x_mm, pad.y_mm)]
+            reach = radius
+        else:
+            hw, hh = pad.pad_width_mm / 2, pad.pad_height_mm / 2
+            x0, y0 = pad.x_mm - hw, pad.y_mm - hh
+            x1, y1 = pad.x_mm + hw, pad.y_mm + hh
+            layers = [pad.layer]
+            # Perimeter edges + centre: a pour island swallowed whole by the
+            # pad copper must count as a short even though no edge crosses it.
+            geom = [(x0, y0, x1, y0), (x1, y0, x1, y1),
+                    (x1, y1, x0, y1), (x0, y1, x0, y0),
+                    (pad.x_mm, pad.y_mm, pad.x_mm, pad.y_mm)]
+            reach = 0.0
+
+        for layer in layers:
+            regions = regions_by_layer.get(layer)
+            if not regions:
+                continue
+            for region in regions:
+                if region["net"] == pad.net_id:
+                    continue
+                d = math.inf
+                for gx0, gy0, gx1, gy1 in geom:
+                    d = min(d, _distance_to_fill(gx0, gy0, gx1, gy1, region,
+                                                 reach + clearance))
+                    if d <= 0.0:
+                        break
+                if d == math.inf:
+                    continue
+                gap = d - reach
+                if gap < -0.01:
+                    errors.append(
+                        f"Fill short on {layer}: "
+                        f"pad({pad.designator}.{pad.pin_number} "
+                        f"net={pad.net_id}) overlaps {region['name']} fill at "
+                        f"({pad.x_mm:.2f},{pad.y_mm:.2f}) "
+                        f"(copper overlap {-gap:.3f}mm)"
+                    )
+                elif gap < clearance - 0.05:
+                    warnings.append(
+                        f"Fill clearance on {layer}: "
+                        f"pad({pad.designator}.{pad.pin_number} "
+                        f"net={pad.net_id}) is {gap:.3f}mm from "
+                        f"{region['name']} fill at "
+                        f"({pad.x_mm:.2f},{pad.y_mm:.2f}) (min {clearance}mm)"
+                    )
+
+    return errors, warnings
+
+
+# ---------------------------------------------------------------------------
 # 6. Trace-to-pad and via-to-pad clearance
 # ---------------------------------------------------------------------------
 
@@ -754,6 +1071,11 @@ def validate_routing(
 
     # 5. No shorts (trace-trace overlap)
     errs, warns = _check_no_shorts(routed)
+    all_errors.extend(errs)
+    all_warnings.extend(warns)
+
+    # 5b. Fill shorts (pours/planes painted over foreign copper)
+    errs, warns = _check_fill_shorts(routed, netlist)
     all_errors.extend(errs)
     all_warnings.extend(warns)
 

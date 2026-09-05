@@ -296,6 +296,10 @@ def _run_pipeline(args) -> int:
                         "name": event.get("name"),
                         "success": event.get("success", False),
                     })
+                    # DRC/export failures arrive as step_done(success=False) +
+                    # message (not as "error" events) — surface them too.
+                    if event.get("success") is False and event.get("message"):
+                        errors.append(event["message"])
                 elif ev == "error":
                     errors.append(event.get("message", "Unknown error"))
                 last_event = event

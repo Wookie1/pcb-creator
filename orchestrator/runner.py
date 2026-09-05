@@ -166,6 +166,10 @@ def run_workflow(
     # Step 5: DRC
     logger.info(f"[Step 5: DRC]")
     drc_report = stages.run_drc(project.project_dir, project_name, config, log=print)
+    drc_ok = bool(drc_report.get("passed", False))
+    if not drc_ok:
+        logger.info(f"  DRC FAILED: "
+                    f"{drc_report.get('summary') or drc_report.get('error')}")
 
     logger.info("")
 
@@ -220,9 +224,27 @@ def run_workflow(
 
     # Step 6: Output Generation
     logger.info(f"[Step 6: Output Generation]")
-    stages.run_export(project.project_dir, project_name, config, log=print)
+    export_result = stages.run_export(
+        project.project_dir, project_name, config, log=print)
+    export_ok = bool(export_result.get("success", False))
 
     logger.info("")
+
+    # Honest reporting: a failed DRC or a refused export is NOT a success, even
+    # though the steps themselves ran. run_export refuses to emit Gerbers for
+    # such boards (export_blocked); pretending otherwise made `run --json-output`
+    # exit 0 on unmanufacturable designs.
+    if not drc_ok or not export_ok:
+        reasons = []
+        if not drc_ok:
+            reasons.append(
+                "DRC: " + (drc_report.get("summary")
+                           or drc_report.get("error") or "failed"))
+        if not export_ok:
+            reasons.append(
+                "Export: " + (export_result.get("error") or "refused"))
+        _print_blocked(project_name, 6, "Output Generation", "; ".join(reasons))
+        return False
 
     # Final delivery
     _print_delivery(project, result)
@@ -417,7 +439,18 @@ def run_workflow_streaming(
         validator_errors=_drc_errors or None,
         validator_warnings=_drc_warnings or None,
     )
-    yield {"event": "step_done", "step": 5, "name": STEP_NAMES[5], "success": True}
+    # Honest DRC verdict: a failed (or non-certifiable) DRC must not report
+    # success. Deliberately a step_done with success=False + message, NOT an
+    # "error" event — Gradio's error handler abandons the generator, which
+    # would skip export entirely.
+    drc_ok = bool(drc_report.get("passed", False))
+    _drc_msg = (drc_report.get("error")
+                or f"DRC failed with {len(_drc_errors)} error(s)")
+    if drc_ok:
+        yield {"event": "step_done", "step": 5, "name": STEP_NAMES[5], "success": True}
+    else:
+        yield {"event": "step_done", "step": 5, "name": STEP_NAMES[5],
+               "success": False, "message": _drc_msg}
 
     # Yield final viewer with DRC
     html = generate_html(routed, netlist_data, bom_data, routed=routed, drc_report=drc_report, embed_mode=True)
@@ -429,6 +462,8 @@ def run_workflow_streaming(
         logger.info("[Review] Vision review skipped (skip_qa mode)")
         yield {"event": "vision_review_start"}
         yield {"event": "vision_review_done", "result": "approved"}
+    elif not drc_ok:
+        logger.info("[Review] Vision review skipped — DRC failed")
     else:
         yield {"event": "vision_review_start"}
         from orchestrator.vision_review import run_vision_review
@@ -444,7 +479,11 @@ def run_workflow_streaming(
 
     # --- Step 6: Output Generation ---
     yield {"event": "step_start", "step": 6, "name": STEP_NAMES[6]}
-    stages.run_export(project.project_dir, project_name, config)
+    # log=logger.info so the REFUSED line (why export_blocked fired) reaches
+    # streaming callers too — without it a refusal was invisible.
+    export_result = stages.run_export(
+        project.project_dir, project_name, config, log=logger.info)
+    export_ok = bool(export_result.get("success", False))
 
     if config.export_kicad:
         from exporters.kicad_exporter import export_kicad_pcb
@@ -454,8 +493,16 @@ def run_workflow_streaming(
             kicad_path = project.get_output_path(f"{project_name}.kicad_pcb")
         export_kicad_pcb(routed, netlist_data, kicad_path)
 
-    yield {"event": "step_done", "step": 6, "name": STEP_NAMES[6], "success": True}
-    yield {"event": "complete", "success": True}
+    if export_ok:
+        yield {"event": "step_done", "step": 6, "name": STEP_NAMES[6], "success": True}
+        yield {"event": "complete", "success": drc_ok}
+    else:
+        _exp_msg = ("Export refused: "
+                    + (export_result.get("error")
+                       or export_result.get("gate") or "manufacturing gate"))
+        yield {"event": "step_done", "step": 6, "name": STEP_NAMES[6],
+               "success": False, "message": _exp_msg}
+        yield {"event": "complete", "success": False}
 
 
 def _print_blocked(project_name: str, step: int, step_name: str, error: str) -> None:

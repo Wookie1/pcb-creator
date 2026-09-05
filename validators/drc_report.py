@@ -68,6 +68,7 @@ def _run_electrical_checks(routed: dict, netlist: dict) -> list[dict]:
             _check_via_clearance,
             _check_connectivity,
             _check_no_shorts,
+            _check_fill_shorts,
             _check_pad_clearance,
         )
     except ImportError:  # pragma: no cover - sibling module always importable in-package
@@ -132,8 +133,13 @@ def _run_electrical_checks(routed: dict, netlist: dict) -> list[dict]:
         "checked_count": routing.get("statistics", {}).get("total_nets", 0),
     })
 
-    # No shorts
+    # No shorts. Copper-fill shorts (a GND pour painted over a foreign trace,
+    # pad, or via) are shorts too — they fold into this rule so the kicad-cli
+    # merge (shorting_items -> no_shorts) stays a union, not a replacement.
     errors, warnings = _check_no_shorts(routed)
+    fill_errors, fill_warnings = _check_fill_shorts(routed, netlist)
+    errors = errors + fill_errors
+    warnings = warnings + fill_warnings
     results.append({
         "rule": "no_shorts",
         "category": "electrical",
@@ -141,6 +147,9 @@ def _run_electrical_checks(routed: dict, netlist: dict) -> list[dict]:
         "violations": [
             DRCViolation(rule="no_shorts", severity="error", message=e).to_dict()
             for e in errors
+        ] + [
+            DRCViolation(rule="no_shorts", severity="warning", message=w).to_dict()
+            for w in warnings
         ],
         "checked_count": len(traces),
     })
@@ -321,8 +330,10 @@ _RULE_REMEDIATION = {
                      "decided by the router.",
     "connectivity": "Some nets are not fully connected. Re-run route_board "
                     "(higher effort), or re-place with a larger board first.",
-    "no_shorts": "Traces of different nets touch. Re-route with "
-                 "route_board(effort='best').",
+    "no_shorts": "Traces or pads of different nets touch each other or a "
+                 "copper pour (fill shorts). Re-route with "
+                 "route_board(effort='best'); persistent fill shorts mean the "
+                 "pour must keep clearance from the foreign net.",
     "pad_clearance": "Re-route with route_board(effort='best'); persistent pad "
                      "clearance violations usually mean the placement is too "
                      "dense — re-place on a larger board.",

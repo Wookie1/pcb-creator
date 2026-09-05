@@ -890,6 +890,10 @@ def _design_pcb_sync(  # pragma: no cover - full LLM pipeline worker (requiremen
                     "name": event.get("name"),
                     "success": event.get("success", False),
                 })
+                # DRC/export failures arrive as step_done(success=False) +
+                # message (not as "error" events) — surface them too.
+                if event.get("success") is False and event.get("message"):
+                    errors.append(event["message"])
                 if progress_cb is not None:
                     progress_cb({
                         "phase": "pipeline",
