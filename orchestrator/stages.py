@@ -1430,6 +1430,32 @@ def _route_score(r: dict) -> tuple:
             bool(r.get("valid", False)))
 
 
+def _fail_unresolved(result: dict) -> dict:
+    """Mark a retried routing run that is STILL invalid as a step failure.
+
+    `_route_score` keeps the better of two attempts so a retry never regresses
+    the board — but "better" is not "usable". A best-of-attempts that still
+    fails validation (audit F2: IN2 threaded through the L298N pad rows on
+    BOTH attempts) previously reported success:true, so the step "completed"
+    with a physically impossible board and the agent never learned attention
+    was due. Flipping success to False makes the CLI runner and the MCP poller
+    see a failed step: 'routing_state' reaches 'failed' with the remediation
+    ladder instead of a silent 'complete'. Artifacts are untouched — the
+    caller can still revert_board or fix placement."""
+    if result.get("success") and result.get("valid") is False:
+        errs = result.get("validation_errors") or []
+        result["success"] = False
+        result["error"] = (
+            "Routing did not converge: even the best attempt fails validation "
+            f"({len(errs)} error(s); e.g. {errs[0] if errs else 'see report'}) "
+            "— it was kept only because nothing routed better, NOT because it "
+            "is manufacturable. Do not export this board: re-place with more "
+            "escape room around the offending components (a trace must leave a "
+            "package from outside its pad rows, never between them) or "
+            "revert_board, then route again.")
+    return result
+
+
 # At/above this completion the auto-retry FINISHES the residual nets
 # incrementally (protect the routed wiring, route only what's left) instead of
 # re-placing from scratch and re-routing all over — which on a near-complete
@@ -1502,7 +1528,10 @@ def run_route_with_retry(project_dir: Path, project_name: str, config,  # pragma
     (or a 10% larger board when allow_grow=True). If no unrouted region can be
     identified it falls back to the old blunt +0.5mm global clearance bump.
     Keeps whichever attempt routed better; the result carries both attempts'
-    stats under 'attempts'.
+    stats under 'attempts'. A board that STILL fails validation after the
+    retry is reported as a step FAILURE (success=False + 'Routing did not
+    converge' error), not kept as a completed step — an invalid board needs
+    attention, and a silent 'success' taught callers to ship it (audit F2).
     """
     _log = log or (lambda *_a: None)
     routed_path = _p(project_dir, project_name, "routed")
@@ -1542,15 +1571,18 @@ def run_route_with_retry(project_dir: Path, project_name: str, config,  # pragma
                                  effort=effort, max_seconds=max_seconds,
                                  fixed_routing=fixed)
             attempts = [_attempt_summary(first), _attempt_summary(finish)]
-            if _route_score(finish) >= _route_score(first):
+            # Validity outranks completion % in the keep-decision: an invalid
+            # finish is never traded for a valid (if slower) first attempt.
+            if _route_score(finish) >= _route_score(first) and not (
+                    first.get("valid", True) and finish.get("valid") is False):
                 finish["attempts"] = attempts
                 finish["retried"] = True
-                return finish
+                return _fail_unresolved(finish)
             if saved_routed is not None:
                 routed_path.write_text(saved_routed)
             first["attempts"] = attempts
             first["retried"] = True
-            return first
+            return _fail_unresolved(first)
 
     focus = sorted(_components_for_unrouted(
         project_dir, project_name, first.get("unrouted_nets", []) or []))
@@ -1601,7 +1633,7 @@ def run_route_with_retry(project_dir: Path, project_name: str, config,  # pragma
     if not place_result.get("success"):
         _log(f"  Retry re-place failed: {place_result.get('error')}")
         first["attempts"] = [_attempt_summary(first)]
-        return first
+        return _fail_unresolved(first)
 
     second = run_routing(project_dir, project_name, config,
                          progress_callback=progress_callback, log=log,
@@ -1609,10 +1641,11 @@ def run_route_with_retry(project_dir: Path, project_name: str, config,  # pragma
 
     attempts = [_attempt_summary(first), _attempt_summary(second)]
 
-    if _route_score(second) >= _route_score(first):
+    if _route_score(second) >= _route_score(first) and not (
+            first.get("valid", True) and second.get("valid") is False):
         second["attempts"] = attempts
         second["retried"] = True
-        return second
+        return _fail_unresolved(second)
 
     # First attempt was better — restore its placement and routing artifacts.
     _log("  Retry routed worse — restoring the first attempt's result")
@@ -1622,7 +1655,7 @@ def run_route_with_retry(project_dir: Path, project_name: str, config,  # pragma
         routed_path.write_text(saved_routed)
     first["attempts"] = attempts
     first["retried"] = True
-    return first
+    return _fail_unresolved(first)
 
 
 # ---------------------------------------------------------------------------

@@ -451,6 +451,22 @@ def _route_failure_next_step(project_name: str, err: str) -> dict:
     something the user likely constrained — board layer count or dimensions — so
     an agent prepares the exact call but does not run it without confirmation.
     """
+    # A route that stayed INVALID after retry needs a placement/escape fix, not
+    # more routing capacity — the capacity ladder below would just move the
+    # impossible board to another layer (audit F2: IN2 threaded the L298N pad
+    # rows; that is solved by re-spacing the parts, not by 4 layers).
+    if "did not converge" in err:
+        return next_step(
+            "optimize_placement",
+            {"project_name": project_name},
+            "Routing failed to converge — the board still fails validation after "
+            "the auto-retry (a trace was forced through another part's pad "
+            "field). Re-run optimize_placement for a fresh placement that gives "
+            "the offending components escape room, then route_board again; or "
+            "revert_board to restore the previous board. Do NOT escalate "
+            "layers/size for this failure — it is not capacity-limited.",
+        )
+
     board = (_read_project_json(project_name, "_placement.json") or {}).get("board", {})
     layers = board.get("layers", 2)
     plane_layers = board.get("plane_layers")
@@ -2844,10 +2860,12 @@ def route_board(project_name: str, effort: str = "normal",
       "best"   — maximum optimization (~15 min cap, auto-retries on timeout).
     max_seconds overrides the effort level's time cap when given.
 
-    auto_retry (default true): if the route is incomplete, automatically
-    re-place once with extra component clearance and re-route, keeping the
-    better result. allow_grow additionally permits a 10% board-size increase
-    for that retry.
+    auto_retry (default true): if the route is incomplete OR fails validation,
+    automatically re-place once with extra component clearance and re-route,
+    keeping the better result. allow_grow additionally permits a 10% board-size
+    increase for that retry. A board that still fails validation after the
+    retry ends as routing_state 'failed' (not 'complete') — its get_project_status
+    next_step carries the fix.
 
     keep_existing=True does INCREMENTAL routing: the project's current routed
     board is kept as protected wiring and only the UNROUTED nets are routed —

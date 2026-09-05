@@ -1012,6 +1012,174 @@ def _check_pad_clearance(routed: dict, netlist: dict | None) -> tuple[list[str],
 
 
 # ---------------------------------------------------------------------------
+# 7. Pad-row escape — routing threaded through a 2-row TH package's pad gap
+# ---------------------------------------------------------------------------
+
+# Minimum inner gap (mm) between the two pad rows for a footprint to be treated
+# as a two-row through-hole package whose channel a trace could thread. Below
+# this there is no room for copper between the rows without touching pad
+# copper, which pad-clearance already catches. 1.0mm keeps narrow-pitch pin
+# headers (2.54mm pitch, ~0.84mm inter-row gap) out of the rule while catching
+# Multiwatt/DIP-class bodies (L298N Multiwatt-15: 1.2mm, audit finding F2).
+_PAD_ROW_MIN_CHANNEL_MM = 1.0
+
+# A trace endpoint this close (mm) to a pad centre of the package counts as
+# connected TO the package: a pin-to-pin link through the channel is a
+# connection, not an escape. Anything whose ends both float free and still
+# crosses the channel is a dangling stub or a wrong-side escape.
+_PAD_ROW_CONNECT_R_MM = 1.1
+
+
+def _find_pad_row_channels(pad_map: dict) -> list[dict]:
+    """Detect two-row through-hole footprints and their inter-row channel.
+
+    A footprint qualifies when its through-hole pads (layer == "all") split at
+    a clear gap into two parallel pad lines — at least two pads per line, each
+    line within 1.0mm of straight (spread measured along the split axis), and
+    an inner channel at least ``_PAD_ROW_MIN_CHANNEL_MM`` wide. Tries
+    y-stacking then x-stacking so a 90 degree-rotated part is found too.
+    Returns per package:
+
+        {"ref": designator,
+         "rect": (x0, y0, x1, y1),   # channel strip between the two pad-row
+                                      # centrelines, spanning the pad field
+         "pads": [(x, y), ...]}      # pad centres, for the endpoint test
+    """
+    by_ref: dict[str, list] = {}
+    for pad in pad_map.values():
+        if pad.layer == "all":
+            by_ref.setdefault(pad.designator, []).append(pad)
+
+    channels: list[dict] = []
+    for ref, pads in sorted(by_ref.items()):
+        if len(pads) < 4:
+            continue
+        for axis in (1, 0):  # split axis: y first, then x (rotated parts)
+            order = sorted(pads, key=lambda p: (p.x_mm, p.y_mm)[axis])
+            best_gap, split = 0.0, -1
+            for i in range(len(order) - 1):
+                gap = ((order[i + 1].x_mm, order[i + 1].y_mm)[axis]
+                       - (order[i].x_mm, order[i].y_mm)[axis])
+                if gap > best_gap:
+                    best_gap, split = gap, i
+            if split < 1 or split >= len(order) - 1:
+                continue
+            low, high = order[:split + 1], order[split + 1:]
+
+            def _spread(group: list) -> float:
+                vals = [(p.x_mm, p.y_mm)[axis] for p in group]
+                return max(vals) - min(vals)
+
+            # Each side must be a LINE of pads, not a scattered blob.
+            if _spread(low) > 1.0 or _spread(high) > 1.0:
+                continue
+
+            lo_edge = max((p.x_mm, p.y_mm)[axis] for p in low)
+            hi_edge = min((p.x_mm, p.y_mm)[axis] for p in high)
+            # Inner channel width: centre-line gap minus each row's pad
+            # half-extent along the split axis.
+            half = (max(max(p.pad_width_mm, p.pad_height_mm) for p in low)
+                    + max(max(p.pad_width_mm, p.pad_height_mm) for p in high)) / 2
+            if (hi_edge - lo_edge) - half < _PAD_ROW_MIN_CHANNEL_MM:
+                continue
+
+            lo_c = max((p.x_mm, p.y_mm)[axis] for p in low)
+            hi_c = min((p.x_mm, p.y_mm)[axis] for p in high)
+            # The channel exists only where the two rows face each other: the
+            # OVERLAP of their run-direction extents. Past a row end a trace is
+            # leaving the package (a legal escape), not threading it.
+            r_lo = max(min((p.x_mm, p.y_mm)[1 - axis] for p in low),
+                       min((p.x_mm, p.y_mm)[1 - axis] for p in high))
+            r_hi = min(max((p.x_mm, p.y_mm)[1 - axis] for p in low),
+                       max((p.x_mm, p.y_mm)[1 - axis] for p in high))
+            if r_hi <= r_lo:
+                continue
+            if axis == 1:  # rows run along x, channel between them in y
+                rect = (r_lo, lo_c, r_hi, hi_c)
+            else:          # rows run along y, channel between them in x
+                rect = (lo_c, r_lo, hi_c, r_hi)
+            channels.append({
+                "ref": ref,
+                "rect": rect,
+                "pads": [(p.x_mm, p.y_mm) for p in pads],
+            })
+            break  # package resolved on this axis; no second channel
+    return channels
+
+
+def _check_pad_row_escape(routed: dict, netlist: dict | None) -> tuple[list[str], list[str]]:
+    """Flag traces that cross a two-row TH package's pad-row channel without
+    connecting to it.
+
+    The channel between the pad rows is occupied by the package body and the
+    pad drill/solder zone: a trace threaded through it is either a dangling
+    stub or an escape that went through the footprint instead of around its
+    perimeter — physically impossible boards (audit F2 routed IN2 straight
+    through the L298N rows, clipping three pads; KiCad DRC saw pad_clearance
+    + six dangling tracks, the internal layer saw nothing structural). Traces
+    with an endpoint on a pad of the package are connections, not escapes, and
+    are skipped — same rule as the other copper checks. Inner copper layers
+    are NOT checked: under-package routing on an internal layer is legal.
+    """
+    errors: list[str] = []
+    warnings: list[str] = []
+
+    if netlist is None:
+        return errors, warnings
+    try:
+        import sys as _sys
+        _sys.path.insert(0, str(Path(__file__).parent.parent))
+        from optimizers.pad_geometry import build_pad_map
+        pad_map = build_pad_map(routed, netlist)
+    except Exception:  # pragma: no cover - build_pad_map is defensive; this guards a corrupt pad map
+        warnings.append("Pad-row escape check: could not build pad map")
+        return errors, warnings
+
+    channels = _find_pad_row_channels(pad_map)
+    if not channels:
+        return errors, warnings
+
+    routing = routed.get("routing", {})
+    traces = routing.get("traces", [])
+    seen: set[tuple] = set()
+
+    for ch in channels:
+        x0, y0, x1, y1 = ch["rect"]
+        cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
+        hw, hh = (x1 - x0) / 2, (y1 - y0) / 2
+        for trace in traces:
+            layer = trace.get("layer", "top")
+            if layer not in ("top", "bottom"):
+                continue
+            ax, ay = trace["start_x_mm"], trace["start_y_mm"]
+            bx, by = trace["end_x_mm"], trace["end_y_mm"]
+            if _segment_to_rect_distance(ax, ay, bx, by, cx, cy, hw, hh) > 0.0:
+                continue
+
+            def _free(px: float, py: float) -> bool:
+                return all(math.hypot(px - qx, py - qy) > _PAD_ROW_CONNECT_R_MM
+                           for qx, qy in ch["pads"])
+
+            if not (_free(ax, ay) and _free(bx, by)):
+                continue
+
+            key = (trace.get("net_id"), ch["ref"], layer)
+            if key in seen:
+                continue
+            seen.add(key)
+            mx, my = (ax + bx) / 2, (ay + by) / 2
+            errors.append(
+                f"Pad-row escape on {layer}: "
+                f"trace({trace.get('net_name', trace.get('net_id'))}) crosses "
+                f"the pad-row gap of {ch['ref']} at ({mx:.2f},{my:.2f}) — "
+                f"escapes must go around the package perimeter, not through "
+                f"its pad rows"
+            )
+
+    return errors, warnings
+
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
@@ -1081,6 +1249,11 @@ def validate_routing(
 
     # 6. Trace-pad and via-pad clearance
     errs, warns = _check_pad_clearance(routed, netlist)
+    all_errors.extend(errs)
+    all_warnings.extend(warns)
+
+    # 7. Pad-row escape (2-row TH packages: no threading through the pad rows)
+    errs, warns = _check_pad_row_escape(routed, netlist)
     all_errors.extend(errs)
     all_warnings.extend(warns)
 
