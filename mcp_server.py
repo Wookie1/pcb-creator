@@ -315,6 +315,29 @@ def _read_project_json(project_name: str, suffix: str) -> dict | None:
     return None
 
 
+def _coerce_json_arg(value, name: str, expect: type = dict):
+    """Accept a JSON string in place of a dict/list tool argument (F7).
+
+    MCP clients that stringify payloads (requirements_json='{"board": ...}')
+    used to die at the pydantic validation boundary with an opaque
+    ``dict_type`` error. Affected args now also accept ``str`` and are parsed
+    here; malformed or wrong-shape input fails through the normal envelope so
+    the caller gets a message and remediation, not a schema error.
+    Returns (value, error_message_or_None).
+    """
+    if not isinstance(value, str):
+        return value, None
+    try:
+        parsed = json.loads(value)
+    except ValueError as exc:
+        return None, f"{name}: not valid JSON ({exc})."
+    if not isinstance(parsed, expect):
+        want = "object" if expect is dict else "array"
+        return None, (f"{name}: expected a JSON {want}, but the string parses "
+                      f"as {type(parsed).__name__}.")
+    return parsed, None
+
+
 def _electrical_gate(project_name: str, next_tool: str) -> dict | None:
     """Refuse expensive work on a circuit with known electrical errors.
 
@@ -599,9 +622,9 @@ def _requires_approval(project_name: str, layers: int | None,
 def design_pcb(  # pragma: no cover - spawns the background LLM design pipeline (needs a configured LLM + Freerouting); covered end-to-end only in the manual flow
     description: str,
     project_name: str | None = None,
-    requirements_json: dict | None = None,
-    settings: dict | None = None,
-    attachments: list[dict] | None = None,
+    requirements_json: dict | str | None = None,
+    settings: dict | str | None = None,
+    attachments: list[dict] | str | None = None,
 ) -> dict:
     """Design a complete PCB autonomously from a description (async, one-shot).
 
@@ -624,8 +647,25 @@ def design_pcb(  # pragma: no cover - spawns the background LLM design pipeline 
     settings overrides: {"model", "max_rework_attempts",
     "skip_qa"}. attachments: list of {"filename", "content_base64", "type",
     "purpose", "used_by_steps"} (e.g. a "board_outline" DXF for step 3).
+    requirements_json/settings/attachments may be sent as native JSON
+    objects/arrays OR as JSON strings (strings are parsed).
     """
     import time as _time
+
+    requirements_json, err_r = _coerce_json_arg(
+        requirements_json, "requirements_json")
+    settings, err_s = _coerce_json_arg(settings, "settings")
+    attachments, err_a = _coerce_json_arg(attachments, "attachments",
+                                          expect=list)
+    arg_errs = [e for e in (err_r, err_s, err_a) if e]
+    if arg_errs:
+        return fail(
+            " ".join(arg_errs) + " Send dict/list args as native JSON objects/"
+            "arrays, or fix the string (it must parse to that shape).",
+            remediation=[option(
+                "Re-run design_pcb with the args as native objects",
+                "design_pcb", {"description": description})],
+        )
 
     if not project_name:
         project_name = _slugify(description)
@@ -1231,7 +1271,10 @@ def get_workflow_guide() -> dict:
                 "capacity: 2 = GND + power planes (best integrity), 1 = GND "
                 "plane and a 3rd SIGNAL layer (power routed as traces), 0 = all "
                 "inner layers signal. Escalate 2 → 1 → 0 for a dense board with "
-                "many signals, e.g. a fine-pitch connector with lots of GPIO."),
+                "many signals, e.g. a fine-pitch connector with lots of GPIO. "
+                "Stackup args (layers/plane_layers) act on optimize_placement "
+                "only — set_component_positions pins components and redirects "
+                "any stackup change back here."),
             "export_refusal": (
                 "export_outputs refuses anything that cannot be built, with no "
                 "override. Open/disconnected nets → route_board("
@@ -2049,8 +2092,8 @@ def provide_footprint(
     project_name: str,
     package: str,
     like_package: str | None = None,
-    pin_offsets: dict | None = None,
-    pad_size: list | None = None,
+    pin_offsets: dict | str | None = None,
+    pad_size: list | str | None = None,
 ) -> dict:
     """Supply footprint geometry for a package the libraries don't know.
 
@@ -2072,7 +2115,23 @@ def provide_footprint(
 
     The entry persists in the shared component cache for all later runs.
     After calling this, run verify_footprints to confirm the gate is clear.
+    pin_offsets/pad_size may be sent as native JSON or as JSON strings.
     """
+    pin_offsets, err_p = _coerce_json_arg(pin_offsets, "pin_offsets")
+    pad_size, err_z = _coerce_json_arg(pad_size, "pad_size", expect=list)
+    if err_p or err_z:
+        return fail(
+            " ".join(e for e in (err_p, err_z) if e)
+            + " Mode 2 expects pin_offsets as an object and pad_size as an "
+            "array.",
+            remediation=[option(
+                "Retry with native JSON shapes for pin_offsets/pad_size",
+                "provide_footprint",
+                {"project_name": project_name, "package": package,
+                 "pin_offsets": {"1": [-1.27, 0.0], "2": [1.27, 0.0]},
+                 "pad_size": [1.05, 1.4]})],
+        )
+
     _ensure_lookup_configured()
     from optimizers.pad_geometry import get_footprint_def, get_default_cache
 
@@ -2445,8 +2504,8 @@ _NET_KEYS = {"net_name", "pins", "net_class"}
 @mcp.tool()
 def build_circuit(project_name: str, description: str,
                   board_width_mm: float, board_height_mm: float,
-                  components: list[dict], nets: list[dict],
-                  no_connect: list[str] | None = None,
+                  components: list[dict] | str, nets: list[dict] | str,
+                  no_connect: list[str] | str | None = None,
                   layers: int = 2, overwrite: bool = False) -> dict:
     """Build a whole circuit in ONE call: draft + all components + all nets +
     compile. The bulk form of create_circuit → add_component → connect_pins →
@@ -2477,7 +2536,25 @@ def build_circuit(project_name: str, description: str,
                      "pinout": "1:GND 2:TRIG 3:OUT 4:RESET 5:CTRL 6:THRES "
                                "7:DISCH 8:VCC"}],
         nets=[{"net_name": "GND", "pins": ["U1.1"]}])
+
+    components/nets/no_connect may be sent as native JSON arrays or as JSON
+    strings (strings are parsed).
     """
+    components, err_c = _coerce_json_arg(components, "components",
+                                         expect=list)
+    nets, err_n = _coerce_json_arg(nets, "nets", expect=list)
+    no_connect, err_x = _coerce_json_arg(no_connect, "no_connect",
+                                         expect=list)
+    if err_c or err_n or err_x:
+        return fail(
+            " ".join(e for e in (err_c, err_n, err_x) if e)
+            + " Send components/nets/no_connect as JSON arrays (or strings "
+            "that parse to them).",
+            remediation=[option(
+                "Retry build_circuit with native arrays", "build_circuit",
+                {"project_name": project_name})],
+        )
+
     created = create_circuit(project_name, description, board_width_mm,
                              board_height_mm, layers=layers, overwrite=overwrite)
     if not created.get("success"):
@@ -3176,8 +3253,8 @@ def run_drc(project_name: str) -> dict:
 def check_circuit(
     project_name: str,
     supply_voltage: str | None = None,
-    models: dict | None = None,
-    rails: dict | None = None,
+    models: dict | str | None = None,
+    rails: dict | str | None = None,
 ) -> dict:
     """Check whether a circuit is electrically sound, before it is laid out (no LLM).
 
@@ -3207,10 +3284,24 @@ def check_circuit(
             more than one voltage.
         models: Per-part data the agent knows, e.g.
             {"U1": {"vcc_min": "3.0V", "vcc_max": "3.6V"}}. Supported keys:
-            vcc_min, vcc_max, vf, if, voltage_rating.
+            vcc_min, vcc_max, vf, if, voltage_rating. May be a native dict or
+            a JSON string.
         rails: Explicit net voltages when the input rail is ambiguous, e.g.
-            {"VCC": "5V"}. Keyed by net name.
+            {"VCC": "5V"}. Keyed by net name. May be a native dict or a JSON
+            string.
     """
+    models, err_m = _coerce_json_arg(models, "models")
+    rails, err_r = _coerce_json_arg(rails, "rails")
+    if err_m or err_r:
+        return fail(
+            " ".join(e for e in (err_m, err_r) if e)
+            + " Send models/rails as JSON objects (or strings that parse to "
+            "them).",
+            remediation=[option(
+                "Re-run check_circuit with models/rails as native objects",
+                "check_circuit", {"project_name": project_name})],
+        )
+
     sys.path.insert(0, str(_repo_root / "validators"))
     from validators.circuit_report import build_report
     from validators.engineering_constants import parse_supply_voltage
@@ -3615,10 +3706,12 @@ def set_part_number(project_name: str, designator: str,
 @mcp.tool()
 def set_component_positions(
     project_name: str,
-    positions: list[dict],
+    positions: list[dict] | str,
     board_width_mm: float | None = None,
     board_height_mm: float | None = None,
     approved: bool = False,
+    layers: int | str | None = None,
+    plane_layers: int | str | None = None,
 ) -> dict:
     """Pre-position components with placement_source='user' so optimize_placement
     treats them as fixed anchors and only moves everything else.
@@ -3634,7 +3727,8 @@ def set_component_positions(
 
     Args:
         project_name:    Project slug.
-        positions:       List of component position dicts, each with:
+        positions:       List of component position dicts (or a JSON string of
+                         one), each with:
                            "designator"   (str, required) — e.g. "J1", "U3"
                            "x_mm"         (float, required) — X from board origin
                            "y_mm"         (float, required) — Y from board origin
@@ -3645,12 +3739,41 @@ def set_component_positions(
         approved:        Growing an already-placed board is enforced to need
                          the user's explicit approval (enclosure/mating fit) —
                          pass approved=True ONLY after they agree.
+        layers:          Accepted for compatibility, but this tool NEVER changes
+                         the layer stackup: if it matches the board's current
+                         stackup it is ignored; anything else fails and
+                         redirects to optimize_placement (2→4 promotion there is
+                         approval-gated).
+        plane_layers:    Same rule as layers (0-2, 4-layer boards only).
 
     Returns:
         {success: True, pinned_count: int, total_components: int,
          placement_path: str, notes: [str]}
         or {success: False, error: str}
     """
+    positions, err_p = _coerce_json_arg(positions, "positions", expect=list)
+    if err_p:
+        return fail(
+            err_p + " Send positions as a JSON array of "
+            '{designator, x_mm, y_mm, ...} dicts (or a string that parses to '
+            "one).")
+
+    # F7: clients copy stackup args from the workflow guide; accept the keys
+    # here too, but validate and redirect — this tool must not (and does not)
+    # change the stackup, so a mismatched request fails with a pointer to the
+    # tool that does instead of dying as an opaque schema validation error.
+    try:
+        l_req = int(layers) if layers is not None else None
+        p_req = int(plane_layers) if plane_layers is not None else None
+    except (TypeError, ValueError):
+        return fail(
+            f"layers/plane_layers must be integers (got layers={layers!r}, "
+            f"plane_layers={plane_layers!r}).")
+    if l_req not in (None, 2, 4) or (p_req is not None and p_req not in (0, 1, 2)):
+        return fail(
+            "layers must be 2 or 4; plane_layers must be 0, 1 or 2 "
+            f"(got layers={layers!r}, plane_layers={plane_layers!r}).")
+
     if not approved:
         reason = _requires_approval(project_name, None, None,
                                     board_width_mm, board_height_mm)
@@ -3707,6 +3830,37 @@ def set_component_positions(
                         "description": "<circuit description>"}),
             ],
         )
+
+    # Stackup args that would CHANGE the stackup are refused here (args
+    # matching the current stackup are simply ignored): optimize_placement owns
+    # stackup, and only it re-derives placement/route rules for a new layer
+    # count.
+    if l_req is not None or p_req is not None:
+        cur_board = (json.loads(placement_path.read_text()).get("board", {})
+                     if placement_path.exists() else {})
+        cur_l = cur_board.get("layers", 2)
+        cur_p = cur_board.get("plane_layers")
+        would_change = ((l_req is not None and l_req != cur_l)
+                        or (p_req is not None and p_req != cur_p)
+                        or (l_req is None and p_req is not None and cur_l < 4))
+        if would_change:
+            opt_args = {"project_name": project_name}
+            if l_req is not None:
+                opt_args["layers"] = l_req
+            if p_req is not None:
+                opt_args["plane_layers"] = p_req
+            return fail(
+                "set_component_positions pins components; it never changes the "
+                f"layer stackup (this board is {cur_l}-layer"
+                + (f" with plane_layers={cur_p}" if cur_p is not None else "")
+                + "). Change the stackup with optimize_placement instead — "
+                "2→4 promotion there requires the user's approval "
+                "(approved=True).",
+                remediation=[option(
+                    "Change the stackup with optimize_placement (ask the user "
+                    "before passing approved=True)", "optimize_placement",
+                    opt_args)],
+            )
 
     # Load or generate placement
     if placement_path.exists():
@@ -3860,7 +4014,7 @@ def set_component_positions(
 
 @mcp.tool()
 def check_footprint_coverage(
-    components: list[dict],
+    components: list[dict] | str,
     project_name: str | None = None,
 ) -> dict:
     """Check footprint library coverage for a BOM before launching placement.
@@ -3890,6 +4044,13 @@ def check_footprint_coverage(
          "resolved": [{reference, package, pin_count, tier}, ...],
          "custom_needed": [{reference, package, pin_count, value, notes}, ...]}
     """
+    components, err = _coerce_json_arg(components, "components", expect=list)
+    if err:
+        return fail(
+            err + " Send components as a JSON array of "
+            '{reference, package, pin_count, ...} dicts (or a string that '
+            "parses to one).")
+
     from optimizers.pad_geometry import check_footprint_tier
 
     custom = _get_project_custom_index(project_name) if project_name else None

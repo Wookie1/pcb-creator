@@ -49,15 +49,22 @@ git clone <repo-url> && cd pcb-creator
 source .venv/bin/activate
 ```
 
-Configure your LLM provider (edit `.env`):
+Configure your LLM provider (edit `.env`). **No API keys ship with this
+repo** — cloud providers (OpenRouter/OpenAI) need your own key or every LLM
+step fails with 401; a local Ollama needs no key.
 
 ```bash
-# OpenRouter (cloud)
+# OpenRouter (cloud) — your own key required
 PCB_LLM_API_KEY=sk-or-your-key-here
 
-# Or Ollama (local, free)
-PCB_LLM_API_BASE=http://localhost:11434/v1
+# Or Ollama (local, free) — use ONE of the two working spellings:
+#   (a) native ollama provider: base WITHOUT /v1 (litellm appends
+#       /api/chat, so a ".../v1" base 404s with the ollama/ model prefix)
+PCB_LLM_API_BASE=http://localhost:11434
 PCB_GENERATE_MODEL=ollama/qwen3.5:27b
+#   (b) OpenAI-compatible endpoint: keep /v1 and use the openai/ prefix
+# PCB_LLM_API_BASE=http://localhost:11434/v1
+# PCB_GENERATE_MODEL=openai/qwen3.5:27b
 ```
 
 Run it:
@@ -114,7 +121,7 @@ All settings via environment variables or `.env` file:
 |----------|---------|-------------|
 | `PCB_GENERATE_MODEL` | `openrouter/qwen/qwen3.5-27b` | LLM model for generation |
 | `PCB_MODEL_PROFILE` | `normal` | `small` lowers the chunked-generation threshold and batch sizes for weaker local models (≤14B dense / low-active-param MoE) |
-| `PCB_LLM_API_BASE` | *(none)* | API base URL (for local models) |
+| `PCB_LLM_API_BASE` | *(none)* | API base URL (for local models). Pair an `ollama/` model prefix with the bare URL (no `/v1`); use `/v1` only with the `openai/` prefix |
 | `PCB_LLM_API_KEY` | *(none)* | API key |
 | `PCB_FREEROUTING_TIMEOUT` | `300` | Freerouting timeout (seconds) |
 | `PCB_FREEROUTING_HEAP_MB` | *(auto: ~55% RAM, 1024–6144)* | JVM max-heap cap for Freerouting; prevents OOM-killing the host on dense boards |

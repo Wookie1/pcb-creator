@@ -61,7 +61,7 @@ class OrchestratorConfig:
     max_tokens: int = 32768
 
     # LLM API settings
-    api_base: str | None = None   # LLM provider base URL (e.g. http://localhost:11434/v1)
+    api_base: str | None = None   # LLM base URL: http://localhost:11434 for ollama/ models; .../v1 for openai/ ones
     api_key: str | None = None    # LLM provider API key (OpenRouter, Anthropic, OpenAI, etc.)
     llm_timeout: int = 1800       # LLM request timeout in seconds (default 30min for large boards)
     llm_extra_body: dict = field(default_factory=dict)  # e.g. {"thinking": False}
