@@ -7,6 +7,11 @@ corrupt-file handling. Pure data manipulation — no LLM.
 """
 
 import json
+import os
+import subprocess
+import sys
+import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -618,6 +623,20 @@ class TestConfig:
 # cache
 # ---------------------------------------------------------------------------
 
+# Child-process cache hammer (run via ``python -c``): 15 spec writes through
+# one ComponentCache. Used by the F8 cross-process race regression test.
+_CACHE_WORKER = """
+import sys
+import time
+from orchestrator.cache import ComponentCache
+c = ComponentCache(sys.argv[1])
+tag = sys.argv[2]
+for i in range(15):
+    c.put_specs(f"W{tag}:{i}", {"v": i}, source="test")
+    time.sleep(0.001)
+"""
+
+
 class TestCache:
     def test_footprint_round_trip(self, tmp_path):
         c = ComponentCache(tmp_path / "c.json")
@@ -667,3 +686,94 @@ class TestCache:
         # no path → expanded default under ~/.pcb-creator (don't write to it)
         c = ComponentCache()
         assert str(c._path).endswith("component_cache.json")
+
+    # -- cross-process safety (audit F8) ------------------------------------
+
+    def test_concurrent_processes_merge_no_lost_entries(self, tmp_path):
+        """F8 regression: processes sharing the cache file concurrently must
+        merge under the file lock, not last-writer-wins the whole file.
+        Before the fix, workers that started from the same initial snapshot
+        dropped each other's entries on every interleaved flush."""
+        path = tmp_path / "c.json"
+        # Seed a fat file so every read-modify-write is a juicy lost-update
+        # window; all 50 seeds must survive 60 concurrent writes.
+        seed = {f"SEED{i}": {"x": i} for i in range(50)}
+        path.write_text(json.dumps({"footprints": seed, "specs": {}}))
+        procs = [
+            subprocess.Popen([sys.executable, "-c", _CACHE_WORKER,
+                              str(path), tag])
+            for tag in ("A", "B", "C", "D")
+        ]
+        try:
+            for p in procs:
+                assert p.wait(timeout=120) == 0
+        finally:
+            for p in procs:
+                if p.poll() is None:
+                    p.kill()
+        final = json.loads(path.read_text())
+        assert len(final["specs"]) == 60  # 4 workers × 15 distinct keys
+        assert all(f"SEED{i}" in final["footprints"] for i in range(50))
+
+    def test_writer_waits_for_foreign_lock_then_merges(self, tmp_path):
+        """The lock is honoured, not decorative: a foreign flock on
+        <cache>.lock delays our write, and once released the delayed write
+        re-reads the file and preserves the entry committed while it waited."""
+        fcntl = pytest.importorskip("fcntl")
+        path = tmp_path / "c.json"
+        path.write_text(json.dumps({"footprints": {}, "specs": {}}))
+        c = ComponentCache(path)
+        assert c.get_specs("nothing") is None  # force lazy load of empty file
+        lock_fd = os.open(str(path) + ".lock", os.O_CREAT | os.O_RDWR)
+        fcntl.flock(lock_fd, fcntl.LOCK_EX)
+
+        def foreign_writer():
+            # Simulate a second process: commit an entry *while holding the
+            # lock*, then release so our blocked write can proceed.
+            time.sleep(0.35)
+            path.write_text(json.dumps({"footprints": {},
+                                         "specs": {"FOREIGN": {"v": 1}}}))
+            fcntl.flock(lock_fd, fcntl.LOCK_UN)
+
+        t = threading.Thread(target=foreign_writer)
+        t.start()
+        t0 = time.monotonic()
+        try:
+            c.put_specs("DELAYED", {"v": 2}, source="test")
+        finally:
+            elapsed = time.monotonic() - t0
+            fcntl.flock(lock_fd, fcntl.LOCK_UN)  # no-op if thread already did
+            os.close(lock_fd)
+        t.join(timeout=5)
+        assert elapsed >= 0.25  # write blocked on the file lock (~0.35s)
+        final = json.loads(path.read_text())
+        assert "FOREIGN" in final["specs"]
+        assert "DELAYED" in final["specs"]  # merged, not clobbered
+
+    def test_lock_timeout_degrades_to_unlocked(self, tmp_path):
+        """A wedged lock holder must not hang the pipeline: after the (short,
+        test-only) timeout the write proceeds unlocked."""
+        fcntl = pytest.importorskip("fcntl")
+        path = tmp_path / "c.json"
+        path.write_text(json.dumps({"footprints": {}, "specs": {}}))
+        c = ComponentCache(path, lock_timeout=0.1)
+        lock_fd = os.open(str(path) + ".lock", os.O_CREAT | os.O_RDWR)
+        fcntl.flock(lock_fd, fcntl.LOCK_EX)
+        try:
+            t0 = time.monotonic()
+            c.put_specs("X", {"v": 1}, source="test")
+            elapsed = time.monotonic() - t0
+        finally:
+            os.close(lock_fd)  # closing releases the flock
+        assert elapsed < 2.0  # ~0.1s timeout, not the default 10s block
+        assert ComponentCache(path).get_specs("X")["v"] == 1
+
+    def test_garbage_sections_replaced_on_write(self, tmp_path):
+        # non-dict sections never crash the merge; they are replaced
+        path = tmp_path / "c.json"
+        path.write_text(json.dumps({"footprints": "junk", "specs": None}))
+        c = ComponentCache(path)
+        c.put_specs("OK", {"v": 1}, source="test")
+        final = json.loads(path.read_text())
+        assert final["specs"]["OK"]["v"] == 1
+        assert final["footprints"] == {}

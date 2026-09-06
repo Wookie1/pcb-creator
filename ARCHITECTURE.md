@@ -116,7 +116,7 @@ pcb-creator/
 │   ├── runner.py               # Sequential step executor + streaming generator (Steps 0-6)
 │   ├── gradio_app.py           # Gradio web GUI (chat, viewer, settings, progress)
 │   ├── config.py               # Model, router engine, paths, limits, agent_mode, tiered lookup
-│   ├── cache.py                # Thread-safe JSON cache for resolved footprints + specs
+│   ├── cache.py                # Thread- and process-safe JSON cache for resolved footprints + specs (sidecar file lock + merge re-read)
 │   ├── quoting.py              # BOM part-number resolution + fab price estimate (get_fab_quote)
 │   ├── project.py              # Project directory & file I/O
 │   ├── approval_server.py      # Ephemeral HTTP server for CLI approval gate
