@@ -1827,31 +1827,53 @@ def _remove_dangling_traces(routing: dict, pad_map: dict,
 
     pads_by_net: dict = {}
     for pi in pad_map.values():
+        # Layer set the pad's copper occupies: a through-hole pad is copper on
+        # every layer; an SMD pad only on its own. A trace end is supported
+        # only by copper that physically touches its layer.
+        if pi.layer == "all":
+            layers = ("top", "bottom")
+        else:
+            layers = (pi.layer,)
         pads_by_net.setdefault(pi.net_id, []).append(
-            (pi.x_mm, pi.y_mm, pi.pad_width_mm / 2 + tol, pi.pad_height_mm / 2 + tol))
+            (pi.x_mm, pi.y_mm, pi.pad_width_mm / 2 + tol, pi.pad_height_mm / 2 + tol,
+             layers))
+    # Layer span a via's copper occupies. A MISSING layer pair (or an explicit
+    # top<->bottom span) is a through via — it crosses every copper layer, so
+    # it supports trace ends on inner signal layers too (mirrors
+    # validate_routing._via_layers/_via_spanned_layers).
+    _all_layers = ("top", "bottom", "inner1", "inner2", "inner3", "inner4")
     vias_by_net: dict = {}
     for v in vias:
+        fl, tl = v.get("from_layer"), v.get("to_layer")
+        if fl is None or tl is None:
+            layers = _all_layers
+        elif fl == tl:
+            layers = (fl,)
+        elif {fl, tl} == {"top", "bottom"}:
+            layers = _all_layers
+        else:
+            layers = (fl, tl)
         vias_by_net.setdefault(v.get("net_id"), []).append(
-            (v.get("x_mm", 0.0), v.get("y_mm", 0.0)))
+            (v.get("x_mm", 0.0), v.get("y_mm", 0.0), tuple(layers)))
 
-    def _near_pad(net, x, y):
-        for px, py, hw, hh in pads_by_net.get(net, ()):  # bbox + tol
-            if abs(x - px) <= hw and abs(y - py) <= hh:
+    def _near_pad(net, layer, x, y):
+        for px, py, hw, hh, layers in pads_by_net.get(net, ()):  # bbox + tol
+            if layer in layers and abs(x - px) <= hw and abs(y - py) <= hh:
                 return True
         return False
 
-    def _near_via(net, x, y):
-        for vx, vy in vias_by_net.get(net, ()):
-            if (x - vx) ** 2 + (y - vy) ** 2 <= tol * tol:
+    def _near_via(net, layer, x, y):
+        for vx, vy, layers in vias_by_net.get(net, ()):
+            if layer in layers and (x - vx) ** 2 + (y - vy) ** 2 <= tol * tol:
                 return True
         return False
 
-    def _on_other_trace(net, x, y, self_idx, kept):
+    def _on_other_trace(net, layer, x, y, self_idx, kept):
         for j in kept:
             if j == self_idx:
                 continue
             t = traces[j]
-            if t.get("net_id") != net:
+            if t.get("net_id") != net or t.get("layer", "top") != layer:
                 continue
             # endpoint coincidence or lying on the segment
             ax, ay = t["start_x_mm"], t["start_y_mm"]
@@ -1876,10 +1898,11 @@ def _remove_dangling_traces(routing: dict, pad_map: dict,
         for i in list(kept):
             t = traces[i]
             net = t.get("net_id")
+            layer = t.get("layer", "top")
             for (x, y) in ((t["start_x_mm"], t["start_y_mm"]),
                            (t["end_x_mm"], t["end_y_mm"])):
-                if not (_near_pad(net, x, y) or _near_via(net, x, y)
-                        or _on_other_trace(net, x, y, i, kept)):
+                if not (_near_pad(net, layer, x, y) or _near_via(net, layer, x, y)
+                        or _on_other_trace(net, layer, x, y, i, kept)):
                     kept.discard(i)
                     removed += 1
                     changed = True

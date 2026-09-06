@@ -141,6 +141,15 @@ def _extract_routes(
         net_id = net_name_to_id.get(net_name, "")
 
         has_wires = False
+        # Spans already emitted for this net, orientation-independent and
+        # LAYER-independent. Freerouting occasionally finishes a wire by tracing
+        # BACK over copper it already drew (a U-turn scribble), emits a second
+        # wire over the same span, or draws the same short link once per copper
+        # layer as a probe — all redundant copper whose far end reads as
+        # `track_dangling` in KiCad DRC and which supports nothing (the copies
+        # anchor each other's free ends, so the post-route dangling-stub pass
+        # can never collapse them). Keep the first occurrence only.
+        seen_spans: set[tuple] = set()
 
         # Extract wire paths
         for wire in _find_all(net_node, "wire"):
@@ -166,11 +175,20 @@ def _extract_routes(
 
             # Each pair of consecutive points forms a segment
             for i in range(0, len(coords) - 3, 2):
+                p1 = (round(coords[i], 4), round(coords[i + 1], 4))
+                p2 = (round(coords[i + 2], 4), round(coords[i + 3], 4))
+                spankey = tuple(sorted((p1, p2)))
+                twin = {"top": "bottom", "bottom": "top"}.get(layer)
+                dup = ((spankey, layer) in seen_spans
+                       or (twin is not None and (spankey, twin) in seen_spans))
+                if p1 == p2 or dup:
+                    continue
+                seen_spans.add((spankey, layer))
                 traces.append({
-                    "start_x_mm": round(coords[i], 4),
-                    "start_y_mm": round(coords[i + 1], 4),
-                    "end_x_mm": round(coords[i + 2], 4),
-                    "end_y_mm": round(coords[i + 3], 4),
+                    "start_x_mm": p1[0],
+                    "start_y_mm": p1[1],
+                    "end_x_mm": p2[0],
+                    "end_y_mm": p2[1],
                     "width_mm": round(width_mm, 4),
                     "layer": layer,
                     "net_id": net_id,

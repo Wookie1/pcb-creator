@@ -425,7 +425,13 @@ def _footprint(
             # Cap the drill so ≥0.2mm copper remains around it.
             pad_dia = max(pad_w, pad_h)
             drill = _th_drill_mm(pad_w, pad_h)
-            shape = "circle" if pin_num > 1 else "rect"  # pin 1 = square for identification
+            # All TH pads are CIRCLES — matching the DSN padstack Freerouting
+            # routed against. A square pin-1 (the old "identification" hack)
+            # is +0.35mm wider at its corners than the circle the router was
+            # told to avoid, so a 45-degree trace could legally clip it in
+            # the router's model while failing KiCad DRC clearance +
+            # solder_mask_bridge on the shipped copper (audit F4 repro).
+            shape = "circle"
             # Thermal relief (1) only for a pad that HAS a net; netless copper
             # gets 0 so no zone bonds to it. Same rule as the SMD branch below.
             lines.append(
