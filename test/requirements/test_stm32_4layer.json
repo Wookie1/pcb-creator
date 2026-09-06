@@ -264,7 +264,9 @@
     "height_mm": 35,
     "layers": 4
   },
-  "manufacturer": "jlcpcb_4layer",
+  "manufacturing": {
+    "manufacturer": "jlcpcb_4layer"
+  },
   "placement_hints": [
     { "ref": "U1", "x_mm": 25, "y_mm": 17 },
     { "ref": "U2", "x_mm": 8,  "y_mm": 28 },

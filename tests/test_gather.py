@@ -273,6 +273,19 @@ def test_validate_requirements_duplicate_pin_across_nets():
     assert any("J1.1" in e and "multiple nets" in e for e in errors)
 
 
+_EVAL_FIXTURES = sorted((_ROOT / "test" / "requirements").glob("*.json"))
+
+
+@pytest.mark.skipif(not _EVAL_FIXTURES, reason="eval fixtures not present")
+@pytest.mark.parametrize("fixture_path", _EVAL_FIXTURES, ids=lambda p: p.name)
+def test_shipped_eval_fixtures_validate_against_schema(fixture_path):
+    # Regression (audit F5): test_stm32_4layer.json carried a top-level
+    # "manufacturer", rejected by the schema's additionalProperties:false,
+    # so CLI runs of that fixture aborted before any step ran.
+    req = json.loads(Path(fixture_path).read_text())
+    assert validate_requirements(req) == []
+
+
 # ===========================================================================
 # schema.py — _validate_pin_uniqueness (direct)
 # ===========================================================================
