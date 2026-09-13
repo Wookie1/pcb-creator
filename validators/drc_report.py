@@ -24,6 +24,7 @@ from .drc_checks_dfm import (
     check_silkscreen,
     check_trace_current_capacity,
     check_inner_plane_antipad,
+    check_exported_copper_shorts,
 )
 from .engineering_constants import get_dfm_profile
 
@@ -183,6 +184,7 @@ def _run_dfm_checks(routed: dict, netlist: dict, dfm: dict) -> list[dict]:
         ("hole_to_hole", "mechanical", check_hole_to_hole, (routed, netlist, dfm)),
         ("copper_to_edge", "mechanical", check_copper_to_edge, (routed, netlist, dfm)),
         ("inner_plane_antipad", "dfm", check_inner_plane_antipad, (routed, netlist, dfm)),
+        ("copper_pour_short", "electrical", check_exported_copper_shorts, (routed, netlist, dfm)),
     ]
 
     for rule, category, check_fn, args in checks:
@@ -227,6 +229,8 @@ def _count_checked(routed: dict, rule: str) -> int:
         return len(routing.get("vias", [])) + len(routed.get("placements", []))
     elif rule == "inner_plane_antipad":
         return sum(1 for f in routing.get("copper_fills", []) if f.get("is_plane"))
+    elif rule == "copper_pour_short":
+        return len(routing.get("copper_fills", []))
     return 0
 
 
@@ -353,6 +357,10 @@ _RULE_REMEDIATION = {
                       "slightly larger board, then re-route.",
     "inner_plane_antipad": "Inner plane antipad clearance issue — re-route; if "
                            "persistent, increase board size.",
+    "copper_pour_short": "A copper pour/plane overlaps another net's copper in "
+                         "the exported fills (kicad-cli's re-pour hides this). "
+                         "Re-cut the pours against the final via/pad set; if "
+                         "persistent, re-route with route_board(effort='best').",
     "trace_current_capacity": "A trace is too narrow for its current (IPC-2221). "
                               "Increase the net's trace width or copper weight.",
 }

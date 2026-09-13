@@ -601,3 +601,184 @@ def check_inner_plane_antipad(routed: dict, netlist: dict, dfm: dict) -> list[DR
                 ))
 
     return violations
+
+
+# ---------------------------------------------------------------------------
+# Exported-copper faithfulness: pour/plane vs foreign copper on the ACTUAL
+# fill geometry the Gerbers paint (not a re-pour). See check below.
+# ---------------------------------------------------------------------------
+
+_COPPER_STACK = ("top", "inner1", "inner2", "bottom")
+
+
+def _point_in_fill(x: float, y: float, polys: list, bboxes: list) -> bool:
+    """True if (x, y) lies on poured copper, by EVEN-ODD parity over every ring.
+
+    This is how a Gerber renders a region fill, and it is agnostic to the fill's
+    storage form: scan-line strips (surface pours) OR an outline-with-antipad-
+    holes (inner planes). A per-polygon "inside ANY ring" is WRONG for the
+    outline+holes form — it counts the antipad holes as copper — which is exactly
+    the blind spot that let surface-pour floods and antipad-less planes ship.
+    `bboxes[i]` is (xmin, ymin, xmax, ymax) for polys[i], used to skip rings that
+    cannot contain the point (most strips, for any given y)."""
+    inside = False
+    for poly, (pxmin, pymin, pxmax, pymax) in zip(polys, bboxes):
+        if y < pymin or y > pymax or x > pxmax:
+            continue
+        n = len(poly)
+        if n < 3:
+            continue
+        j = n - 1
+        for i in range(n):
+            xi, yi = poly[i]
+            xj, yj = poly[j]
+            if ((yi > y) != (yj > y)) and \
+               (x < (xj - xi) * (y - yi) / (yj - yi) + xi):
+                inside = not inside
+            j = i
+    return inside
+
+
+def check_exported_copper_shorts(routed: dict, netlist: dict,
+                                 dfm: dict) -> list[DRCViolation]:
+    """Foreign-net copper overlapping a copper POUR or PLANE, tested on the exact
+    ``copper_fills`` polygons the Gerbers paint.
+
+    This is the faithfulness backstop. kicad-cli DRC re-pours zones from scratch
+    (cutting its own antipads), so it validates a DIFFERENT rendering than the one
+    that ships: a surface pour flooding a foreign via-in-pad, or an antipad-less
+    inner plane, passes kicad-cli yet is a dead short on the fabricated board.
+    (parking_flasher_xor_20mm shipped with the bottom GND pour flooding all eight
+    VREG plane-stitch vias — a 0-ohm VREG-to-GND short — while every gate was
+    'clean'.) Running on routed.json's fills — the SAME geometry gerber_exporter
+    renders — makes a pass here mean the shipped copper is short-free.
+
+    Covers fill-vs-{pad, via, trace}. Discrete-vs-discrete shorts are covered by
+    the clearance / no-shorts / pad-clearance checks; together they validate all
+    exported copper. `inner_plane_antipad` additionally flags sub-clearance
+    near-misses on planes; this flags actual overlaps (shorts) on every fill.
+    """
+    violations: list[DRCViolation] = []
+    routing = routed.get("routing", {})
+    fills = routing.get("copper_fills", [])
+    if not fills:
+        return violations
+
+    from optimizers.pad_geometry import build_pad_map
+    try:
+        pad_map = build_pad_map(routed, netlist)
+    except Exception:  # pragma: no cover - defensive: a corrupt pad map must not crash DRC
+        pad_map = {}
+    vias = routing.get("vias", [])
+    traces = routing.get("traces", [])
+
+    def _spanned(v: dict) -> set:
+        fl = v.get("from_layer") or "top"
+        tl = v.get("to_layer") or "bottom"
+        try:
+            i, j = _COPPER_STACK.index(fl), _COPPER_STACK.index(tl)
+        except ValueError:
+            return {fl, tl}
+        return set(_COPPER_STACK[min(i, j):max(i, j) + 1])
+
+    def _ring(cx, cy, r, n=16):
+        pts = [(cx, cy)]
+        for k in range(n):
+            a = 2 * math.pi * k / n
+            pts.append((cx + r * math.cos(a), cy + r * math.sin(a)))
+        return pts
+
+    def _rect_pts(cx, cy, hw, hh):
+        return [(cx, cy),
+                (cx - hw, cy - hh), (cx + hw, cy - hh),
+                (cx - hw, cy + hh), (cx + hw, cy + hh),
+                (cx, cy - hh), (cx, cy + hh), (cx - hw, cy), (cx + hw, cy)]
+
+    seen: set = set()
+    for f in fills:
+        polys = f.get("polygons", [])
+        if not polys:
+            continue
+        fnet = f.get("net_id")
+        flayer = f.get("layer", "")
+        fname = f.get("net_name", fnet)
+        bboxes = []
+        gx0 = gy0 = math.inf
+        gx1 = gy1 = -math.inf
+        for poly in polys:
+            xs = [p[0] for p in poly]
+            ys = [p[1] for p in poly]
+            bb = (min(xs), min(ys), max(xs), max(ys))
+            bboxes.append(bb)
+            gx0, gy0 = min(gx0, bb[0]), min(gy0, bb[1])
+            gx1, gy1 = max(gx1, bb[2]), max(gy1, bb[3])
+
+        def _in_bbox(x, y, m=0.0):
+            return gx0 - m <= x <= gx1 + m and gy0 - m <= y <= gy1 + m
+
+        # --- pads (SMD on their layer; TH pads span all) ---
+        for p in pad_map.values():
+            if p.net_id is None or p.net_id == fnet:
+                continue
+            if not (p.layer == "all" or p.layer == flayer):
+                continue
+            hw, hh = p.pad_width_mm / 2, p.pad_height_mm / 2
+            if not _in_bbox(p.x_mm, p.y_mm, max(hw, hh)):
+                continue
+            if any(_point_in_fill(x, y, polys, bboxes)
+                   for x, y in _rect_pts(p.x_mm, p.y_mm, hw, hh)):
+                key = ("pad", fnet, flayer, p.designator, p.pin_number)
+                if key not in seen:
+                    seen.add(key)
+                    violations.append(DRCViolation(
+                        rule="copper_pour_short", severity="error",
+                        message=(f"Copper pour {fname} on {flayer} overlaps pad "
+                                 f"{p.designator}.{p.pin_number} (net {p.net_id}) "
+                                 f"— missing clearance/antipad"),
+                        location={"x_mm": round(p.x_mm, 2),
+                                  "y_mm": round(p.y_mm, 2), "layer": flayer}))
+
+        # --- vias (barrel: check on every layer the via spans) ---
+        for v in vias:
+            vnet = v.get("net_id")
+            if vnet == fnet or flayer not in _spanned(v):
+                continue
+            r = v.get("diameter_mm", 0.6) / 2
+            if not _in_bbox(v["x_mm"], v["y_mm"], r):
+                continue
+            if any(_point_in_fill(x, y, polys, bboxes)
+                   for x, y in _ring(v["x_mm"], v["y_mm"], r)):
+                key = ("via", fnet, flayer, round(v["x_mm"], 2), round(v["y_mm"], 2))
+                if key not in seen:
+                    seen.add(key)
+                    violations.append(DRCViolation(
+                        rule="copper_pour_short", severity="error",
+                        message=(f"Copper pour {fname} on {flayer} overlaps "
+                                 f"{v.get('net_name', vnet)} via at "
+                                 f"({v['x_mm']:.2f},{v['y_mm']:.2f}) — missing antipad"),
+                        location={"x_mm": round(v["x_mm"], 2),
+                                  "y_mm": round(v["y_mm"], 2), "layer": flayer}))
+
+        # --- traces (same layer, foreign net) ---
+        for t in traces:
+            if t.get("net_id") == fnet or t.get("layer") != flayer:
+                continue
+            ax, ay = t["start_x_mm"], t["start_y_mm"]
+            bx, by = t["end_x_mm"], t["end_y_mm"]
+            if not (_in_bbox(ax, ay) or _in_bbox(bx, by)):
+                continue
+            steps = max(2, int(math.hypot(bx - ax, by - ay) / 0.2) + 1)
+            if any(_point_in_fill(ax + (bx - ax) * s / steps,
+                                  ay + (by - ay) * s / steps, polys, bboxes)
+                   for s in range(steps + 1)):
+                key = ("trace", fnet, flayer, t.get("net_id"))
+                if key not in seen:
+                    seen.add(key)
+                    violations.append(DRCViolation(
+                        rule="copper_pour_short", severity="error",
+                        message=(f"Copper pour {fname} on {flayer} overlaps "
+                                 f"{t.get('net_name', t.get('net_id'))} trace"),
+                        location={"x_mm": round(ax, 2),
+                                  "y_mm": round(ay, 2), "layer": flayer}))
+
+    return violations

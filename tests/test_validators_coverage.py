@@ -1280,6 +1280,46 @@ def test_dfm_inner_plane_antipad_missing_cutout():
     assert any(x.rule == "inner_plane_antipad" for x in v)
 
 
+def test_dfm_copper_pour_short_surface_flood_detected():
+    # The parking_flasher_xor_20mm fault class: a SURFACE pour (is_plane False)
+    # flooding a foreign via-in-pad with no antipad. kicad-cli re-pours zones and
+    # never sees this; check_exported_copper_shorts runs on the exported fill.
+    routed = {"routing": {
+        "copper_fills": [{
+            "is_plane": False, "layer": "bottom",
+            "net_id": "net_gnd", "net_name": "GND",
+            "polygons": [[[0, 0], [10, 0], [10, 10], [0, 10], [0, 0]]],  # solid, no antipad
+        }],
+        "vias": [{"x_mm": 5, "y_mm": 5, "diameter_mm": 0.6,
+                  "from_layer": "top", "to_layer": "bottom",
+                  "net_id": "net_vreg", "net_name": "VREG"}],
+        "traces": [],
+    }}
+    v = dfm.check_exported_copper_shorts(routed, {"elements": []}, {})
+    assert any(x.rule == "copper_pour_short" for x in v)
+
+
+def test_dfm_copper_pour_short_antipad_no_false_positive():
+    # Same pour, but with an antipad hole cut around the foreign via → no short.
+    # Guards against the even-odd parity being read as "inside any ring" (which
+    # would count the antipad hole as copper — the original blind spot).
+    routed = {"routing": {
+        "copper_fills": [{
+            "is_plane": False, "layer": "bottom",
+            "net_id": "net_gnd", "net_name": "GND",
+            "polygons": [
+                [[0, 0], [10, 0], [10, 10], [0, 10], [0, 0]],  # pour outline
+                [[4, 4], [6, 4], [6, 6], [4, 6], [4, 4]],      # antipad hole around the via
+            ],
+        }],
+        "vias": [{"x_mm": 5, "y_mm": 5, "diameter_mm": 0.6,
+                  "from_layer": "top", "to_layer": "bottom",
+                  "net_id": "net_vreg", "net_name": "VREG"}],
+        "traces": [],
+    }}
+    assert dfm.check_exported_copper_shorts(routed, {"elements": []}, {}) == []
+
+
 def test_dfm_trace_current_capacity_runs():
     # Just exercise the function end-to-end on the real board; it imports the
     # router's IPC helpers and may or may not flag — assert it returns a list

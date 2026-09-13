@@ -1739,9 +1739,14 @@ def run_drc(project_dir: Path, project_name: str, config, log=None,
             #    the different-net-copper-collision family — the geometric
             #    short/clearance backstop for a kicad-cli false-negative on a
             #    trace/via crossing a foreign pad (the parking_flasher incident).
+            #  - copper_pour_short: pour/plane vs foreign copper on the ACTUAL
+            #    exported fill polygons. kicad-cli re-pours zones so it never
+            #    sees a surface pour flooding a foreign via-in-pad (the second
+            #    parking_flasher short: bottom GND pour over every VREG stitch
+            #    via = 0-ohm VREG-GND). This makes exported == DRC'ed for fills.
             _carry = {"connectivity", "trace_current_capacity",
                       "inner_plane_antipad", "pad_clearance", "no_shorts",
-                      "trace_clearance", "via_clearance"}
+                      "trace_clearance", "via_clearance", "copper_pour_short"}
             extra = [c for c in report.get("checks", [])
                      if c.get("rule") in _carry]
             # export_kicad_pcb harvests any export-time GND stitch vias back
