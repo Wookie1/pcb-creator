@@ -24,7 +24,7 @@ from optimizers.router import (
     _remove_islands_cross_layer, _setup_grid, apply_copper_fills,
     compute_net_current, compute_net_currents, create_copper_fill,
     generate_inner_plane, inner_plane_count, ipc2221_trace_width,
-    regenerate_inner_planes,
+    regenerate_inner_planes, recut_surface_pours, _rect_minus_square,
 )
 from optimizers.pad_geometry import build_pad_map, PadInfo
 from optimizers.ratsnest import NetInfo, build_connectivity
@@ -420,6 +420,46 @@ def test_generate_inner_plane_outer_plus_antipads():
 def test_regenerate_inner_planes_noop_without_planes():
     routed = {"routing": {"copper_fills": [{"layer": "top", "is_plane": False}]}}
     assert regenerate_inner_planes(routed, {"elements": []}) is routed
+
+
+def test_rect_minus_square_splits_and_rejects():
+    # Hole in the middle → 4 surrounding rects; disjoint hole → original unchanged.
+    assert len(_rect_minus_square(0, 0, 10, 10, 4, 4, 6, 6)) == 4
+    out = _rect_minus_square(0, 0, 10, 10, 20, 20, 22, 22)
+    assert out == [[[0, 0], [10, 0], [10, 10], [0, 10]]]
+
+
+def test_recut_surface_pours_clears_foreign_via_flood():
+    # The parking_flasher generation bug: a surface GND pour poured over a foreign
+    # VREG via-in-pad (via added after the flood). recut must cut an antipad so the
+    # via center is no longer under GND copper — while a same-net via stays covered.
+    def _covered(polys, x, y):  # union of rect strips
+        for poly in polys:
+            xs = [p[0] for p in poly]
+            ys = [p[1] for p in poly]
+            if min(xs) <= x <= max(xs) and min(ys) <= y <= max(ys):
+                return True
+        return False
+
+    routed = {"routing": {
+        "copper_fills": [{
+            "is_plane": False, "layer": "bottom",
+            "net_id": "net_gnd", "net_name": "GND",
+            "polygons": [[[0, 0], [10, 0], [10, 10], [0, 10]]],  # solid, floods everything
+        }],
+        "vias": [
+            {"x_mm": 5, "y_mm": 5, "diameter_mm": 0.6, "from_layer": "top",
+             "to_layer": "bottom", "net_id": "net_vreg", "net_name": "VREG"},
+            {"x_mm": 2, "y_mm": 2, "diameter_mm": 0.6, "from_layer": "top",
+             "to_layer": "bottom", "net_id": "net_gnd", "net_name": "GND"},
+        ],
+    }}
+    cfg = RouterConfig()
+    assert _covered(routed["routing"]["copper_fills"][0]["polygons"], 5, 5)  # flooded before
+    recut_surface_pours(routed, {"elements": []}, cfg)
+    polys = routed["routing"]["copper_fills"][0]["polygons"]
+    assert not _covered(polys, 5, 5), "foreign VREG via must be cleared from GND pour"
+    assert _covered(polys, 2, 2), "same-net GND via must remain connected to the pour"
 
 
 def test_regenerate_inner_planes_recuts():

@@ -1299,17 +1299,17 @@ def test_dfm_copper_pour_short_surface_flood_detected():
     assert any(x.rule == "copper_pour_short" for x in v)
 
 
-def test_dfm_copper_pour_short_antipad_no_false_positive():
-    # Same pour, but with an antipad hole cut around the foreign via → no short.
-    # Guards against the even-odd parity being read as "inside any ring" (which
-    # would count the antipad hole as copper — the original blind spot).
+def test_dfm_copper_pour_short_surface_gap_no_false_positive():
+    # Realistic surface pour: solid strips with a GAP (antipad) around the foreign
+    # via. Surface fills render as the UNION of strips, so a via in the gap is not
+    # copper — no short.
     routed = {"routing": {
         "copper_fills": [{
             "is_plane": False, "layer": "bottom",
             "net_id": "net_gnd", "net_name": "GND",
             "polygons": [
-                [[0, 0], [10, 0], [10, 10], [0, 10], [0, 0]],  # pour outline
-                [[4, 4], [6, 4], [6, 6], [4, 6], [4, 4]],      # antipad hole around the via
+                [[0, 0], [10, 0], [10, 4], [0, 4]],    # strip below the via
+                [[0, 6], [10, 6], [10, 10], [0, 10]],  # strip above the via (gap y=4..6)
             ],
         }],
         "vias": [{"x_mm": 5, "y_mm": 5, "diameter_mm": 0.6,
@@ -1318,6 +1318,47 @@ def test_dfm_copper_pour_short_antipad_no_false_positive():
         "traces": [],
     }}
     assert dfm.check_exported_copper_shorts(routed, {"elements": []}, {}) == []
+
+
+def test_dfm_copper_pour_short_plane_overlapping_antipads_no_false_positive():
+    # Inner PLANE = outline + antipad cutouts painted CLEAR (union removed).
+    # Two OVERLAPPING antipads around a via must NOT read as copper in the overlap
+    # — the exact even-odd-parity false positive that flagged a cleared via on the
+    # real board. Rendered correctly (outline minus union-of-holes), it is clear.
+    routed = {"routing": {
+        "copper_fills": [{
+            "is_plane": True, "layer": "inner2",
+            "net_id": "net_vreg", "net_name": "VREG",
+            "polygons": [
+                [[0, 0], [10, 0], [10, 10], [0, 10]],          # plane outline
+                [[3.5, 3.5], [5.5, 3.5], [5.5, 5.5], [3.5, 5.5]],  # antipad A (around via)
+                [[4.5, 4.5], [6.5, 4.5], [6.5, 6.5], [4.5, 6.5]],  # antipad B, overlaps A
+            ],
+        }],
+        "vias": [{"x_mm": 5, "y_mm": 5, "diameter_mm": 0.6,
+                  "from_layer": "top", "to_layer": "bottom",
+                  "net_id": "net_gnd", "net_name": "GND"}],
+        "traces": [],
+    }}
+    assert dfm.check_exported_copper_shorts(routed, {"elements": []}, {}) == []
+
+
+def test_dfm_copper_pour_short_plane_missing_antipad_detected():
+    # Inner plane with NO cutout around a foreign via → the via sits on plane
+    # copper → short (the antipad-less-plane class).
+    routed = {"routing": {
+        "copper_fills": [{
+            "is_plane": True, "layer": "inner1",
+            "net_id": "net_gnd", "net_name": "GND",
+            "polygons": [[[0, 0], [10, 0], [10, 10], [0, 10]]],  # solid, no antipad
+        }],
+        "vias": [{"x_mm": 5, "y_mm": 5, "diameter_mm": 0.6,
+                  "from_layer": "top", "to_layer": "bottom",
+                  "net_id": "net_vreg", "net_name": "VREG"}],
+        "traces": [],
+    }}
+    assert any(x.rule == "copper_pour_short"
+               for x in dfm.check_exported_copper_shorts(routed, {"elements": []}, {}))
 
 
 def test_dfm_trace_current_capacity_runs():

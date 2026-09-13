@@ -1284,6 +1284,103 @@ def regenerate_inner_planes(routed: dict, netlist: dict,
         if f.get("is_plane") else f
         for f in fills
     ]
+    # Inner planes were re-cut against the current vias above; the outer pours
+    # must be too, or a via added after the outer flood stays flooded on the
+    # surface (the parking_flasher VREG-stitch-via short).
+    return recut_surface_pours(routed, netlist, config)
+
+
+def _rect_minus_square(x0: float, y0: float, x1: float, y1: float,
+                       hx0: float, hy0: float, hx1: float, hy1: float
+                       ) -> list[list[list[float]]]:
+    """Axis-aligned rectangle [x0,y0]-[x1,y1] MINUS the hole [hx0,hy0]-[hx1,hy1].
+
+    Returns the remainder as 0-4 axis-aligned rectangles (4-point rings). No
+    overlap → the original unchanged; fully covered → []. Exact because both the
+    rectangle and the hole are axis-aligned."""
+    x0, x1 = min(x0, x1), max(x0, x1)
+    y0, y1 = min(y0, y1), max(y0, y1)
+    cx0, cy0 = max(x0, hx0), max(y0, hy0)
+    cx1, cy1 = min(x1, hx1), min(y1, hy1)
+    if cx0 >= cx1 or cy0 >= cy1:
+        return [[[x0, y0], [x1, y0], [x1, y1], [x0, y1]]]  # no real overlap
+    out: list[list[list[float]]] = []
+    if cy0 > y0:            # strip below the hole (full width)
+        out.append([[x0, y0], [x1, y0], [x1, cy0], [x0, cy0]])
+    if cy1 < y1:            # strip above the hole (full width)
+        out.append([[x0, cy1], [x1, cy1], [x1, y1], [x0, y1]])
+    if cx0 > x0:            # strip left of the hole (hole's height band)
+        out.append([[x0, cy0], [cx0, cy0], [cx0, cy1], [x0, cy1]])
+    if cx1 < x1:            # strip right of the hole
+        out.append([[cx1, cy0], [x1, cy0], [x1, cy1], [cx1, cy1]])
+    return out
+
+
+def recut_surface_pours(routed: dict, netlist: dict,
+                        config: RouterConfig | None = None) -> dict:
+    """Cut antipad clearance into SURFACE (top/bottom) copper pours around every
+    foreign-net via, in place.
+
+    The outer flood in `create_copper_fill` runs BEFORE the power-plane stitch
+    vias are sited, and a via-in-pad has no SMD pad on its far side for the grid
+    to mask — so the outer pour floods those annular rings, a dead short to the
+    plane net (parking_flasher_xor_20mm: the bottom GND pour buried every VREG
+    stitch via = 0-ohm VREG↔GND). kicad-cli never sees it (it re-pours zones), so
+    the clearance must be cut into the EXPORTED fills that gerber_exporter paints.
+
+    Pure geometry and idempotent: surface fills are axis-aligned rectangle runs,
+    so rect-minus-square is exact, and re-subtracting an already-cleared antipad
+    is a no-op. Same-net vias are left connected (the pour SHOULD cover them)."""
+    if config is None:
+        config = RouterConfig()
+    rt = routed.get("routing", {})
+    fills = rt.get("copper_fills", [])
+    surface = [f for f in fills
+               if not f.get("is_plane") and f.get("layer") in ("top", "bottom")]
+    vias = rt.get("vias", [])
+    if not surface or not vias:
+        return routed
+
+    stack = ("top", "inner1", "inner2", "bottom")
+
+    def _spanned(v: dict) -> set:
+        fl = v.get("from_layer") or "top"
+        tl = v.get("to_layer") or "bottom"
+        try:
+            i, j = stack.index(fl), stack.index(tl)
+        except ValueError:
+            return {fl, tl}
+        return set(stack[min(i, j):max(i, j) + 1])
+
+    clr = config.fill_clearance_mm
+    for f in surface:
+        layer = f.get("layer")
+        fnet = f.get("net_id")
+        holes = [(v["x_mm"], v["y_mm"],
+                  v.get("diameter_mm", config.via_diameter_mm) / 2 + clr)
+                 for v in vias
+                 if v.get("net_id") != fnet and layer in _spanned(v)]
+        if not holes:
+            continue
+        polys = f.get("polygons", [])
+        for hx, hy, half in holes:
+            ax0, ay0, ax1, ay1 = hx - half, hy - half, hx + half, hy + half
+            new_polys: list = []
+            for poly in polys:
+                pts = poly[:-1] if len(poly) > 1 and poly[0] == poly[-1] else poly
+                if len(pts) != 4:
+                    new_polys.append(poly)  # surface pours are rects; leave others
+                    continue
+                xs = [p[0] for p in pts]
+                ys = [p[1] for p in pts]
+                x0, y0, x1, y1 = min(xs), min(ys), max(xs), max(ys)
+                if ax1 <= x0 or ax0 >= x1 or ay1 <= y0 or ay0 >= y1:
+                    new_polys.append(poly)   # no overlap
+                    continue
+                new_polys.extend(_rect_minus_square(x0, y0, x1, y1,
+                                                    ax0, ay0, ax1, ay1))
+            polys = new_polys
+        f["polygons"] = polys
     return routed
 
 
@@ -2415,6 +2512,13 @@ def apply_copper_fills(
         logger.info("  Dropped %d stitching via(s) too close to another via or "
                     "a mounting hole", len(stitch_via_dicts) - len(kept))
     result["routing"]["vias"] = existing_vias + kept
+
+    # The outer flood was poured BEFORE the power-plane stitch vias existed, so
+    # it buried their far-side annular rings (a plane-net short). Now that every
+    # via is known, cut those antipads into the surface pours — the fills that
+    # ship. Without this the Gerbers short even though kicad-cli (which re-pours)
+    # sees it clean. (parking_flasher: bottom GND pour over every VREG stitch via.)
+    recut_surface_pours(result, netlist, config)
 
     # Add power-plane connection stubs (pad → offset via)
     if pl >= 2 and pwr_plane_stubs:

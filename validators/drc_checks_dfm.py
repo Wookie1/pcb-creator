@@ -611,32 +611,48 @@ def check_inner_plane_antipad(routed: dict, netlist: dict, dfm: dict) -> list[DR
 _COPPER_STACK = ("top", "inner1", "inner2", "bottom")
 
 
-def _point_in_fill(x: float, y: float, polys: list, bboxes: list) -> bool:
-    """True if (x, y) lies on poured copper, by EVEN-ODD parity over every ring.
-
-    This is how a Gerber renders a region fill, and it is agnostic to the fill's
-    storage form: scan-line strips (surface pours) OR an outline-with-antipad-
-    holes (inner planes). A per-polygon "inside ANY ring" is WRONG for the
-    outline+holes form — it counts the antipad holes as copper — which is exactly
-    the blind spot that let surface-pour floods and antipad-less planes ship.
-    `bboxes[i]` is (xmin, ymin, xmax, ymax) for polys[i], used to skip rings that
-    cannot contain the point (most strips, for any given y)."""
+def _pip(x: float, y: float, poly: list, bb: tuple) -> bool:
+    """Even-odd point-in-polygon for a SINGLE ring, with a bbox fast-reject."""
+    pxmin, pymin, pxmax, pymax = bb
+    if x < pxmin or x > pxmax or y < pymin or y > pymax:
+        return False
+    n = len(poly)
+    if n < 3:
+        return False
     inside = False
-    for poly, (pxmin, pymin, pxmax, pymax) in zip(polys, bboxes):
-        if y < pymin or y > pymax or x > pxmax:
-            continue
-        n = len(poly)
-        if n < 3:
-            continue
-        j = n - 1
-        for i in range(n):
-            xi, yi = poly[i]
-            xj, yj = poly[j]
-            if ((yi > y) != (yj > y)) and \
-               (x < (xj - xi) * (y - yi) / (yj - yi) + xi):
-                inside = not inside
-            j = i
+    j = n - 1
+    for i in range(n):
+        xi, yi = poly[i]
+        xj, yj = poly[j]
+        if ((yi > y) != (yj > y)) and \
+           (x < (xj - xi) * (y - yi) / (yj - yi) + xi):
+            inside = not inside
+        j = i
     return inside
+
+
+def _point_in_fill(x: float, y: float, polys: list, bboxes: list,
+                   is_plane: bool) -> bool:
+    """True if (x, y) lies on poured copper, matching how the Gerber renders it.
+
+    Two storage forms need two renderings — conflating them (e.g. one even-odd
+    parity over all rings) is wrong:
+      * is_plane (inner plane): polys[0] is the board outline; polys[1:] are
+        antipad cutouts painted CLEAR — their UNION is removed. So copper = inside
+        the outline AND inside NO cutout. Even-odd is wrong here: two OVERLAPPING
+        antipads flip parity back to "copper" and phantom-short a via sitting in
+        the overlap (a false positive).
+      * surface pour: polys are solid scan-line strips (no holes) → copper is the
+        UNION (inside any strip); a cleared via sits in a gap (no strip).
+    `bboxes[i]` is (xmin, ymin, xmax, ymax) for polys[i]."""
+    if not polys:
+        return False
+    if is_plane:
+        if not _pip(x, y, polys[0], bboxes[0]):
+            return False
+        return not any(_pip(x, y, polys[k], bboxes[k])
+                       for k in range(1, len(polys)))
+    return any(_pip(x, y, polys[k], bboxes[k]) for k in range(len(polys)))
 
 
 def check_exported_copper_shorts(routed: dict, netlist: dict,
@@ -702,6 +718,7 @@ def check_exported_copper_shorts(routed: dict, netlist: dict,
         fnet = f.get("net_id")
         flayer = f.get("layer", "")
         fname = f.get("net_name", fnet)
+        is_plane = bool(f.get("is_plane"))
         bboxes = []
         gx0 = gy0 = math.inf
         gx1 = gy1 = -math.inf
@@ -725,7 +742,7 @@ def check_exported_copper_shorts(routed: dict, netlist: dict,
             hw, hh = p.pad_width_mm / 2, p.pad_height_mm / 2
             if not _in_bbox(p.x_mm, p.y_mm, max(hw, hh)):
                 continue
-            if any(_point_in_fill(x, y, polys, bboxes)
+            if any(_point_in_fill(x, y, polys, bboxes, is_plane)
                    for x, y in _rect_pts(p.x_mm, p.y_mm, hw, hh)):
                 key = ("pad", fnet, flayer, p.designator, p.pin_number)
                 if key not in seen:
@@ -746,7 +763,7 @@ def check_exported_copper_shorts(routed: dict, netlist: dict,
             r = v.get("diameter_mm", 0.6) / 2
             if not _in_bbox(v["x_mm"], v["y_mm"], r):
                 continue
-            if any(_point_in_fill(x, y, polys, bboxes)
+            if any(_point_in_fill(x, y, polys, bboxes, is_plane)
                    for x, y in _ring(v["x_mm"], v["y_mm"], r)):
                 key = ("via", fnet, flayer, round(v["x_mm"], 2), round(v["y_mm"], 2))
                 if key not in seen:
@@ -769,7 +786,7 @@ def check_exported_copper_shorts(routed: dict, netlist: dict,
                 continue
             steps = max(2, int(math.hypot(bx - ax, by - ay) / 0.2) + 1)
             if any(_point_in_fill(ax + (bx - ax) * s / steps,
-                                  ay + (by - ay) * s / steps, polys, bboxes)
+                                  ay + (by - ay) * s / steps, polys, bboxes, is_plane)
                    for s in range(steps + 1)):
                 key = ("trace", fnet, flayer, t.get("net_id"))
                 if key not in seen:
