@@ -734,8 +734,13 @@ def check_exported_copper_shorts(routed: dict, netlist: dict,
             return gx0 - m <= x <= gx1 + m and gy0 - m <= y <= gy1 + m
 
         # --- pads (SMD on their layer; TH pads span all) ---
+        # A NO-NET pad (net_id None — an NC IC pin, isolated pad) is checked too:
+        # the pour must clear it. If the pour buries it, it is silently tied to
+        # the pour's net — which for an output pin is a dead short with no
+        # ratsnest to make kicad-cli notice (the U1 3Y-to-GND class). Only a
+        # SAME-net pad is meant to be covered.
         for p in pad_map.values():
-            if p.net_id is None or p.net_id == fnet:
+            if p.net_id == fnet:
                 continue
             if not (p.layer == "all" or p.layer == flayer):
                 continue
@@ -747,11 +752,13 @@ def check_exported_copper_shorts(routed: dict, netlist: dict,
                 key = ("pad", fnet, flayer, p.designator, p.pin_number)
                 if key not in seen:
                     seen.add(key)
+                    who = (f"no-net pad {p.designator}.{p.pin_number} — should be "
+                           f"isolated" if p.net_id is None else
+                           f"pad {p.designator}.{p.pin_number} (net {p.net_id}) "
+                           f"— missing clearance/antipad")
                     violations.append(DRCViolation(
                         rule="copper_pour_short", severity="error",
-                        message=(f"Copper pour {fname} on {flayer} overlaps pad "
-                                 f"{p.designator}.{p.pin_number} (net {p.net_id}) "
-                                 f"— missing clearance/antipad"),
+                        message=f"Copper pour {fname} on {flayer} overlaps {who}",
                         location={"x_mm": round(p.x_mm, 2),
                                   "y_mm": round(p.y_mm, 2), "layer": flayer}))
 

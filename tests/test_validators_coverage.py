@@ -1361,6 +1361,26 @@ def test_dfm_copper_pour_short_plane_missing_antipad_detected():
                for x in dfm.check_exported_copper_shorts(routed, {"elements": []}, {}))
 
 
+def test_dfm_copper_pour_short_floods_no_net_pad_detected():
+    # A pour burying a NO-NET pad (an NC output pin, isolated pad) is a silent
+    # short: it ties the pad to the pour's net with no ratsnest for kicad-cli to
+    # flag (the U1 3Y-to-GND class). Must be caught.
+    routed = {
+        "placements": [{"designator": "U9", "package": "SOIC-14",
+                        "x_mm": 5, "y_mm": 5, "rotation_deg": 0, "layer": "top"}],
+        "routing": {
+            "copper_fills": [{"is_plane": False, "layer": "top",
+                              "net_id": "net_gnd", "net_name": "GND",
+                              "polygons": [[[0, 0], [10, 0], [10, 10], [0, 10]]]}],
+            "vias": [], "traces": []}}
+    netlist = {"elements": [
+        {"element_type": "component", "component_id": "c1", "designator": "U9"},
+        {"element_type": "port", "port_id": "p1", "component_id": "c1",
+         "pin_number": 8, "name": "3Y"}]}  # port on no net -> net-less pad
+    v = dfm.check_exported_copper_shorts(routed, netlist, {})
+    assert any(x.rule == "copper_pour_short" and "no-net" in x.message for x in v)
+
+
 def test_dfm_trace_current_capacity_runs():
     # Just exercise the function end-to-end on the real board; it imports the
     # router's IPC helpers and may or may not flag — assert it returns a list
