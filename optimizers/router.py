@@ -1168,9 +1168,10 @@ def generate_inner_plane(
 ) -> dict:
     """Generate a solid copper plane on an inner layer for the given net.
 
-    Produces a board-sized filled polygon with circular antipad cutouts
-    around every through-hole pad and via that belongs to a different net.
-    Thermal relief spokes are added for same-net through-hole pads.
+    Produces a board-sized (edge-inset) filled polygon with circular antipad
+    cutouts around every through-hole pad and via of a DIFFERENT net. Same-net
+    vias connect solidly (no cutout); same-net through-hole pads get a spoked
+    thermal relief (four gap sectors, four copper spokes).
 
     Args:
         board: Board dict with width_mm/height_mm.
@@ -1188,8 +1189,11 @@ def generate_inner_plane(
     w = board.get("width_mm", 50.0)
     h = board.get("height_mm", 50.0)
 
-    # Solid board outline as the outer polygon
-    outer = [(0.0, 0.0), (w, 0.0), (w, h), (0.0, h), (0.0, 0.0)]
+    # Board outline inset by the copper-to-edge keepout (matches the KiCad zone
+    # outline). A plane poured to the very edge is exposed copper on the routed
+    # board edge and lets two stacked planes smear together at the cut.
+    e = float(getattr(config, "board_edge_clearance_mm", 0.3) or 0.0)
+    outer = [(e, e), (w - e, e), (w - e, h - e), (e, h - e), (e, e)]
 
     # Antipad radius = pad radius + clearance (IPC-2221 inner layer antipad)
     clearance = config.fill_clearance_mm
@@ -1208,34 +1212,65 @@ def generate_inner_plane(
             pts.append((cx + r * math.cos(angle), cy + r * math.sin(angle)))
         return pts
 
+    def _thermal_gap_sectors(cx: float, cy: float, r_in: float,
+                             r_out: float) -> list[list[tuple[float, float]]]:
+        """The clearance ring of a thermal relief, as 4 annular-sector holes
+        separated by 4 cardinal copper spokes. The pad keeps copper out to
+        r_in and the spokes carry it across the gap to the plane."""
+        half = thermal_spoke_w / 2
+        a_in = math.asin(min(0.99, half / max(r_in, 1e-6)))
+        a_out = math.asin(min(0.99, half / max(r_out, 1e-6)))
+        sectors = []
+        for q in range(4):
+            base = q * math.pi / 2
+            lo_i, hi_i = base + a_in, base + math.pi / 2 - a_in
+            lo_o, hi_o = base + a_out, base + math.pi / 2 - a_out
+            n = 6
+            pts = [(cx + r_out * math.cos(lo_o + (hi_o - lo_o) * k / n),
+                    cy + r_out * math.sin(lo_o + (hi_o - lo_o) * k / n))
+                   for k in range(n + 1)]
+            pts += [(cx + r_in * math.cos(hi_i - (hi_i - lo_i) * k / n),
+                     cy + r_in * math.sin(hi_i - (hi_i - lo_i) * k / n))
+                    for k in range(n + 1)]
+            pts.append(pts[0])
+            sectors.append(pts)
+        return sectors
+
     cutouts: list[list[tuple[float, float]]] = []
 
     # Through-hole pads and vias are the only features that penetrate inner layers.
     # SMD pads don't reach inner layers — skip them.
+    #
+    # SAME-net features must CONNECT to their plane. The old code cut a plain
+    # clearance disc around them too ("stitching vias provide plane contact" —
+    # but stitching vias got the same disc), so no drill barrel ever touched its
+    # own plane: the planes were dead copper and a plane-only net (VREG on
+    # parking_flasher) shipped OPEN. kicad-cli never saw it because KiCad re-pours
+    # the zone with its own connections. Now: same-net vias connect solidly (no
+    # cutout — KiCad's default for vias), same-net TH pads get a spoked thermal.
     for pad_info in pad_map.values():
         if pad_info.layer != "all":  # "all" = through-hole
+            continue
+        if pad_info.net_id == net_id:
+            r_in = max(pad_info.pad_width_mm, pad_info.pad_height_mm) / 2
+            cutouts.extend(_thermal_gap_sectors(pad_info.x_mm, pad_info.y_mm,
+                                                r_in, r_in + thermal_gap))
             continue
         # Farthest copper of a RECTANGULAR pad is its corner (hypot(w,h)/2), not
         # max(w,h)/2 — using the latter left the corners inside the plane copper.
         # For round/oval pads this is conservative (a slightly larger void) but
         # never under-clears; tightening it needs per-pad shape data we don't carry.
         pad_r = math.hypot(pad_info.pad_width_mm, pad_info.pad_height_mm) / 2
-        if pad_info.net_id == net_id:
-            # Same-net pad: thermal relief — small clearance ring (no solid connection
-            # on inner plane; stitching vias provide plane contact)
-            r = (pad_r + thermal_gap) / _INSCRIBE
-        else:
-            # Foreign-net pad: full antipad clearance
-            r = (pad_r + clearance) / _INSCRIBE
+        r = (pad_r + clearance) / _INSCRIBE
         cutouts.append(_circle_polygon(pad_info.x_mm, pad_info.y_mm, r))
 
-    # Via antipads (vias are round, so radius = diameter/2 is the true reach)
+    # Foreign-net via antipads (vias are round, so radius = diameter/2 is the true
+    # reach). Same-net vias get NO cutout: they bond solidly to the plane.
     for via in vias:
-        via_r = via.get("diameter_mm", 0.6) / 2
         if via.get("net_id") == net_id:
-            r = (via_r + thermal_gap) / _INSCRIBE
-        else:
-            r = (via_r + clearance) / _INSCRIBE
+            continue
+        via_r = via.get("diameter_mm", 0.6) / 2
+        r = (via_r + clearance) / _INSCRIBE
         cutouts.append(_circle_polygon(via["x_mm"], via["y_mm"], r))
 
     # Represent as a polygon list: first entry is the outer boundary,
@@ -1276,18 +1311,189 @@ def regenerate_inner_planes(routed: dict, netlist: dict,
     board = routed.get("board", {})
     placements_list = routed.get("placements", [])
     pad_map = build_pad_map(routed, netlist)
-    all_vias = rt.get("vias", [])
-    rt["copper_fills"] = [
-        generate_inner_plane(board, placements_list, pad_map, all_vias,
-                             layer=f["layer"], net_id=f["net_id"],
-                             net_name=f.get("net_name", ""), config=config)
-        if f.get("is_plane") else f
-        for f in fills
-    ]
+
+    def _replane() -> None:
+        rt["copper_fills"] = [
+            generate_inner_plane(board, placements_list, pad_map, rt.get("vias", []),
+                                 layer=f["layer"], net_id=f["net_id"],
+                                 net_name=f.get("net_name", ""), config=config)
+            if f.get("is_plane") else f
+            for f in rt.get("copper_fills", [])
+        ]
+    _replane()
     # Inner planes were re-cut against the current vias above; the outer pours
     # must be too, or a via added after the outer flood stays flooded on the
     # surface (the parking_flasher VREG-stitch-via short).
-    return recut_surface_pours(routed, netlist, config)
+    recut_surface_pours(routed, netlist, config)
+    # Those antipad cuts (and the grid-level rescue, which counts an island as
+    # connected just because it holds a GND pad) can leave GND pads on surface
+    # pour islands with no via to the In1 plane. Stitch them, then re-plane so
+    # In2 antipads the new vias.
+    if stitch_orphan_plane_islands(routed, netlist, config):
+        _replane()
+    return routed
+
+
+def stitch_orphan_plane_islands(routed: dict, netlist: dict,
+                                config: RouterConfig | None = None) -> int:
+    """Add a through via to every surface-copper island that carries an In1-plane
+    net pad but no via / through-hole pad of that net, in place. Returns the
+    number of vias added.
+
+    Works on the FINAL geometry (fills after antipad re-cuts, traces, pads), so it
+    sees exactly what gerber_exporter will paint. parking_flasher_xor_20mm_rev3:
+    8 GND pieces — every one an SMD-pad island whose only 'connection' was itself.
+    The via must clear all foreign copper on every layer (planes excepted: the
+    caller re-cuts them), keep hole-to-hole spacing, and avoid landing in a pad."""
+    import numpy as np
+    from PIL import Image, ImageDraw
+    from validators.gerber_connectivity import _grow, _label
+
+    if config is None:
+        config = RouterConfig()
+    rt = routed.get("routing", {})
+    fills = rt.get("copper_fills", [])
+    plane = next((f for f in fills if f.get("is_plane") and f.get("layer") == "inner1"), None)
+    if plane is None:
+        return 0
+    gnd = plane["net_id"]
+    board = routed.get("board", {})
+    w, h = board.get("width_mm", 0.0), board.get("height_mm", 0.0)
+    if w <= 0 or h <= 0:
+        return 0
+    res = 0.05
+    W, H = int(math.ceil(w / res)) + 1, int(math.ceil(h / res)) + 1
+    via_r = config.via_diameter_mm / 2
+    clr = config.clearance_mm
+
+    def px(x: float, y: float) -> tuple[float, float]:
+        return x / res, (h - y) / res
+
+    def canvas():
+        img = Image.new("L", (W, H), 0)
+        return img, ImageDraw.Draw(img)
+
+    def disc(d, x, y, r):
+        cx, cy = px(x, y)
+        d.ellipse([cx - r / res, cy - r / res, cx + r / res, cy + r / res], fill=255)
+
+    def rect(d, x, y, hw, hh):
+        cx, cy = px(x, y)
+        d.rectangle([cx - hw / res, cy - hh / res, cx + hw / res, cy + hh / res], fill=255)
+
+    def seg(d, t):
+        a, b = px(t["start_x_mm"], t["start_y_mm"]), px(t["end_x_mm"], t["end_y_mm"])
+        wd = t.get("width_mm", 0.25)
+        d.line([a, b], fill=255, width=max(1, round(wd / res)))
+        disc(d, t["start_x_mm"], t["start_y_mm"], wd / 2)
+        disc(d, t["end_x_mm"], t["end_y_mm"], wd / 2)
+
+    pads = list(build_pad_map(routed, netlist, include_netless=True).values())
+    vias = rt.get("vias", [])
+    traces = rt.get("traces", [])
+
+    # Foreign copper on ANY layer, grown by via radius + clearance → forbidden
+    # via centres. Planes are excluded: the caller re-cuts them around new vias.
+    fimg, fd = canvas()
+    for p in pads:
+        if p.net_id != gnd:
+            rect(fd, p.x_mm, p.y_mm, p.pad_width_mm / 2, p.pad_height_mm / 2)
+    for t in traces:
+        if t.get("net_id") != gnd:
+            seg(fd, t)
+    for v in vias:
+        if v.get("net_id") != gnd:
+            disc(fd, v["x_mm"], v["y_mm"], v.get("diameter_mm", config.via_diameter_mm) / 2)
+    for f in fills:
+        if f.get("net_id") != gnd and not f.get("is_plane"):
+            for poly in f.get("polygons", []):
+                if len(poly) >= 3:
+                    fd.polygon([px(*pt[:2]) for pt in poly], fill=255)
+    forbidden = _grow(np.asarray(fimg) > 127, int(math.ceil((via_r + clr) / res)))
+    e = int(math.ceil((via_r + config.board_edge_clearance_mm) / res))
+    forbidden[:e, :] = forbidden[-e:, :] = True
+    forbidden[:, :e] = forbidden[:, -e:] = True
+
+    # Drilled things a new via must keep hole spacing from.
+    min_c = config.via_drill_mm + HOLE_TO_HOLE_MIN_MM
+    holes = [(v["x_mm"], v["y_mm"],
+              max(min_c, v.get("diameter_mm", config.via_diameter_mm) / 2 + via_r + clr))
+             for v in vias]
+    holes += [(p.x_mm, p.y_mm, max(p.pad_width_mm, p.pad_height_mm) / 2 + via_r + clr)
+              for p in pads if p.layer == "all"]
+    holes += _mounting_hole_keepouts(routed.get("placements", []), config.via_diameter_mm)
+
+    def drillable(x, y):
+        return all((x - hx) ** 2 + (y - hy) ** 2 >= hd * hd for hx, hy, hd in holes)
+
+    added: list[dict] = []
+    for layer in ("top", "bottom"):
+        cimg, cd = canvas()
+        for f in fills:
+            if f.get("net_id") == gnd and not f.get("is_plane") and f.get("layer") == layer:
+                for poly in f.get("polygons", []):
+                    if len(poly) >= 3:
+                        cd.polygon([px(*pt[:2]) for pt in poly], fill=255)
+        for t in traces:
+            if t.get("net_id") == gnd and t.get("layer") == layer:
+                seg(cd, t)
+        on_layer = [p for p in pads if p.net_id == gnd and p.layer in (layer, "all")]
+        for p in on_layer:
+            rect(cd, p.x_mm, p.y_mm, p.pad_width_mm / 2, p.pad_height_mm / 2)
+        for v in vias + added:
+            if v.get("net_id") == gnd:
+                disc(cd, v["x_mm"], v["y_mm"], via_r)
+        lab = _label(np.asarray(cimg) > 127)
+
+        def at(x, y):
+            c, r = px(x, y)
+            c, r = int(round(c)), int(round(r))
+            return int(lab[r, c]) if 0 <= r < H and 0 <= c < W else 0
+
+        linked = {at(v["x_mm"], v["y_mm"]) for v in vias + added if v.get("net_id") == gnd}
+        linked |= {at(p.x_mm, p.y_mm) for p in on_layer if p.layer == "all"}
+        orphans: dict[int, list] = {}
+        for p in on_layer:
+            i = at(p.x_mm, p.y_mm)
+            if p.layer == layer and i and i not in linked:
+                orphans.setdefault(i, []).append(p)
+        pimg, pd = canvas()
+        for p in pads:
+            if p.layer in ("top", "bottom"):   # keep the drill out of SMD pads
+                rect(pd, p.x_mm, p.y_mm, p.pad_width_mm / 2 + config.via_drill_mm / 2,
+                     p.pad_height_mm / 2 + config.via_drill_mm / 2)
+        in_pad = np.asarray(pimg) > 127
+        for i, ps in orphans.items():
+            ax = sum(p.x_mm for p in ps) / len(ps)
+            ay = sum(p.y_mm for p in ps) / len(ps)
+            rows, cols = np.nonzero((lab == i) & ~forbidden)
+            if not len(rows):
+                logger.warning("  Plane stitch: no via site on %s island of %s",
+                               layer, ",".join(f"{p.designator}.{p.pin_number}" for p in ps))
+                continue
+            xs, ys = cols * res, h - rows * res
+            order = np.argsort((xs - ax) ** 2 + (ys - ay) ** 2)
+            # Off-pad first; via-in-pad only as a last resort (fab note covers it).
+            order = np.concatenate([order[~in_pad[rows[order], cols[order]]],
+                                    order[in_pad[rows[order], cols[order]]]])
+            for k in order:
+                x, y = round(float(xs[k]), 3), round(float(ys[k]), 3)
+                if drillable(x, y):
+                    v = {"x_mm": x, "y_mm": y, "drill_mm": config.via_drill_mm,
+                         "diameter_mm": config.via_diameter_mm,
+                         "from_layer": "top", "to_layer": "bottom",
+                         "net_id": gnd, "net_name": plane.get("net_name", "")}
+                    added.append(v)
+                    holes.append((x, y, max(min_c, 2 * via_r + clr)))
+                    break
+            else:
+                logger.warning("  Plane stitch: no drillable via site on %s island of %s",
+                               layer, ",".join(f"{p.designator}.{p.pin_number}" for p in ps))
+    if added:
+        rt["vias"] = vias + added
+        logger.info("  Plane stitch: %d via(s) tie orphaned %s pour islands to In1",
+                    len(added), plane.get("net_name", gnd))
+    return len(added)
 
 
 def _rect_minus_square(x0: float, y0: float, x1: float, y1: float,
@@ -2246,6 +2452,8 @@ def apply_copper_fills(
             (v.get("x_mm", 0.0), v.get("y_mm", 0.0)) for v in base_vias
         ]
 
+        bw, bh = board.get("width_mm", 0.0), board.get("height_mm", 0.0)
+        edge_min = via_r + config.board_edge_clearance_mm
         def _drillable(vx: float, vy: float) -> bool:
             m2 = hole_min_center * hole_min_center
             if any((vx - px) ** 2 + (vy - py) ** 2 < m2 for px, py in drilled_pts):
@@ -2379,11 +2587,19 @@ def apply_copper_fills(
             if pi.layer == "all":
                 continue  # through-hole: already penetrates inner2
             placed = False
-            # Try the pad CENTRE first (via-in-pad) so the pad and its plane
-            # via coincide — a physical same-net connection. Fall back to a
-            # widening ring of nearby positions (with a short stub trace) so a
-            # crowded fine-pitch pad still finds a clear site.
-            candidates = [(0.0, 0.0)]
+            # Prefer a "dog-bone": the via fully OFF the pad (its ring clear of
+            # the pad edge by 0.1mm) joined by a short stub. An open via inside
+            # an SMD pad wicks solder down the barrel at reflow (starved joint
+            # on the regulator/MOSFET pins on parking_flasher) unless the fab
+            # fills and caps it. Then the old near-pad rings, and the pad
+            # CENTRE (via-in-pad) only as a last resort for a crowded pad.
+            off_r = max(pi.pad_width_mm, pi.pad_height_mm) / 2 + via_r + 0.1
+            candidates = []
+            for radius in (off_r, off_r + 0.2, off_r + 0.4, off_r + 0.7, off_r + 1.0):
+                for k in range(16):
+                    ang = math.pi * k / 8.0
+                    candidates.append((round(radius * math.cos(ang), 3),
+                                       round(radius * math.sin(ang), 3)))
             # Denser ring (more radii × 30° steps) so a crowded fine-pitch pad
             # tries harder to find a clear site before giving up (B3 retry).
             for radius in (0.5, 0.7, 0.9, 1.1, 1.3, 1.6, 2.0):
@@ -2391,6 +2607,7 @@ def apply_copper_fills(
                     ang = math.pi * k / 6.0
                     candidates.append((round(radius * math.cos(ang), 3),
                                        round(radius * math.sin(ang), 3)))
+            candidates.append((0.0, 0.0))
             for dx, dy in candidates:
                 vx = round(pi.x_mm + dx, 4)
                 vy = round(pi.y_mm + dy, 4)
@@ -2417,6 +2634,9 @@ def apply_copper_fills(
                             break
                 if ok and not _drillable(vx, vy):
                     ok = False
+                if ok and not (edge_min <= vx <= bw - edge_min
+                               and edge_min <= vy <= bh - edge_min):
+                    ok = False  # ring would violate copper-to-board-edge
                 if ok and (dx, dy) != (0.0, 0.0) and not _stub_clear(
                         pi.x_mm, pi.y_mm, vx, vy):
                     ok = False
@@ -2524,6 +2744,11 @@ def apply_copper_fills(
     if pl >= 2 and pwr_plane_stubs:
         result["routing"]["traces"] = (
             result["routing"].get("traces", []) + pwr_plane_stubs)
+
+    # Final geometry is complete: tie any GND pad left on an isolated surface-pour
+    # island to the In1 plane (and re-cut the planes around the new vias).
+    if pl >= 1:
+        regenerate_inner_planes(result, netlist, config)
 
     # Remove plane nets from unrouted list (copper fills connect them) — but a
     # plane net is only delivered when EVERY same-net SMD pad actually reaches the

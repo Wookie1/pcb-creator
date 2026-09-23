@@ -2010,6 +2010,32 @@ def run_export(project_dir: Path, project_name: str, config, log=None) -> dict:
     produced.append(str(drill_path))
     _log(f"  Drill file: {drill_path.name}")
 
+    # Verify the MANUFACTURING FILES, not a model of them: re-read the copper
+    # Gerbers + drill just written and extract net connectivity from the copper
+    # itself. DRC (internal + kicad-cli) validates routed.json / a pcbnew re-pour;
+    # three faults on parking_flasher_xor_20mm passed both yet were plainly in
+    # the Gerbers (trace-through-pad shorts, pour-flooded stitch vias, inner
+    # planes no via touched). A board whose files don't carry the netlist is
+    # never packaged.
+    from validators.gerber_connectivity import verify_gerber_connectivity, summarize
+    gver = verify_gerber_connectivity(output_dir, project_name, routed, netlist_data)
+    (output_dir / f"{project_name}_gerber_verify.json").write_text(json.dumps(gver, indent=2))
+    _log(f"  Gerber connectivity: {summarize(gver)}")
+    if gver.get("via_in_pad"):
+        _log(f"  NOTE: via-in-pad on {', '.join(gver['via_in_pad'])} — order "
+             "vias filled & capped (or expect solder wicking on those pads)")
+    if not gver["passed"]:
+        stale = output_dir / f"{project_name}_gerbers.zip"
+        if stale.exists():
+            stale.unlink()  # never leave an older package next to failing files
+        return {
+            "success": False,
+            "error": ("Exported Gerbers do not match the netlist — refusing to "
+                      "package: " + summarize(gver)),
+            "gerber_connectivity": gver,
+            "output_dir": str(output_dir),
+        }
+
     if bom_data is not None:
         # Fill orderable part numbers (curated tables + cache) so the CSV's
         # "LCSC Part #" column auto-matches at JLCPCB assembly; persist the
@@ -2082,4 +2108,8 @@ def run_export(project_dir: Path, project_name: str, config, log=None) -> dict:
         "output_dir": str(output_dir),
         "files": [str(Path(f).relative_to(project_dir)) for f in produced],
         "package": str(zip_path),
+        "gerber_connectivity": "verified",
+        **({"fab_notes": [f"via-in-pad on {', '.join(gver['via_in_pad'])}: "
+                          "order vias filled & capped"]}
+           if gver.get("via_in_pad") else {}),
     }

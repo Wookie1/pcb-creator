@@ -325,16 +325,18 @@ def _footprint(
 
     is_th = _is_through_hole(package)
 
-    # KiCad rotates a footprint CLOCKWISE for a positive angle, but the rest of
-    # the pipeline (build_pad_map / DSN / SES / validation) rotates pad offsets
-    # COUNTER-CLOCKWISE (_rotate_offset). Writing the raw rotation therefore put
-    # every 90°/270° part's pads where KiCad's CW rotation lands them — 180° off
-    # build_pad_map, so the router's traces (placed at build_pad_map positions)
-    # connected to the WRONG pad → ~85 false Pad↔Track shorts on morgan. Emit the
-    # NEGATED angle so KiCad's CW rotation reproduces build_pad_map's CCW layout
-    # (0/180 unchanged; 90↔270 swap). Pads are written with the same raw offsets
-    # build_pad_map consumes, so the two now agree pad-for-pad.
-    export_rot = (360 - (rot % 360)) % 360
+    # Coordinate frames. pcb-creator's internal frame (routed.json, Gerbers) is
+    # Y-UP — the Gerber convention; kicad_mod_parser negates KiCad's Y when it
+    # loads footprints. KiCad's file frame is Y-DOWN. export_kicad_pcb converts
+    # every absolute coordinate (y_kicad = board_h - y) before it reaches here,
+    # and the pad offsets below are negated back to KiCad's local frame. With a
+    # true frame flip, rotation SENSE is preserved on screen, so the angle is
+    # written as-is. (The old code wrote internal Y straight into the file and
+    # negated the angle instead: pads then matched positions — the morgan
+    # 90/270° fix — but the whole .kicad_pcb was a MIRROR IMAGE of the Gerbers:
+    # SOT-23 pins 1<->2 and SOIC pins 1<->7 swapped as KiCad displayed it, and a
+    # KiCad-plotted Gerber from it would have been an unbuildable mirrored board.)
+    export_rot = rot % 360
     lines = [
         f'  (footprint "pcb-creator:{des}_{package}"',
         f'    (layer "{layer}")',
@@ -412,7 +414,7 @@ def _footprint(
         if layer == "B.Cu":
             dx = -dx
         dx = round(dx, 4)
-        dy = round(dy, 4)
+        dy = round(-dy, 4) + 0.0   # internal Y-up offset -> KiCad Y-down (+0.0: no "-0.0")
 
         port_id = pin_port_map.get(pin_num, "")
         net_num, net_name = port_net_map.get(port_id, (0, ""))
@@ -661,6 +663,36 @@ def board_via_minima(routed: dict) -> tuple[float, float]:
     return via_dia, via_drill
 
 
+def _to_kicad_frame(routed: dict) -> dict:
+    """Shallow copy of `routed` with every ABSOLUTE coordinate converted from
+    the internal Y-up frame to KiCad's Y-down file frame (y -> board_h - y).
+    Board outline and zones are symmetric under the flip; footprint-local pad
+    offsets are converted in _footprint. Inverse: from_kicad_y()."""
+    h = float(routed.get("board", {}).get("height_mm", 0.0))
+
+    def fy(v):
+        # No board height = no known frame to flip within; leave as-is.
+        return round(h - float(v), 4) if h > 0 else v
+
+    out = dict(routed)
+    out["placements"] = [dict(p, y_mm=fy(p["y_mm"])) for p in routed.get("placements", [])]
+    rt = dict(routed.get("routing", {}))
+    rt["traces"] = [dict(t, start_y_mm=fy(t["start_y_mm"]), end_y_mm=fy(t["end_y_mm"]))
+                    for t in rt.get("traces", [])]
+    rt["vias"] = [dict(v, y_mm=fy(v["y_mm"])) for v in rt.get("vias", [])]
+    out["routing"] = rt
+    out["silkscreen"] = [dict(it, y_mm=fy(it["y_mm"])) if "y_mm" in it else it
+                         for it in routed.get("silkscreen", []) or []]
+    return out
+
+
+def from_kicad_y(y_kicad: float, routed: dict) -> float:
+    """KiCad file Y (Y-down) -> internal Y (Y-up). Use on ANY coordinate read
+    back from a KiCad file or kicad-cli/pcbnew output."""
+    h = float(routed.get("board", {}).get("height_mm", 0.0) or 0.0)
+    return round(h - float(y_kicad), 4) if h > 0 else y_kicad
+
+
 def _harvest_stitch_vias(routed: dict, net_elements: list[dict],
                          stitched: dict) -> int:
     """Merge export-time GND stitch vias back into `routed` (mutates it).
@@ -684,7 +716,9 @@ def _harvest_stitch_vias(routed: dict, net_elements: list[dict],
     else:
         routing.pop("unstitched_gnd_islands", None)
 
-    added = stitched.get("added") or []
+    # pcbnew reports positions in KiCad's Y-down frame — convert to internal.
+    added = [dict(v, y_mm=from_kicad_y(v["y_mm"], routed))
+             for v in (stitched.get("added") or [])]
     if not added:
         return 0
     gnd = next((n for n in net_elements
@@ -703,7 +737,7 @@ def _harvest_stitch_vias(routed: dict, net_elements: list[dict],
         seen.add(key)
         merged += 1
         vias.append({
-            "x_mm": v["x_mm"], "y_mm": v["y_mm"],
+            "x_mm": v["x_mm"], "y_mm": v["y_mm"],   # already internal frame (see below)
             "drill_mm": v["drill_mm"], "diameter_mm": v["diameter_mm"],
             "from_layer": "top", "to_layer": "bottom",
             "net_id": (gnd or {}).get("net_id", "net_gnd"),
@@ -982,14 +1016,17 @@ def export_kicad_pcb(
     parts.append(_net_declarations(net_list))
     parts.append(_board_outline(routed.get("board", {})))
 
+    # Everything below is emitted in KiCad's Y-down frame.
+    kr = _to_kicad_frame(routed)
+
     # Footprints
-    for plc in routed.get("placements", []):
+    for plc in kr.get("placements", []):
         parts.append(
             _footprint(plc, port_net_map, comp_ports, components)
         )
 
     # Routing
-    routing = routed.get("routing", {})
+    routing = kr.get("routing", {})
     if routing.get("traces"):
         parts.append(_traces(routing["traces"], net_num_map))
     if routing.get("vias"):
@@ -998,8 +1035,8 @@ def export_kicad_pcb(
         parts.append(_copper_fills(routing["copper_fills"], net_num_map, routed.get("board", {})))
 
     # Silkscreen
-    if routed.get("silkscreen"):
-        parts.append(_silkscreen(routed["silkscreen"]))
+    if kr.get("silkscreen"):
+        parts.append(_silkscreen(kr["silkscreen"]))
 
     # Close the top-level sexp
     parts.append(")")

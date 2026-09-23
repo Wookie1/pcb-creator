@@ -458,7 +458,7 @@ class TestGerberExporter:
         out = export_drill(r, netlist, tmp_path / "board.drl")
         text = out.read_text()
         assert text.startswith("M48")
-        assert "METRIC,TZ" in text
+        assert "METRIC" in text and "FORMAT={-:-/ absolute / metric / decimal}" in text
         assert text.rstrip().endswith("M30")
         # 5 vias in the project → at least one tool + hits.
         assert "T1" in text

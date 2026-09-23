@@ -215,6 +215,11 @@ def _analyze(routed: dict, netlist: dict, exclude_ids: set[str],
     bad -= exclude_ids
     bad -= {name_to_id.get(n, n) for n in protect_names}
     bad.discard(None)
+    # kicad-cli reports positions in KiCad's Y-down file frame; keepouts are
+    # consumed by the router in the internal Y-up frame.
+    h = float(routed.get("board", {}).get("height_mm", 0.0) or 0.0)
+    if h > 0:
+        keepouts = [(x, round(h - y, 3)) for x, y in keepouts]
     return bad, keepouts
 
 

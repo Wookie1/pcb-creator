@@ -181,7 +181,7 @@ class TestDrillIncludesMountingHole:
             txt = out.read_text()
         # 3.200mm tool present and one hit
         assert "C3.200" in txt
-        assert "X5000Y5000" in txt
+        assert "X5.000Y5.000" in txt
 
 
 class TestThruHolePadDrill:

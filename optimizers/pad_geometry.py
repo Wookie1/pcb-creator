@@ -150,27 +150,34 @@ _SMD_2PAD = {
     ),
 }
 
-# SOT-23 (3 pins): pin 1 top-left, pin 2 top-right, pin 3 bottom-center
+# SOT-23 (3 pins), in the INTERNAL frame (Y-UP, the Gerber convention — the
+# same frame kicad_mod_parser produces by negating KiCad's Y): pins 1,2 on the
+# BOTTOM edge, pin 3 top-centre — the datasheet top view. This entry used to be
+# authored in KiCad's Y-down sense (pin 1 "top-left" at y=+1), which in the Y-up
+# frame is the MIRROR of the real part: on a host without the KiCad library
+# every SOT-23 came out in the Gerbers with pins 1 and 2 swapped.
 _SOT23 = FootprintDef(
     pin_offsets={
-        1: (-0.95, 1.0),
-        2: (0.95, 1.0),
-        3: (0.0, -1.0),
+        1: (-0.95, -1.0),
+        2: (0.95, -1.0),
+        3: (0.0, 1.0),
     },
     pad_size=(0.6, 0.7),
 )
 
-# SOIC-8: 4 pins per side, 1.27mm pitch, 2.7mm half-row-spacing
+# SOIC-8, internal Y-up frame: pins 1-4 along the BOTTOM row left->right,
+# 5-8 along the top row right->left — counter-clockwise from the top, like every
+# IC. (Previously authored Y-down, which mirrored the part in the Gerbers.)
 _SOIC8 = FootprintDef(
     pin_offsets={
-        1: (-1.905, 2.7),
-        2: (-0.635, 2.7),
-        3: (0.635, 2.7),
-        4: (1.905, 2.7),
-        5: (1.905, -2.7),
-        6: (0.635, -2.7),
-        7: (-0.635, -2.7),
-        8: (-1.905, -2.7),
+        1: (-1.905, -2.7),
+        2: (-0.635, -2.7),
+        3: (0.635, -2.7),
+        4: (1.905, -2.7),
+        5: (1.905, 2.7),
+        6: (0.635, 2.7),
+        7: (-0.635, 2.7),
+        8: (-1.905, 2.7),
     },
     pad_size=(0.6, 1.5),
 )

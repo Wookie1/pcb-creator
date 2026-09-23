@@ -404,6 +404,26 @@ def import_kicad_pcb(
     vias = _extract_vias(tree)
     fills = _extract_zones(tree, net_name_to_id)
 
+    # KiCad's file frame is Y-DOWN; pcb-creator's internal frame is Y-UP
+    # (the Gerber convention; kicad_exporter writes y_kicad = board_h - y).
+    # Convert everything read back so the round trip is the identity, and a
+    # board edited in KiCad isn't re-imported as its own mirror image.
+    _h = float((original_routed or {}).get("board", {}).get("height_mm", 0.0) or 0.0)
+    if not _h:   # no board record: take the height from the file's Edge.Cuts
+        ys = [_to_float(xy[2]) for it in tree if isinstance(it, list) and it
+              and it[0] in ("gr_line", "gr_rect")
+              and str((_find_field(it, "layer") or ["", ""])[1]) == "Edge.Cuts"
+              for key in ("start", "end") if (xy := _find_field(it, key))]
+        _h = max(ys) + min(ys) if ys else 0.0   # flip about the outline's centre
+    for t in (traces if _h > 0 else []):
+        t["start_y_mm"] = round(_h - t["start_y_mm"], 4)
+        t["end_y_mm"] = round(_h - t["end_y_mm"], 4)
+    for v in (vias if _h > 0 else []):
+        v["y_mm"] = round(_h - v["y_mm"], 4)
+    for f in (fills if _h > 0 else []):
+        f["polygons"] = [[[x, round(_h - y, 3)] for x, y in poly]
+                         for poly in f.get("polygons", [])]
+
     # Resolve _net_num to net_id/net_name on all elements
     routed_net_ids: set[str] = set()
 

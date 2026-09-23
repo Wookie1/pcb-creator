@@ -67,16 +67,22 @@ def reroute_cleanable_rules() -> set[str]:
             if types <= _FIXABLE_BY_REROUTE}
 
 
-def _first_pos(items: list[dict]) -> dict | None:
+def _first_pos(items: list[dict], board_h: float | None = None) -> dict | None:
+    """First item position, converted from KiCad's Y-down file frame to the
+    internal Y-up frame when the board height is known."""
     for it in items:
         if it.get("pos"):
             p = it["pos"]
-            return {"x_mm": round(p.get("x", 0), 3), "y_mm": round(p.get("y", 0), 3)}
+            y = p.get("y", 0)
+            if board_h:
+                y = board_h - y
+            return {"x_mm": round(p.get("x", 0), 3), "y_mm": round(y, 3)}
     return None
 
 
 def build_kicad_drc_report(drc_data: dict, *, project_name: str = "",
-                           extra_checks: list[dict] | None = None) -> dict:
+                           extra_checks: list[dict] | None = None,
+                           board_h: float | None = None) -> dict:
     """Shape a parsed kicad-cli DRC json into the drc_report report structure.
 
     KiCad's DRC is authoritative for GEOMETRY (shorts, clearance, hole/edge,
@@ -102,7 +108,7 @@ def build_kicad_drc_report(drc_data: dict, *, project_name: str = "",
         b["violations"].append({
             "rule": rule, "severity": sev,
             "message": v.get("description", v.get("type", "")),
-            "location": _first_pos(v.get("items", [])),
+            "location": _first_pos(v.get("items", []), board_h),
         })
         if sev == "error":
             b["passed"] = False
@@ -164,5 +170,6 @@ def run_kicad_drc(
         except (FileNotFoundError, OSError, subprocess.SubprocessError,
                 json.JSONDecodeError, ValueError):
             return None
-    return build_kicad_drc_report(data, project_name=project_name,
-                                  extra_checks=extra_checks)
+    return build_kicad_drc_report(
+        data, project_name=project_name, extra_checks=extra_checks,
+        board_h=routed.get("board", {}).get("height_mm"))

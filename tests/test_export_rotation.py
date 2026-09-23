@@ -1,10 +1,12 @@
-"""Exported KiCad pad positions must match build_pad_map for ROTATED parts.
+"""Exported KiCad pad positions must match build_pad_map for ROTATED parts,
+in the correct frame, and must NOT be a mirror image of the real part.
 
-KiCad rotates a footprint clockwise for a positive angle; the rest of the
-pipeline (build_pad_map / DSN / SES) rotates pad offsets counter-clockwise. The
-exporter therefore writes the NEGATED angle so KiCad reproduces build_pad_map's
-layout. Without it, every 90/270 part's pads were 180 off and the router's
-traces connected to the wrong pad (the morgan Pad-Track shorts).
+pcb-creator's internal frame (routed.json, Gerbers) is Y-UP; KiCad's file frame
+is Y-DOWN. The exporter writes y_kicad = board_h - y, negates footprint-local
+pad Y, and writes the rotation angle as-is. An earlier version wrote internal Y
+straight into the file and negated the angle: pads then matched positions (the
+morgan 90/270 fix) but the whole .kicad_pcb was a mirror image — SOT-23 pins
+1<->2 swapped as KiCad displayed it.
 """
 import math
 import re
@@ -69,6 +71,7 @@ class TestExportRotationMatchesPadMap:
             rx, ry = _kicad_cw(dx, dy, ang)
             kx, ky = cx + rx, cy + ry
             bx, by = pm[pin]
+            by = routed["board"]["height_mm"] - by   # internal Y-up -> KiCad Y-down
             assert math.hypot(kx - bx, ky - by) < 0.05, (
                 f"pin {pin} rot={rot}: kicad=({kx:.3f},{ky:.3f}) "
                 f"padmap=({bx:.3f},{by:.3f})")
@@ -110,3 +113,81 @@ class TestExportPadSizeMatchesPadMap:
     def test_rot_0(self, tmp_path):   self._check(0, tmp_path)
     def test_rot_90(self, tmp_path):  self._check(90, tmp_path)
     def test_rot_270(self, tmp_path): self._check(270, tmp_path)
+
+
+def _winding(a, b, c):
+    """>0 = counter-clockwise in a Y-UP (physical top view) frame."""
+    return (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])
+
+
+class TestExportIsNotMirrored:
+    """Pin winding of the exported part, as KiCad places it, must match the
+    real device. Official KiCad SOT-23 (and every IC): pins run COUNTER-
+    clockwise viewed from the top. A mirrored export runs them clockwise."""
+
+    def _check(self, rot, tmp_path):
+        netlist, routed = _build(rot)
+        out = tmp_path / "t.kicad_pcb"
+        export_kicad_pcb(routed, netlist, out)
+        pads = _exported_pads(out.read_text())
+        world = {}
+        for pin, (cx, cy, ang, dx, dy) in pads.items():
+            rx, ry = _kicad_cw(dx, dy, ang)
+            world[pin] = (cx + rx, -(cy + ry))   # KiCad Y-down -> physical Y-up
+        assert _winding(world[1], world[2], world[3]) > 0, (
+            f"rot={rot}: exported SOT-23 pins run clockwise — mirror image")
+
+    def test_rot_0(self, tmp_path):   self._check(0, tmp_path)
+    def test_rot_90(self, tmp_path):  self._check(90, tmp_path)
+    def test_rot_180(self, tmp_path): self._check(180, tmp_path)
+    def test_rot_270(self, tmp_path): self._check(270, tmp_path)
+
+
+def test_export_reproduces_official_kicad_footprints(tmp_path):
+    """With the real KiCad library, an exported part at 0 deg must carry the
+    OFFICIAL footprint's pad positions exactly (KiCad frame) — for the SOT-23,
+    SOT-23-5 and SOIC-14 on parking_flasher. The old export wrote them
+    Y-negated: a mirror image of the real device in KiCad."""
+    import pathlib
+    import pytest
+    from exporters.kicad_mod_parser import KiCadLibraryIndex
+    from optimizers import pad_geometry
+    lib = pathlib.Path("/Applications/KiCad/KiCad.app/Contents/SharedSupport/footprints")
+    if not lib.is_dir():
+        pytest.skip("no system KiCad footprint library")
+    prev = (pad_geometry._default_kicad_index, pad_geometry._default_cache,
+            pad_geometry._default_custom_index)
+    pad_geometry.configure_lookup(kicad_index=KiCadLibraryIndex(str(lib)))
+    try:
+        cases = {"SOT-23": ("Package_TO_SOT_SMD.pretty/SOT-23.kicad_mod", 3),
+                 "SOT-23-5": ("Package_TO_SOT_SMD.pretty/SOT-23-5.kicad_mod", 5),
+                 "SOIC-14": ("Package_SO.pretty/SOIC-14_3.9x8.7mm_P1.27mm.kicad_mod", 14)}
+        for pkg, (fname, n) in cases.items():
+            official = {}
+            for m in re.finditer(r'\(pad "(\d+)" smd \w+\s*\(at ([-\d.]+) ([-\d.]+)',
+                                 (lib / fname).read_text()):
+                official[int(m[1])] = (float(m[2]), float(m[3]))
+            netlist = {"elements": [
+                {"element_type": "component", "component_id": "c", "designator": "U1",
+                 "component_type": "ic", "value": "x", "package": pkg},
+                *[{"element_type": "port", "port_id": f"p{p}", "component_id": "c",
+                   "pin_number": p, "name": f"P{p}"} for p in range(1, n + 1)]]}
+            routed = {"board": {"width_mm": 30, "height_mm": 30, "layers": 2},
+                      "placements": [{"designator": "U1", "package": pkg,
+                                      "component_type": "ic", "x_mm": 15.0,
+                                      "y_mm": 15.0, "rotation_deg": 0, "layer": "top",
+                                      "footprint_width_mm": 5, "footprint_height_mm": 9}],
+                      "routing": {"traces": [], "vias": [], "unrouted_nets": []}}
+            out = tmp_path / f"{pkg}.kicad_pcb"
+            export_kicad_pcb(routed, netlist, out)
+            pads = _exported_pads(out.read_text())
+            # footprints are re-centred on load, so compare offsets relative to pin 1
+            ox, oy = official[1]; ex, ey = pads[1][3], pads[1][4]
+            for pin, (x, y) in official.items():
+                dx, dy = pads[pin][3] - ex, pads[pin][4] - ey
+                assert abs(dx - (x - ox)) < 0.01 and abs(dy - (y - oy)) < 0.01, (
+                    f"{pkg} pin {pin}: exported {dx:.3f},{dy:.3f} vs official "
+                    f"{x - ox:.3f},{y - oy:.3f} — mirrored/rotated export")
+    finally:
+        pad_geometry.configure_lookup(kicad_index=prev[0], cache=prev[1],
+                                      custom_index=prev[2])

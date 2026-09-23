@@ -410,11 +410,44 @@ def test_generate_inner_plane_outer_plus_antipads():
     plane = generate_inner_plane(board, [], pad_map, vias, "inner1",
                                  "gnd", "GND", RouterConfig())
     assert plane["is_plane"] is True
-    # outer boundary first, then a cutout per TH pad (2) + 1 via = 3 cutouts.
-    # SMD pad is skipped (doesn't reach inner layer).
-    assert len(plane["polygons"]) == 1 + 3
+    # outer boundary first; the same-net TH pad gets a 4-sector thermal gap
+    # (4 holes, copper spokes between), the foreign TH pad + foreign via one
+    # antipad each. SMD pad is skipped (doesn't reach inner layer).
+    assert len(plane["polygons"]) == 1 + 4 + 1 + 1
     outer = plane["polygons"][0]
-    assert (0.0, 0.0) in outer and (20.0, 20.0) in outer
+    # outline inset by the 0.3mm copper-to-edge keepout
+    assert (0.3, 0.3) in outer and (19.7, 19.7) in outer
+
+
+def test_inner_plane_actually_connects_same_net_vias_and_pads():
+    """The parking_flasher bug: every same-net via got a clearance disc, so no
+    drill barrel ever touched its own plane — VREG (plane-only) shipped OPEN.
+    Plane copper must reach a same-net via's drill wall and a same-net TH pad's
+    spokes, and must NOT reach a foreign via."""
+    import math
+    from validators.drc_checks_dfm import _point_in_fill
+    board = {"width_mm": 20.0, "height_mm": 20.0}
+    pad_map = {"th_gnd": PadInfo("a", "J1", 1, "gnd", 5.0, 5.0, 1.7, 1.7, "all")}
+    vias = [{"x_mm": 12.0, "y_mm": 12.0, "diameter_mm": 0.6, "drill_mm": 0.3, "net_id": "gnd"},
+            {"x_mm": 15.0, "y_mm": 6.0, "diameter_mm": 0.6, "drill_mm": 0.3, "net_id": "sig"}]
+    plane = generate_inner_plane(board, [], pad_map, vias, "inner1", "gnd", "GND",
+                                 RouterConfig())
+    polys = plane["polygons"]
+    bb = [(min(p[0] for p in pl), min(p[1] for p in pl),
+           max(p[0] for p in pl), max(p[1] for p in pl)) for pl in polys]
+    cu = lambda x, y: _point_in_fill(x, y, polys, bb, True)
+    ring = lambda cx, cy, r: [(cx + r * math.cos(a * math.pi / 4), cy + r * math.sin(a * math.pi / 4))
+                              for a in range(8)]
+    # same-net via: copper all round the drill wall (0.15mm) -> connected
+    assert all(cu(x, y) for x, y in ring(12.0, 12.0, 0.15))
+    # foreign via: cleared at the drill wall and at its pad edge -> isolated
+    assert not any(cu(x, y) for x, y in ring(15.0, 6.0, 0.15) + ring(15.0, 6.0, 0.3))
+    # same-net TH pad: gap ring is open between spokes, copper ON the spokes
+    gap_r = 0.85 + RouterConfig().thermal_gap_mm / 2
+    assert not cu(5.0 + gap_r * math.cos(math.pi / 4), 5.0 + gap_r * math.sin(math.pi / 4))
+    assert cu(5.0 + gap_r, 5.0) and cu(5.0, 5.0 + gap_r)      # cardinal spokes
+    # plane is pulled back from the board edge
+    assert not cu(0.1, 10.0) and cu(0.5, 10.0)
 
 
 def test_regenerate_inner_planes_noop_without_planes():
@@ -480,9 +513,42 @@ def test_regenerate_inner_planes_recuts():
     ]}
     out = regenerate_inner_planes(routed, netlist)
     plane = out["routing"]["copper_fills"][0]
-    # re-cut: outer boundary + one antipad for the foreign via
-    assert plane["polygons"][0][0] == (0.0, 0.0)
+    # re-cut: (edge-inset) outer boundary + one antipad for the foreign via
+    assert plane["polygons"][0][0] == (0.3, 0.3)
     assert len(plane["polygons"]) == 2
+
+
+def test_orphan_gnd_pour_island_gets_a_plane_via():
+    """parking_flasher rev3: GND SMD pads sat on surface-pour islands with no via
+    to the In1 plane (the pad itself counted as the island's 'connection').
+    The stitcher must drop one via inside the island, off the pad, clear of the
+    foreign pad — and do nothing on a second pass."""
+    from optimizers.router import stitch_orphan_plane_islands
+    netlist = {"elements": [
+        {"element_type": "component", "component_id": "c1", "designator": "R1",
+         "component_type": "resistor", "package": "0805"},
+        {"element_type": "port", "port_id": "a1", "component_id": "c1", "pin_number": 1, "name": "1"},
+        {"element_type": "port", "port_id": "a2", "component_id": "c1", "pin_number": 2, "name": "2"},
+        {"element_type": "net", "net_id": "gnd", "name": "GND", "connected_port_ids": ["a1"]},
+        {"element_type": "net", "net_id": "sig", "name": "SIG", "connected_port_ids": ["a2"]},
+    ]}
+    routed = {
+        "board": {"width_mm": 20.0, "height_mm": 20.0, "layers": 4},
+        "placements": [{"designator": "R1", "package": "0805", "component_type": "resistor",
+                        "x_mm": 10.0, "y_mm": 10.0, "rotation_deg": 0, "layer": "top",
+                        "footprint_width_mm": 2.0, "footprint_height_mm": 1.25}],
+        "routing": {"traces": [], "vias": [], "copper_fills": [
+            {"layer": "top", "net_id": "gnd", "net_name": "GND", "is_plane": False,
+             "polygons": [[[6.0, 7.0], [9.6, 7.0], [9.6, 13.0], [6.0, 13.0]]]},
+            {"layer": "inner1", "net_id": "gnd", "net_name": "GND", "is_plane": True,
+             "polygons": [[(0.3, 0.3), (19.7, 0.3), (19.7, 19.7), (0.3, 19.7)]]},
+        ]},
+    }
+    assert stitch_orphan_plane_islands(routed, netlist, RouterConfig()) == 1
+    v = routed["routing"]["vias"][0]
+    assert v["net_id"] == "gnd" and 6.0 <= v["x_mm"] <= 9.6 and 7.0 <= v["y_mm"] <= 13.0
+    assert not (abs(v["x_mm"] - 9.0875) < 0.6 and abs(v["y_mm"] - 10.0) < 0.7)  # not in pad
+    assert stitch_orphan_plane_islands(routed, netlist, RouterConfig()) == 0
 
 
 # ===========================================================================
