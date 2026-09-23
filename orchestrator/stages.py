@@ -1035,6 +1035,9 @@ def run_routing(project_dir: Path, project_name: str, config,
 
     placement_data = _load(placement_path)
     netlist_data = _load(netlist_path)
+    gate = _footprint_gate(netlist_data, "route")
+    if gate:
+        return {"success": False, **gate}
     # Signatures of exactly the on-disk inputs this route consumes, captured
     # BEFORE placement_data["board"] is mutated below so they match what a later
     # staleness_reason() recomputes from the unmodified files.
@@ -1887,13 +1890,34 @@ def _carry_bom_part_numbers(old_bom: dict, new_bom: dict) -> None:
             it.setdefault(pk, v)
 
 
+def _footprint_gate(netlist: dict, step: str) -> dict | None:
+    """Refuse `step` when any component's package would fall back to the generic
+    placeholder footprint. Placement already refuses; routing and export must
+    too, because a caller that never ran configure_lookup (a standalone script
+    skipping mcp_server._init_lookup) turns e.g. SOIC-14 into perimeter
+    placeholder pads — and routing, DRC and the gerber-connectivity gate all use
+    that same wrong pad map, so the bad board passes every check."""
+    from validators.verify_footprints import verify_footprints
+    unresolved = verify_footprints(netlist) if netlist.get("elements") else []
+    if not unresolved:
+        return None
+    shown = ", ".join(f"{u['designator']} ({u['package']})" for u in unresolved[:6])
+    return {"error": (f"Refusing to {step}: {len(unresolved)} component(s) have no "
+                      f"real footprint and would use a generic placeholder: {shown}. "
+                      "Configure the footprint lookup (PCB_KICAD_LIBRARY_PATH; "
+                      "scripts must call configure_lookup / mcp_server._init_lookup "
+                      "first), correct the package name, or call provide_footprint."),
+            "gate": "unresolved_footprints", "unresolved_footprints": unresolved}
+
+
 def export_blocked(project_dir: Path, project_name: str, routed: dict) -> dict | None:
     """Why manufacturing files must not be produced, or None if the board is shippable.
 
     FAIL CLOSED. Gerbers from an uncertified board are worse than no gerbers —
-    they look shippable. Three refusals, mirroring the ones mcp_server's
+    they look shippable. Refusals, mirroring the ones mcp_server's
     export_outputs raises with richer remediation:
 
+      0. placeholder footprints — the pads are not the real part (_footprint_gate)
       1. open nets            — the board physically cannot work
       2. missing or non-authoritative DRC report — we cannot certify it
       3. DRC found errors     — it is not fabricable
@@ -1904,6 +1928,12 @@ def export_blocked(project_dir: Path, project_name: str, routed: dict) -> dict |
     A missing report means DRC never ran, which is exactly when a bad board slips
     out — so absence blocks rather than passes.
     """
+    netlist_path = _p(project_dir, project_name, "netlist")
+    if netlist_path.exists():
+        gate = _footprint_gate(_load(netlist_path), "export")
+        if gate:
+            return gate
+
     open_nets = list((routed or {}).get("routing", {}).get("unrouted_nets") or [])
     if open_nets:
         shown = ", ".join(open_nets[:6]) + ("…" if len(open_nets) > 6 else "")
