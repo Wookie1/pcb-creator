@@ -377,19 +377,13 @@ def _design_interactive(args) -> int:
     from .llm.litellm_client import LiteLLMClient
     from .prompts.builder import PromptBuilder
 
-    from .cache import ComponentCache
     from optimizers.pad_geometry import configure_lookup
 
     config = _make_config(args)
     llm = LiteLLMClient(config.gather_model, api_base=config.api_base, api_key=config.api_key, timeout=config.llm_timeout)
     prompt_builder = PromptBuilder(config.base_dir)
-    cache = ComponentCache(config.component_cache_path)
-
-    # Build KiCad library index if path is configured
-    kicad_index = None
-    if config.kicad_library_path:
-        from exporters.kicad_mod_parser import KiCadLibraryIndex
-        kicad_index = KiCadLibraryIndex(config.kicad_library_path)
+    from orchestrator.stages import build_default_lookup
+    kicad_index, cache = build_default_lookup(config)
 
     # Set module-level defaults so all build_pad_map() calls benefit
     configure_lookup(kicad_index=kicad_index, cache=cache)

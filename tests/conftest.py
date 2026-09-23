@@ -12,3 +12,12 @@ def _isolated_component_cache(tmp_path, monkeypatch):
     """
     monkeypatch.setenv("PCB_COMPONENT_CACHE_PATH",
                        str(tmp_path / "component_cache.json"))
+
+
+@pytest.fixture(autouse=True)
+def _suite_owns_footprint_lookup(monkeypatch):
+    """Stages auto-install the real KiCad lookup when nothing configured one.
+    Tests keep their explicit (usually built-in-only) lookup instead, so mark it
+    configured; tests of the auto-install flip this back to False."""
+    import optimizers.pad_geometry as pg
+    monkeypatch.setattr(pg, "_lookup_configured", True)

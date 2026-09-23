@@ -439,6 +439,7 @@ def run_placement(
         {success, component_count, wire_length_mm, crossings,
          board_width_mm, board_height_mm, placement_path}
     """
+    _ensure_lookup(config, project_dir)
     from optimizers.initial_placement import generate_grid_placement
     from optimizers.placement_optimizer import (
         optimize_placement, repair_placement, SAConfig,
@@ -1022,6 +1023,7 @@ def run_routing(project_dir: Path, project_name: str, config,
          validation_warnings, routed_path}
     """
     _log = log or (lambda *_a: None)
+    _ensure_lookup(config, project_dir)
     if str(config.base_dir) not in sys.path:  # pragma: no cover - defensive sys.path guard (base_dir already on path under pytest)
         sys.path.insert(0, str(config.base_dir))
     from validators.validate_routing import validate_routing as run_routing_validation
@@ -1682,6 +1684,7 @@ def run_drc(project_dir: Path, project_name: str, config, log=None,
     Returns the full DRC report dict (passed, summary, checks, statistics).
     """
     _log = log or (lambda *_a: None)
+    _ensure_lookup(config, project_dir)
     if str(config.base_dir) not in sys.path:  # pragma: no cover - defensive sys.path guard (base_dir already on path under pytest)
         sys.path.insert(0, str(config.base_dir))
     from validators.drc_report import run_drc as _run_drc
@@ -1890,6 +1893,42 @@ def _carry_bom_part_numbers(old_bom: dict, new_bom: dict) -> None:
             it.setdefault(pk, v)
 
 
+def build_default_lookup(config) -> tuple:
+    """(kicad_index, cache) for the standard footprint lookup: the system KiCad
+    library (config.kicad_library_path, auto-detected by OrchestratorConfig) and
+    the component cache. Shared by the MCP server, CLI, Gradio and stages."""
+    from orchestrator.cache import ComponentCache
+    cache_path = getattr(config, "component_cache_path", None)
+    cache = ComponentCache(cache_path) if cache_path else None
+    kicad_index = None
+    lib = getattr(config, "kicad_library_path", None)
+    if lib:
+        try:
+            from exporters.kicad_mod_parser import KiCadLibraryIndex
+            kicad_index = KiCadLibraryIndex(lib)
+        except Exception:  # pragma: no cover - defensive: unreadable library dir
+            kicad_index = None
+    return kicad_index, cache
+
+
+def _ensure_lookup(config, project_dir: Path) -> None:
+    """Install the standard footprint lookup when no entry point has.
+
+    A standalone script calling stages.* used to skip this, so SOIC-14/SOT-23-5
+    silently became generic placeholder pads. Callers that configured their own
+    lookup (MCP server, CLI, Gradio, eval's throwaway cache) are left alone."""
+    from optimizers.pad_geometry import configure_lookup, lookup_configured
+    if lookup_configured():
+        return
+    kicad_index, cache = build_default_lookup(config)
+    custom = None
+    custom_dir = Path(project_dir) / "custom-footprints.pretty"
+    if custom_dir.is_dir():
+        from exporters.kicad_mod_parser import KiCadLibraryIndex
+        custom = KiCadLibraryIndex(custom_dir)
+    configure_lookup(kicad_index=kicad_index, cache=cache, custom_index=custom)
+
+
 def _footprint_gate(netlist: dict, step: str) -> dict | None:
     """Refuse `step` when any component's package would fall back to the generic
     placeholder footprint. Placement already refuses; routing and export must
@@ -1989,6 +2028,7 @@ def run_export(project_dir: Path, project_name: str, config, log=None) -> dict:
         {success, output_dir, files: [...], package: <zip path>}
     """
     _log = log or (lambda *_a: None)
+    _ensure_lookup(config, project_dir)
     if str(config.base_dir) not in sys.path:  # pragma: no cover - defensive sys.path guard (base_dir already on path under pytest)
         sys.path.insert(0, str(config.base_dir))
     from exporters.gerber_exporter import export_gerbers, export_drill, create_output_package

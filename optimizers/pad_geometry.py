@@ -22,6 +22,7 @@ from typing import Any
 _default_kicad_index: Any | None = None
 _default_cache: Any | None = None
 _default_custom_index: Any | None = None
+_lookup_configured = False   # set by configure_lookup, even with all-None tiers
 
 
 def configure_lookup(
@@ -45,10 +46,16 @@ def configure_lookup(
                        footprints.  Searched BEFORE the system KiCad library
                        (tier 0) so agent-registered footprints always win.
     """
-    global _default_kicad_index, _default_cache, _default_custom_index
+    global _default_kicad_index, _default_cache, _default_custom_index, _lookup_configured
+    _lookup_configured = True
     _default_kicad_index = kicad_index
     _default_cache = cache
     _default_custom_index = custom_index
+
+
+def lookup_configured() -> bool:
+    """True once any entry point has called ``configure_lookup``."""
+    return _lookup_configured
 
 
 def get_default_cache() -> Any | None:

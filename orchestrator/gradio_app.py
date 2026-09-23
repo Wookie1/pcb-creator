@@ -335,7 +335,6 @@ def _handle_submit(
         )
         return
 
-    from .cache import ComponentCache
     from .llm.litellm_client import LiteLLMClient
     from .prompts.builder import PromptBuilder
     from .gather.conversation import RequirementsGatherer
@@ -347,13 +346,8 @@ def _handle_submit(
         api_key=config.api_key, extra_body=config.llm_extra_body,
         timeout=600,  # 10 min for gather/translate calls
     )
-    cache = ComponentCache(config.component_cache_path)
-
-    # Build KiCad library index if path is configured
-    kicad_index = None
-    if config.kicad_library_path:
-        from exporters.kicad_mod_parser import KiCadLibraryIndex
-        kicad_index = KiCadLibraryIndex(config.kicad_library_path)
+    from orchestrator.stages import build_default_lookup
+    kicad_index, cache = build_default_lookup(config)
 
     # Set module-level defaults so all build_pad_map() calls benefit
     configure_lookup(kicad_index=kicad_index, cache=cache)

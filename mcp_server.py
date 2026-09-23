@@ -107,15 +107,13 @@ def _init_lookup() -> None:
     tier is silently skipped even when the env var is configured.
     """
     global _KICAD_INDEX, _CACHE, _LOOKUP_CONFIGURED
-    from orchestrator.cache import ComponentCache
     from optimizers.pad_geometry import configure_lookup
+    from orchestrator.stages import build_default_lookup
 
     config = OrchestratorConfig.from_env(base_dir=_repo_root)
-    _CACHE = ComponentCache(config.component_cache_path)
+    _KICAD_INDEX, _CACHE = build_default_lookup(config)
 
-    if config.kicad_library_path:
-        from exporters.kicad_mod_parser import KiCadLibraryIndex
-        _KICAD_INDEX = KiCadLibraryIndex(config.kicad_library_path)
+    if _KICAD_INDEX is not None:
         logger.info("Footprint lookup: KiCad library at %s",
                     config.kicad_library_path)
     else:
@@ -213,18 +211,9 @@ def _ensure_lookup_configured() -> None:
         if _LOOKUP_CONFIGURED:  # pragma: no cover - double-checked-lock race (2nd thread configured first)
             return
         from optimizers.pad_geometry import configure_lookup
-        from orchestrator.cache import ComponentCache
+        from orchestrator.stages import build_default_lookup
 
-        config = _get_config()
-        cache = ComponentCache(config.component_cache_path)
-
-        kicad_index = None
-        if config.kicad_library_path:
-            try:
-                from exporters.kicad_mod_parser import KiCadLibraryIndex
-                kicad_index = KiCadLibraryIndex(config.kicad_library_path)
-            except Exception:  # pragma: no cover - defensive: KiCad library index build failure
-                kicad_index = None
+        kicad_index, cache = build_default_lookup(_get_config())
 
         # Store as the module-level source of truth so _activate_project_lookup
         # can re-apply the same cache/index (plus a custom tier) without ever
